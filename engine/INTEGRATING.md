@@ -521,7 +521,8 @@ change: a room on an older Visit visits you and is visited as before, so nobody 
 
 - The engine's log is your only screen: `console.info` in the server page lands there (`visit`'s stderr, with
   `ENGINE_LOG`). Log each point and each `tell` while proving; `ENGINE_DEBUG=1` gives `/debug/eval` on the engine's
-  port, for the proving alone.
+  port, for the proving alone: turned on by your launcher's own debug switch, off on every plain start
+  ([../visit/INTEGRATING.md](../visit/INTEGRATING.md) step 2), never left on in your `.env`.
 - Start and stop `visit` with your launcher, never by hand beside it: it holds the tokens your server and the
   engine use. Every restart of `visit` reloads the page, and whatever you poked into it.
 - The person's page reconnects by itself when `visit` restarts, but a page loaded before a deploy keeps the
