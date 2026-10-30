@@ -1226,6 +1226,22 @@ async def main():
         await b.key("KeyW", "w", 87, False)
         await asyncio.sleep(0.5)
         check("into the desk ahead: the room stops them at it (0.3 short), and the page agrees", (round(await hc.js("v.visitors[0].pose.z"), 1), abs(await b.js("room.me.z") - await hc.js("v.visitors[0].pose.z")) < 0.2), (4.5, True))
+        # the lines said in the room, on the room's page (8.9, roomChat): off by default, asked for, then off again
+        await hc.js("(window.heardC = [], v.on('chat', l => heardC.push(l)), true)")
+        await b.js("v.say('before the room asks')")
+        await asyncio.sleep(1.5)
+        check("the room's page has none of its owner's lines by default", await hc.js("heardC.some(l => l.text === 'before the room asks')"), False)
+        await hc.js("(v.roomChat(true), true)")
+        await asyncio.sleep(0.5)
+        await b.js("v.say('who is at the desk?')")
+        check("asked (roomChat): the room's page has its owner's line, as its owner's, in its room", await hc.until(
+            "(l => !!l && l.owner === true && l.room === 'home' && !l.mine && l.text)(heardC.find(l => l.text === 'who is at the desk?'))", 10), "who is at the desk?")
+        check("...and the person's own page has it once, as before", await b.js("v.chatLog.filter(l => l.text === 'who is at the desk?').length"), 1)
+        await hc.js("(v.roomChat(false), true)")
+        await asyncio.sleep(0.5)
+        await b.js("v.say('after the room stops')")
+        await asyncio.sleep(1.5)
+        check("off again: none", await hc.js("heardC.some(l => l.text === 'after the room stops')"), False)
         # The owner's wheel (SPEC 8.3): the spinner held east of them, clear of the desk, a type for the owner alone.
         await hc.js("room.frozen = true; room.spinner.position.set(7, 1.5, 4.5); v.interactions({ spin: { cosmetic: true, label: 'spin it', who: 'owner', wheel: true, "
                     "run: e => { window.spins.push({ type: e.type, owner: !!e.visitor.owner, wheel: e.wheel }); } } })")
