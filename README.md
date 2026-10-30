@@ -32,9 +32,9 @@ two hooks, and two pieces everyone drops in unchanged.
 </p>
 
 <p align="center">
-  <img alt="Another workroom, in a dark cave: blocky agents at their desks, what each is doing written above it, a kanban board on the wall, a tally of recruits lost, the Visit panel, and you, walking around" src=".github/assets/terrorist-sweatshop.png">
+  <img alt="Another workroom, a Vegas pool club at night: blocky agents in the pool, on flamingo floats and on loungers under pink umbrellas, their chat bubbles above them, a POOL PARTY sign over the kanban board, the Visit panel, and you, walking around" src=".github/assets/pool-club.png">
   <br>
-  <em>And another: the terrorist sweatshop. Recruits lost: 0 (shot by the boss: 0, blew up: 0).</em>
+  <em>And another: the Vegas pool club. POOL PARTY over the kanban board, and the agents in the pool: WOOO.</em>
 </p>
 
 <p align="center">
