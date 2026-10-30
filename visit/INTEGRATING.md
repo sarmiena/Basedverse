@@ -261,6 +261,33 @@ turns on the sign-in API ([../auth/INTEGRATING.md](../auth/INTEGRATING.md) step 
 program. Each token is a file your launcher makes, new each run, before it starts `visit` and before it starts
 anything that reads one at its own start (your server).
 
+**A debug switch on your launcher, off by default.** `ENGINE_DEBUG=1` (the flag `--engine-debug`) opens a hook on
+the engine's port for looking inside your room while it runs: `POST /debug/eval` runs whatever it is sent in your
+room's server page and answers with its value (what a guest's model carries, say, or how long a frame takes). It
+has no password, and that page holds the host token and the engine's key, so anything that reaches the port can
+act as your room. Keep it off on every ordinary start: never in your `.env`, never written into the launcher. Give
+the launcher a switch of its own instead (`bin/start --debug`, say), for the runs where you want to look, and the
+next plain start turns it off again:
+
+```sh
+# the shell launcher above, as `start --debug`: after it reads .env, before it starts visit;
+# the engine's debug hook for this run alone, never from .env
+if [ "${1:-}" = --debug ]; then export ENGINE_DEBUG=1; echo "⚠ the engine's debug hook is on"; else unset ENGINE_DEBUG; fi
+```
+
+```powershell
+# start.ps1 -EngineDebug: the same in PowerShell, for visit.exe on Windows
+param([switch]$EngineDebug)
+if ($EngineDebug) { $env:ENGINE_DEBUG = "1"; Write-Warning "the engine's debug hook is on" }
+else { Remove-Item Env:ENGINE_DEBUG -ErrorAction SilentlyContinue }
+```
+
+A desktop shortcut does it with a second shortcut whose target ends in `--engine-debug`, the everyday one
+without. A workroom built as one program of its own, with `visit` linked in as a library (`visit::run`), sets
+`engine_debug` in the `Args` it hands over from a flag of its own, `false` unless that flag is given. The hook
+listens where `/health` does, on `VISIT_LISTEN`'s address: never turn it on with `visit` listening anywhere but
+`127.0.0.1`.
+
 **Where your sim's own server runs.** `visit` listens on the machine's `127.0.0.1`, and what talks to it (your
 page, and later your server: the sign-in, the relay) must reach it there. The default, for a new room: **your
 server on the machine too, beside `visit`, and no Docker anywhere.** A room that keeps its server in a container
@@ -675,6 +702,8 @@ marked offline, walked into but not through its walls; start it again, and the p
       container on the host's network, bound to `127.0.0.1`.
 - [ ] It listens on 127.0.0.1 only; the token is in a 0600 file, not on the command line or in `.env`;
       `VISIT_ORIGINS` names your page's origin.
+- [ ] `ENGINE_DEBUG` is off on a plain start: only the launcher's own switch (`--debug`) turns it on, for that run,
+      never your `.env`.
 - [ ] Your page gets the token by a same-origin route (answering only `Host: localhost` or `127.0.0.1`), a
       fragment kept in `sessionStorage`, or a local file; no other origin can read it, and it never appears
       in a URL query or a log.
