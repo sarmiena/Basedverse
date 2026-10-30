@@ -23,8 +23,10 @@ keep the names, so offices on different versions still meet and visit each other
   passes it on as it does a visitor's voice (`relay`, id `at:<id>`) to every visitor near it, and to its own
   user's page if they are near it. At most 8 a room, each at most 75 packets a second. A visitor's older
   visit-client passes it on unchanged; an older page plays nothing of it.
-- **The engine's Chrome** starts with `--autoplay-policy=no-user-gesture-required` (engine/SPEC.md 5): the server
-  page's audio runs without a click, for its voices. Nothing is played on it.
+- **The engine's Chrome** starts with `--autoplay-policy=no-user-gesture-required` and `--mute-audio` (engine/SPEC.md
+  5): the server page's audio runs without a click, for its voices, and none of it reaches the machine's speakers.
+- **A voiceAt host page must be a secure context** (https, or loopback): WebCodecs and AudioWorklet exist only in one.
+  On the engine, an `ENGINE_ROOM_URL` on loopback or https; a board reached by a container's name is neither.
 - **What an integration does**: nothing, unless something of the room's own speaks aloud. Then, on the room's
   page: `await visit.voiceAt(id, its head, source)` while it speaks (or for as long as it is there), and stop
   playing it yourself on your user's page: they hear it through Visit (visit/INTEGRATING.md, "Voice").
