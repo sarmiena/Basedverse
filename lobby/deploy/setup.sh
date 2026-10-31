@@ -1,88 +1,193 @@
 #!/usr/bin/env bash
-# Set up and start the lobby on this server: an EC2 instance (or any Linux box with a public IPv4).
+# Set up, or update, the lobby on this server: any Linux with systemd and a public address (an EC2 instance, say),
+# x86_64 or ARM64. No Docker: the lobby is one file, and Caddy (TLS, a free Let's Encrypt certificate) is another.
 #
-#   bin/deploy-lobby user@server     from your machine: copies lobby/ there and runs this (the usual way)
-#   ./setup.sh                        on the server itself
-#   LOBBY_HOST=lobby.example.com ./setup.sh     a DNS name instead of the bare IP
-#   LOBBY_PUBLIC_IP=... LOBBY_PRIVATE_IP=...     the addresses, when this is not EC2 and they cannot be told
+#   bin/deploy-lobby user@server      from your machine: copies the lobby and this directory here, and runs this
+#   sudo LOBBY_DOMAIN=lobby.example.org ./setup.sh /path/to/lobby      on the server itself
 #
-# 1. Installs Docker (with its compose plugin) if it is missing: Ubuntu/Debian or Amazon Linux.
-# 2. Writes .env beside this script, once: this machine's public and private addresses (from the EC2
-#    instance metadata, else from checkip.amazonaws.com and `hostname -I`) and a fresh TURN secret.
-#    A later run keeps it; delete .env to start over.
-# 3. Builds and starts the lobby, Caddy and coturn, waits for the certificate, and prints the LOBBY_URL
-#    each sim puts in its .env.
+# Its settings, each kept in /etc/basedverse-lobby/env once given (a later run keeps what it is not given again):
+#   LOBBY_DOMAIN     the lobby's DNS name, pointing at this server (default basedverse.app): its certificate's, the
+#                    name every hello signs, its relay's
+#   LOBBY_TITLE, LOBBY_MOTD, LOBBY_ADMINS (operators' keys, comma-separated), LOBBY_V3 (1: Visit 2.x too): the
+#                    lobby's own (lobby --help)
+#   LOBBY_IP         this server's public IPv4, served as well (a 6-day certificate for it, renewed by Caddy), for
+#                    workrooms that still name the lobby by it (a lobby of before); none: the name alone
 #
-# Re-run any time (after a git pull, say): it rebuilds and restarts.
+# 1. Stops a lobby of before (Visit 2.x's: Python, Caddy and coturn in Docker), if there is one.
+# 2. Installs the lobby (/usr/local/bin/basedverse-lobby) and Caddy (/usr/local/bin/basedverse-caddy, a pinned
+#    release, its checksum checked), and a user they run as (basedverse-lobby).
+# 3. Writes their settings and systemd units, starts Caddy, waits for its certificate, starts the lobby (with its
+#    relay, which takes the same certificate for its address discovery), and prints the address workrooms join.
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 say() { printf '\n== %s\n' "$*"; }
 die() { printf 'setup: %s\n' "$*" >&2; exit 1; }
-SUDO=$([ "$(id -u)" = 0 ] && echo "" || echo sudo)
+[ "$(id -u)" = 0 ] || exec sudo -E "$0" "$@"
+bin="${1:-$here/../lobby}"
+[ -x "$bin" ] || die "no lobby binary at $bin (bin/deploy-lobby copies one: or give its path)"
+command -v systemctl >/dev/null 2>&1 || die "this needs systemd"
 
-# -- 1. Docker
-if ! command -v docker >/dev/null 2>&1; then
-  say "installing Docker"
-  if command -v apt-get >/dev/null 2>&1; then
-    curl -fsSL https://get.docker.com | $SUDO sh
-  elif command -v dnf >/dev/null 2>&1; then
-    $SUDO dnf install -y docker
-    $SUDO mkdir -p /usr/local/lib/docker/cli-plugins
-    $SUDO curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
-      "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-$(uname -m)"
-    $SUDO chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-  else
-    die "no apt-get or dnf here: install Docker with its compose plugin, then run this again"
-  fi
-  $SUDO systemctl enable --now docker
+CADDY_VERSION=2.11.7
+declare -A CADDY_SHA512=(
+  [amd64]=a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7
+  [arm64]=3db36ba90c7a6e8dda40ee3dd71fa08844c76b5fb08f61b31e5e78d2ed38e71c51dc7baed875e50d1ca1279196e84302967237386ae87c91ae9f2aaceada682e
+)
+case "$(uname -m)" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) die "$(uname -m): x86_64 or ARM64 only" ;; esac
+USER_NAME=basedverse-lobby STATE=/var/lib/basedverse-lobby ETC=/etc/basedverse-lobby
+
+# -- the settings: what is given now, else what was kept, else the defaults
+mkdir -p "$ETC"
+declare -A was=()
+if [ -f "$ETC/env" ]; then
+  while IFS='=' read -r k v; do [[ "$k" =~ ^LOBBY_[A-Z_0-9]+$ ]] && was[$k]="$v"; done < "$ETC/env"
 fi
-DOCKER="docker"
-docker info >/dev/null 2>&1 || DOCKER="$SUDO docker"
-$DOCKER compose version >/dev/null 2>&1 || die "docker compose is missing: install Docker's compose plugin"
+pick() { local k="$1" d="${2:-}"; local v="${!k:-}"; [ -n "$v" ] || v="${was[$k]:-}"; [ -n "$v" ] || v="$d"; printf '%s' "$v"; }
+domain="$(pick LOBBY_DOMAIN basedverse.app)"
+[[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die "LOBBY_DOMAIN $domain is not a DNS name"
+title="$(pick LOBBY_TITLE)" motd="$(pick LOBBY_MOTD)" admins="$(pick LOBBY_ADMINS)" v3="$(pick LOBBY_V3 0)" ip="$(pick LOBBY_IP)"
+for x in "$title" "$motd" "$admins" "$v3"; do case "$x" in *$'\n'*) die "a setting is one line" ;; esac; done
+[ -z "$ip" ] || [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "LOBBY_IP $ip is not an IPv4 address"
 
-# -- 2. .env
-if [ ! -f .env ]; then
-  say "writing .env"
-  tok=$(curl -fsS -m 2 -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 60" 2>/dev/null || true)
-  md() { curl -fsS -m 2 -H "X-aws-ec2-metadata-token: $tok" "http://169.254.169.254/latest/meta-data/$1" 2>/dev/null || true; }
-  public=${LOBBY_PUBLIC_IP:-$(md public-ipv4)}; private=${LOBBY_PRIVATE_IP:-$(md local-ipv4)}
-  [ -n "$public" ] || public=$(curl -fsS -m 5 https://checkip.amazonaws.com | tr -d '[:space:]' || true)
-  [ -n "$private" ] || private=$(hostname -I | awk '{print $1}')
-  [ -n "$public" ] || die "could not tell this machine's public address: set LOBBY_PUBLIC_IP and run again"
-  host=${LOBBY_HOST:-$public}
-  secret=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
-  umask 077
-  cat > .env <<EOF
-# Written by setup.sh. LOBBY_HOST is what the sims connect to (wss://LOBBY_HOST/) and what the
-# certificate is for: this machine's public IPv4, or a DNS name pointing at it.
-LOBBY_HOST=$host
-LOBBY_PUBLIC_IP=$public
-LOBBY_PRIVATE_IP=$private
-# Shared by the lobby (it mints each office's TURN credentials) and coturn (it checks them). Never sent.
-TURN_SECRET=$secret
+# -- 1. a lobby of before (Docker: the Python lobby, Caddy, coturn): stopped, its files gone
+old="$(dirname "$here")"
+if [ -f "$here/compose.yml" ] && command -v docker >/dev/null 2>&1; then
+  say "stopping the lobby of before (Docker: the Python lobby, Caddy, coturn)"
+  (cd "$here" && docker compose down) || true
+fi
+rm -rf "$here/compose.yml" "$here/.env" "$old/server"
+
+# -- 2. the programs
+say "installing the lobby and Caddy $CADDY_VERSION"
+id "$USER_NAME" >/dev/null 2>&1 || useradd --system --home-dir "$STATE" --shell /usr/sbin/nologin "$USER_NAME"
+install -d -o "$USER_NAME" -g "$USER_NAME" -m 0750 "$STATE" "$STATE/data" "$STATE/caddy"
+install -m 0755 "$bin" /usr/local/bin/basedverse-lobby.new && mv /usr/local/bin/basedverse-lobby.new /usr/local/bin/basedverse-lobby
+if ! /usr/local/bin/basedverse-caddy version 2>/dev/null | grep -q "^v$CADDY_VERSION "; then
+  tmp="$(mktemp -d)"
+  curl -fsSL -o "$tmp/caddy.tar.gz" "https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION/caddy_${CADDY_VERSION}_linux_$arch.tar.gz"
+  echo "${CADDY_SHA512[$arch]}  $tmp/caddy.tar.gz" | sha512sum -c --quiet - || die "Caddy's download is not the one pinned here"
+  tar -xzf "$tmp/caddy.tar.gz" -C "$tmp" caddy
+  install -m 0755 "$tmp/caddy" /usr/local/bin/basedverse-caddy
+  rm -rf "$tmp"
+fi
+/usr/local/bin/basedverse-lobby --version
+
+# -- 3. settings, units, start
+say "settings: $ETC/env (lobby $domain)"
+cert_dir="$STATE/caddy/certificates/acme-v02.api.letsencrypt.org-directory/$domain"
+umask 027
+cat > "$ETC/env" <<EOF
+# Written by lobby/deploy/setup.sh (run again to change: what it is given replaces what is here). lobby --help says
+# what each is.
+LOBBY_DOMAIN=$domain
+LOBBY_TITLE=$title
+LOBBY_MOTD=$motd
+LOBBY_ADMINS=$admins
+LOBBY_V3=$v3
+LOBBY_IP=$ip
+LOBBY_HOSTS=$domain${ip:+,$ip}
+LOBBY_LISTEN=127.0.0.1
+LOBBY_PORT=8765
+LOBBY_TRUST_PROXY=1
+LOBBY_DATA_DIR=$STATE/data
+LOBBY_RELAY_PORT=3340
+LOBBY_RELAY_URL=https://$domain/
+LOBBY_RELAY_CERT=$cert_dir/$domain.crt
+LOBBY_RELAY_KEY=$cert_dir/$domain.key
 EOF
-fi
-# shellcheck disable=SC1091
-. ./.env
-printf 'lobby host: %s (public %s, private %s)\n' "$LOBBY_HOST" "$LOBBY_PUBLIC_IP" "$LOBBY_PRIVATE_IP"
+chgrp "$USER_NAME" "$ETC/env"
+umask 022
+# Caddy: TLS for the lobby's name (a free Let's Encrypt certificate, renewed by Caddy, kept where the relay reads it
+# for its QUIC address discovery), and for its IP address too when LOBBY_IP says (Let's Encrypt's 6-day profile; a
+# client naming an IP sends no server name, hence default_sni).
+{
+  printf '{\n\tadmin off\n'
+  [ -z "$ip" ] || printf '\tdefault_sni %s\n' "$ip"
+  printf '}\n\n'
+  cat <<CADDY
+$domain {
+	tls {
+		issuer acme
+	}
+	# The lobby's relay: iroh's paths. Everything else is the lobby (its WebSocket, its page, /health).
+	@relay path /relay /relay/* /ping /generate_204
+	reverse_proxy @relay 127.0.0.1:3340
+	reverse_proxy 127.0.0.1:8765
+}
+CADDY
+  [ -z "$ip" ] || cat <<CADDY
 
-# -- 3. up
-say "building and starting the lobby, Caddy and coturn"
-$DOCKER compose up -d --build
-# Caddy reads its Caddyfile only at start, and a redeploy replaces the file under its single-file mount:
-# a restart takes the new one (the certificate is kept in its volume).
-$DOCKER compose restart caddy
+$ip {
+	tls {
+		issuer acme {
+			profile shortlived
+		}
+	}
+	reverse_proxy 127.0.0.1:8765
+}
+CADDY
+} > "$ETC/Caddyfile"
+chmod 0644 "$ETC/Caddyfile"
+cat > /etc/systemd/system/basedverse-caddy.service <<EOF
+[Unit]
+Description=Caddy for the basedverse lobby: TLS for $domain
+After=network-online.target
+Wants=network-online.target
 
-say "waiting for the certificate and the lobby (Caddy asks Let's Encrypt; ports 80 and 443 must be open)"
-for _ in $(seq 1 $(( ${LOBBY_WAIT_S:-180} / 4 + 1 ))); do
-  if out=$(curl -fsS -m 5 "https://$LOBBY_HOST/health" 2>/dev/null); then
+[Service]
+User=$USER_NAME
+EnvironmentFile=$ETC/env
+Environment=XDG_DATA_HOME=$STATE XDG_CONFIG_HOME=$STATE
+ExecStart=/usr/local/bin/basedverse-caddy run --config $ETC/Caddyfile --adapter caddyfile
+ExecReload=/usr/local/bin/basedverse-caddy reload --config $ETC/Caddyfile --adapter caddyfile
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=$STATE
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+cat > /etc/systemd/system/basedverse-lobby.service <<EOF
+[Unit]
+Description=The basedverse lobby ($domain)
+After=network-online.target basedverse-caddy.service
+Wants=network-online.target
+
+[Service]
+User=$USER_NAME
+EnvironmentFile=$ETC/env
+ExecStart=/usr/local/bin/basedverse-lobby
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=$STATE
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable basedverse-caddy basedverse-lobby >/dev/null 2>&1
+systemctl restart basedverse-caddy
+
+say "waiting for $domain's certificate (Let's Encrypt; $domain must point here, ports 80 and 443 open)"
+for _ in $(seq 1 $(( ${LOBBY_WAIT_S:-180} / 3 + 1 ))); do [ -s "$cert_dir/$domain.key" ] && break; sleep 3; done
+[ -s "$cert_dir/$domain.key" ] || { journalctl -u basedverse-caddy -n 30 --no-pager; die "no certificate for $domain yet: Caddy's log above"; }
+systemctl restart basedverse-lobby
+for _ in $(seq 1 20); do
+  if out=$(curl -fsS -m 5 "https://$domain/health" 2>/dev/null); then
     printf 'up: %s' "$out"
-    say "done. In each sim's .env:"
-    printf '  LOBBY_URL=wss://%s/\n' "$LOBBY_HOST"
+    say "done. The lobby's page: https://$domain/ · each workroom's .env:"
+    printf '  LOBBY_URL=wss://%s/\n' "$domain"
     exit 0
   fi
-  sleep 4
+  sleep 3
 done
-$DOCKER compose ps
-$DOCKER compose logs --tail 30 caddy
-die "https://$LOBBY_HOST/health did not answer in ${LOBBY_WAIT_S:-180} s: see Caddy's log above (are ports 80 and 443 open?)"
+journalctl -u basedverse-lobby -n 30 --no-pager
+die "https://$domain/health did not answer: the lobby's log above"

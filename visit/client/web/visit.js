@@ -13,7 +13,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "2.1.1", PROTO = "basedverse-visit-local/2";
+  const VERSION = "3.0.0", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -246,6 +246,21 @@
   const BLANK = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
   const MAX_SIDE = 4096, MAX_VERTICES = 4e6, MAX_OBJECTS = 1e5;
   const isObj = x => !!x && typeof x === "object" && !Array.isArray(x);
+  // A world group, as the lobby says it (LOBBY.md); null if it is not one.
+  function groupFrom(g) {
+    if (!isObj(g) || typeof g.name !== "string") return null;
+    const keys = x => (Array.isArray(x) ? x : []).filter(k => typeof k === "string");
+    return { name: g.name, about: String(g.about || ""), open: g.open === true, owner: String(g.owner || ""), ops: keys(g.ops),
+      members: (Array.isArray(g.members) ? g.members : []).filter(x => isObj(x) && typeof x.key === "string").map(x => ({ key: x.key, name: String(x.name || ""), since: Number(x.since) || 0 })),
+      pending: (Array.isArray(g.pending) ? g.pending : []).filter(x => isObj(x) && typeof x.key === "string").map(x => ({ key: x.key, name: String(x.name || "") })) };
+  }
+  // A room's line in the directory: { text, tags }, or null.
+  function aboutFrom(a) {
+    return isObj(a) ? { text: String(a.text || ""), tags: (Array.isArray(a.tags) ? a.tags : []).map(String) } : null;
+  }
+  function lobbyInfoFrom(x) {
+    return { title: isObj(x) && typeof x.title === "string" ? x.title : null, motd: isObj(x) && typeof x.motd === "string" ? x.motd : null, admin: isObj(x) && x.admin === true };
+  }
   const bansFrom = l => (Array.isArray(l) ? l : []).filter(b => isObj(b) && typeof b.key === "string").map(b => ({ key: b.key, name: String(b.name || ""), voice: b.voice === true, chat: b.chat === true }));
   // A line's pictures and links (8.12), as the visit-client gives them: [{ id, mime, size }], [{ url, title, description,
   // site, image }].
@@ -736,6 +751,13 @@
       this.chatLog = [];       // the last CHAT_LOG lines of chat, of every scope (8.9), as "chat" gave them, with `at` (ms);
                                //   `old`, from before this page (kept by the visit-client: a reload keeps the chat)
       this.lobbyChat = false;  // the lobby relays chat (8.9): say(text, "lobby") goes to everyone in it
+      this.signedIn = false;   // someone is signed in on this workroom: only then is it in the lobby (LOBBY.md 2, rule 3)
+      this.lobbyInfo = { title: null, motd: null, admin: false };   // the lobby's name, its message of the day, you one of its operators
+      this.groups = [];        // your world groups (LOBBY.md): [{ name, about, open, owner, ops, members: [{ key, name, since }], pending }]
+      this.groupList = [];     // the lobby's groups, as findGroups() last had them: [{ name, about, open, members, online }]
+      this.lobbyBans = [];     // an operator's: the lobby's bans, [{ key, until, reason }]
+      this.about = null;       // your room's line in the lobby's directory: { text, tags }, or null (not in it)
+      this.publicDoor = false; // your door open to anyone (not only guests): the directory says so
       this.unseen = { count: 0, conversations: [], lines: [] };   // the mailbox (8.9): lines meant for you, not read yet
       this.held = [];          // whispers you left for someone away, still with your visit-client: [{ id, key, name, text, at }]
       this._attention = false; // someone looking at this page's chat (Visit.chat says), as last told
@@ -841,6 +863,10 @@
       this.status = m.status; this.maxVisitors = m.max_visitors;
       this.key = typeof m.key === "string" ? m.key : null;
       this.lobbyChat = m.lobby_chat === true;
+      this.signedIn = m.signed_in === true;
+      this.lobbyInfo = lobbyInfoFrom(m.lobby_info);
+      this.groups = (Array.isArray(m.groups) ? m.groups : []).map(groupFrom).filter(Boolean);
+      this.about = aboutFrom(m.about); this.publicDoor = m.public === true;
       this.unseen = { count: 0, conversations: [], lines: [] }; this.held = [];   // (said again after, if any)
       if (this._attention) this._send({ type: "attention", on: true });
       this._guests(m);
@@ -885,16 +911,38 @@
       switch (m.type) {
         case "online":   // (again, after a drop): its own knocks still waiting are these
           this.state = "online"; this.office = m.office; this.lobbyChat = m.lobby_chat === true;
+          if (m.lobby_info) this.lobbyInfo = lobbyInfoFrom(m.lobby_info);
           if (Array.isArray(m.knocking)) this.knocking = m.knocking.map(k => ({ id: k.id, to: k.to, link: k.link === true }));
+          this._emit("online", this.lobbyInfo);
           break;
         case "offline":   // away: this office left the lobby on purpose, and sees nobody until it joins again
           this.state = m.away ? "away" : "offline";
-          if (m.away) { this.offices = []; this.knocks = []; this.knocking = []; }
+          if (m.away) { this.offices = []; this.knocks = []; this.knocking = []; this.groups = []; }
           break;
+        case "signed_in":   // someone signed in on this workroom, or nobody any more: out of the lobby until someone is
+          this.signedIn = m.signed_in === true;
+          if (!this.signedIn) { this.offices = []; this.knocks = []; this.knocking = []; this.groups = []; }
+          this._emit("signed_in", this.signedIn);
+          break;
+        case "group": {   // one of your world groups, whole: on joining the lobby, and as it changes
+          const g = groupFrom(m);
+          if (!g) break;
+          this.groups = this.groups.filter(x => x.name.toLowerCase() !== g.name.toLowerCase()).concat([g]).sort((a, b) => a.name.localeCompare(b.name));
+          this._emit("group", g); break;
+        }
+        case "group_left":   // out of a group: left, removed, or ended
+          this.groups = this.groups.filter(x => x.name.toLowerCase() !== String(m.group).toLowerCase());
+          this._emit("group_left", { group: String(m.group), reason: String(m.reason) }); break;
+        case "group_request": this._emit("group_request", { group: String(m.group), from: isObj(m.from) ? { key: String(m.from.key), name: String(m.from.name || "") } : null }); break;
+        case "group_answered": this._emit("group_answered", { group: String(m.group), accept: typeof m.accept === "boolean" ? m.accept : null }); break;
+        case "groups": this.groupList = (Array.isArray(m.groups) ? m.groups : []).filter(isObj).map(g => ({ name: String(g.name), about: String(g.about || ""), open: g.open === true,
+          members: Number(g.members) || 0, online: Number(g.online) || 0 })); this._emit("groups", this.groupList); break;
+        case "lobby_bans": this.lobbyBans = (Array.isArray(m.bans) ? m.bans : []).filter(isObj).map(b => ({ key: String(b.key), until: b.until == null ? null : Number(b.until), reason: String(b.reason || "") })); break;
+        case "about": this.about = aboutFrom(m.about); this.publicDoor = m.public === true; break;
         case "lobby":
           this.offices = (m.offices || []).map(o => ({ id: String(o.id), name: String(o.name), status: String(o.status), sim: o.sim || {},
             maxVisitors: Number(o.max_visitors) || 0, visitors: Number(o.visitors) || 0, visiting: o.visiting || null, ready: o.ready === true,
-            key: typeof o.key === "string" ? o.key : null, links: o.links === true, whisper: o.whisper === true }));
+            key: typeof o.key === "string" ? o.key : null, links: o.links === true, whisper: o.whisper === true, about: aboutFrom(o.about), public: o.public === true }));
           { const me = this.offices.find(o => this.office && o.id === this.office.id); if (me) { this.status = me.status; this.maxVisitors = me.maxVisitors; } }
           break;
         case "knock":
@@ -1313,6 +1361,41 @@
     // knock lets them in at once, without asking you. A guest is a key, as v.offices lists it (or, surer, as a
     // visit's peer has it: its link proved it), with the name you knew them by.
     setDoor(open) { this._send({ type: "door", open: !!open }); }
+    // Your door open to anyone, not only your guests (it opens it too): anyone's knock lets them in at once, and the
+    // lobby's directory says so ("walk in"). Off: guests only again. Watching your plot stays for guests and groups.
+    setPublic(on) { this._send({ type: "door", ...(on ? { open: true } : {}), public: !!on }); }
+    // Your room's line in the lobby's directory (LOBBY.md): a sentence, and up to 5 tags (lower-case letters, digits
+    // and -); null takes it out. Rooms with one are listed on the lobby's public page too (by name, never by key).
+    setAbout(text, tags = []) { this._send({ type: "about", about: text == null ? null : { text: String(text), tags: (tags || []).map(String) } }); }
+
+    // ---------- world groups (LOBBY.md) ----------
+    // A group's members may each put the others' rooms in their worlds, as if each were everyone's guest, for worlds
+    // only (their doors open). Whoever makes one owns it and names its ops; ops let people in (or it is open: anyone
+    // joins). v.groups, yours; "group" as one changes, "group_left" as you leave one (left, removed, deleted);
+    // "group_request" (to its ops) as someone asks; "group_answered" as yours is answered (accept null: waiting).
+    // The lobby refuses what may not be (error, its ref the message's type: group_create, group_join...).
+    createGroup(name, { about = "", open = false } = {}) { this._as("user", "createGroup"); this._send({ type: "group_create", group: String(name), about: String(about), open: !!open }); }
+    joinGroup(name) { this._as("user", "joinGroup"); this._send({ type: "group_join", group: String(name) }); }
+    leaveGroup(name) { this._as("user", "leaveGroup"); this._send({ type: "group_leave", group: String(name) }); }
+    answerGroup(name, key, accept) { this._as("user", "answerGroup"); this._send({ type: "group_answer", group: String(name), key: String(key), accept: !!accept }); }
+    removeFromGroup(name, key) { this._as("user", "removeFromGroup"); this._send({ type: "group_remove", group: String(name), key: String(key) }); }
+    setGroup(name, { about, open } = {}) { this._as("user", "setGroup"); this._send({ type: "group_set", group: String(name), ...(about != null ? { about: String(about) } : {}), ...(open != null ? { open: !!open } : {}) }); }
+    setGroupOp(name, key, op) { this._as("user", "setGroupOp"); this._send({ type: "group_op", group: String(name), key: String(key), op: !!op }); }
+    deleteGroup(name) { this._as("user", "deleteGroup"); this._send({ type: "group_delete", group: String(name) }); }
+    // The lobby's groups: v.groupList, and "groups", once it answers.
+    findGroups() { this._send({ type: "groups" }); }
+    // The groups you are in that `key` is in too (their names).
+    groupsWith(key) { return key ? this.groups.filter(g => g.members.some(m => m.key === key)).map(g => g.name) : []; }
+    // Whether you run a group (its owner, an op, or one of the lobby's operators).
+    isGroupOp(name) {
+      const g = this.groups.find(x => x.name.toLowerCase() === String(name).toLowerCase());
+      return !!g && (this.lobbyInfo.admin || g.owner === this.key || g.ops.includes(this.key));
+    }
+    // The lobby's operators (lobbyInfo.admin): a key banned lobby-wide (minutes: for a while; none, for good), or no
+    // longer; the bans (v.lobbyBans, once the lobby answers).
+    lobbyBan(key, { minutes = null, reason = "" } = {}) { this._send({ type: "admin", action: "ban", key: String(key), ...(minutes ? { minutes: Number(minutes) } : {}), text: String(reason) }); }
+    lobbyUnban(key) { this._send({ type: "admin", action: "unban", key: String(key) }); }
+    lobbyBansList() { this._send({ type: "admin", action: "bans" }); }
     addGuest(key, name = "") { this._send({ type: "guest_add", key, name }); }
     removeGuest(key) { this._send({ type: "guest_remove", key }); }
     isGuest(key) { return !!key && this.guests.some(g => g.key === key); }
@@ -1337,6 +1420,7 @@
     world(opts = {}) { this._as("user", "world"); if (this._world) this._world.release(); return new World(this, opts); }
     _guests(m) {
       this.door = m.door === "closed" ? "closed" : "open";
+      if (typeof m.public === "boolean") this.publicDoor = m.public;
       this.guests = (Array.isArray(m.guests) ? m.guests : []).map(g => ({ key: String(g.key), name: String(g.name || "") }));
       this._guestLinksToWorld();
     }
@@ -1788,7 +1872,15 @@
     say(text, to, { media = [], links = [] } = {}) {
       this._as("user", "say");
       const t = [...String(text == null ? "" : text).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim()].slice(0, CHAT_LEN).join("").trim(), now = Date.now();
-      const scope = to == null || to === "here" ? "say" : to === "lobby" ? "lobby" : isObj(to) && to.whisper != null ? "whisper" : "sim";
+      const scope = to == null || to === "here" ? "say" : to === "lobby" ? "lobby" : isObj(to) && to.whisper != null ? "whisper" : isObj(to) && to.group != null ? "group" : "sim";
+      if (scope === "group") {   // one of your world groups: everyone in it (text only, through the lobby; it comes back, in order)
+        const g = this.groups.find(x => x.name.toLowerCase() === String(to.group).toLowerCase());
+        this._said = this._said.filter(at => now - at < CHAT_WINDOW);
+        if (!g || !t || media.length || links.length || this._said.length >= CHATS || this.state !== "online" || !this._ws || this._ws.readyState !== 1) return false;
+        this._said.push(now);
+        this._send({ type: "say", text: t, to: { group: g.name } });
+        return true;
+      }
       const target = to === "room" ? { key: this.key || "", name: this.office ? this.office.name : "" }
         : scope === "sim" ? this.chatTargets.find(o => o.key === String(isObj(to) ? to.key : to))
         : scope === "whisper" ? this.whisperTargets.find(o => o.id === String(to.whisper) || (o.key && o.key === String(to.whisper))) : null;
@@ -1978,6 +2070,7 @@
     _chatFrom(m, old) {
       const line = { key: String(m.key || ""), name: String(m.name || ""), text: String(m.text || "").slice(0, 4 * CHAT_LEN), at: Number(m.at) || 0,
         media: picturesFrom(m.media), links: linksFrom(m.links), conversation: typeof m.conversation === "string" ? m.conversation : null };
+      if (m.scope === "group") return { ...line, scope: "group", group: String(m.group || ""), mine: m.mine === true, id: typeof m.id === "string" ? m.id : null };
       if (m.mine === true) {
         if (!old) return null;
         const to = isObj(m.to) ? { key: String(m.to.key || ""), name: String(m.to.name || ""), ...(m.to.id ? { id: String(m.to.id) } : {}) } : null;
@@ -2003,6 +2096,7 @@
     _lineOf(c, old) {
       return { scope: c.scope || "say", key: c.key, name: c.name, text: c.text, mine: !!c.mine, owner: !!c.owner, id: c.id || null, npc: c.npc || null, channel: c.channel, to: c.to || null,
         media: c.media || [], links: c.links || [], conversation: c.conversation || null, mention: !c.mine && this._mentions(c.text), ...(c.held ? { held: true } : {}),
+        ...(c.group ? { group: c.group } : {}),
         at: old ? c.at : Date.now(), ...(old ? { old: true } : {}) };
     }
     // Whether a line mentions your user (8.9): @ and the name they go by, or your office's, as a word of its own.
@@ -4123,6 +4217,8 @@
     let folded = false;
     try { folded = localStorage.getItem("visit:panel") === "folded"; } catch (e) { /* not kept */ }
     const opened = new Set();   // the people (key, else office id) shown opened
+    const groupsOpen = new Set();   // your groups shown opened (lower-case names)
+    let finding = false, making = false, describing = false;   // the lobby's groups shown; a new group's form; your room's line's
     const cw = withChat ? chat(v) : null;   // the chat window (8.9), bottom left (chat: false, none: your page has its own)
     // M, anywhere but a box of the page's own: on your mount, or off (8.11).
     const mountChosen = () => v._mountOf(v.mount) ? v.mount : v.mounts[0].id;
@@ -4168,13 +4264,19 @@
         return paint(rows);
       }
       if (v.state === "away") rows.push(`<div class="row"><span class="grow muted">out of the lobby: nobody sees you or can link</span><button class="go" data-v="back">Go online</button></div>`);
+      else if (!v.signedIn) rows.push(`<div class="row"><span class="grow muted">out of the lobby: nobody is signed in on this workroom (its sign-in: auth/INTEGRATING.md)</span></div>`);
+      else if (v.state === "online" && (v.lobbyInfo.title || v.lobbyInfo.motd)) rows.push(`<div class="row"><span class="grow muted">${esc(v.lobbyInfo.title || "the lobby")}${v.lobbyInfo.motd ? `: ${esc(v.lobbyInfo.motd)}` : ""}</span></div>`);
       for (const n of notes) if (n.until > Date.now()) rows.push(`<div class="row note">${esc(n.text)}</div>`);
       if (v.state === "online") {
         rows.push(`<div class="row"><span class="grow">you are</span><select data-v="status">${["available", "busy"].map(s => `<option${s === v.status ? " selected" : ""}>${s}</option>`).join("")}</select>
           <select data-v="max" title="how many visitors at once">${[0, 1, 2, 3, 4, 5, 6, 7, 8].map(n => `<option value="${n}"${n === v.maxVisitors ? " selected" : ""}>${n} visitors</option>`).join("")}</select></div>`);
-        rows.push(`<div class="row"><span class="grow">your door</span><select data-v="door" title="open: your guests (★) link and walk in without asking">
-          <option value="open"${v.door === "open" ? " selected" : ""}>open to guests</option><option value="closed"${v.door === "closed" ? " selected" : ""}>closed: everyone asks</option></select>
+        const doorIs = v.door === "closed" ? "closed" : v.publicDoor ? "public" : "open";
+        rows.push(`<div class="row"><span class="grow">your door</span><select data-v="door" title="open: your guests (★) link and walk in without asking; to anyone: everyone does (the lobby's list says Walk in)">
+          <option value="open"${doorIs === "open" ? " selected" : ""}>open to guests</option><option value="public"${doorIs === "public" ? " selected" : ""}>open to anyone</option><option value="closed"${doorIs === "closed" ? " selected" : ""}>closed: everyone asks</option></select>
           <span class="muted">${v.guests.length} ★</span></div>`);
+        // Your room's line in the lobby's list of rooms (and on its public page): what it is, a few tags.
+        if (describing) rows.push(`<form class="row" data-f="about"><input name="text" maxlength="200" placeholder="your room, in a line" value="${esc(v.about ? v.about.text : "")}"><input name="tags" maxlength="110" placeholder="tags, comma-separated" value="${esc(v.about ? v.about.tags.join(", ") : "")}" style="max-width:9em"><button class="go">Save</button>${v.about ? `<button type="button" data-v="unlist" title="out of the lobby's list of rooms">Unlist</button>` : ""}</form>`);
+        else rows.push(`<div class="row"><span class="grow">${v.about ? `listed: <span class="muted">${esc(v.about.text || "(no line)")}${v.about.tags.length ? " · " + v.about.tags.map(t => "#" + esc(t)).join(" ") : ""}</span>` : `<span class="muted">your room is not in the lobby's list of rooms</span>`}</span><button data-v="describe" title="your room's line in the lobby's list (and on its public page)">${v.about ? "Edit" : "List it"}</button></div>`);
         rows.push(`<div class="row"><span class="grow">visitors look like</span><select data-v="looks" title="in your room: the look each one brings (their model), or your own (our model); one can be set apart (click them below)">
           <option value="theirs"${v.avatars.default === "theirs" ? " selected" : ""}>their model</option><option value="mine"${v.avatars.default === "mine" ? " selected" : ""}>our model</option></select></div>`);
       }
@@ -4205,6 +4307,32 @@
         `<option value="${esc(m.id)}"${m.id === v.mount ? " selected" : ""}>${esc(m.name)}${m.fly ? " (flies)" : ""}</option>`).join("")}</select><button data-v="ride" class="${v.riding ? "go" : ""}" title="M: on your mount, or off">${v.riding ? "Get off" : "Ride"}</button></div>`);
       const roundYours = v._world ? v._world.plots.filter(p => !p.home) : [];   // (a user page's own room is a plot too)
       if (v._world && v.state === "online") rows.push(`<div class="row"><span class="grow">your world: ${roundYours.length} ${roundYours.length === 1 ? "room" : "rooms"} round yours${(n => n ? ` (${n} offline)` : "")(roundYours.filter(p => p.offline).length)}</span><button data-v="map" title="where your friends' rooms sit round yours, from above">Map</button></div>`);
+      // Your world groups (LOBBY.md): each a row (how many of it are online); opened, its members, its requests (for its
+      // ops), Leave; the lobby's groups to join (Find), a new one (New).
+      if (v.state === "online") {
+        const here = new Set(v.offices.map(o => o.key).filter(Boolean));
+        rows.push(`<div class="row"><span class="grow">groups <span class="muted">· ${v.groups.length ? `you are in ${v.groups.length}` : "members may put each other's rooms in their worlds"}</span></span><button data-v="find" class="${finding ? "go" : ""}" title="the lobby's groups">Find</button><button data-v="new" class="${making ? "go" : ""}" title="a group of your own">New</button></div>`);
+        if (making) rows.push(`<form class="row" data-f="group"><input name="name" maxlength="24" placeholder="its name"><input name="about" maxlength="200" placeholder="what it is" style="max-width:9em"><label title="anyone may join, unasked"><input type="checkbox" name="open">open</label><button class="go">Make</button></form>`);
+        for (const g of v.groups) {
+          const k = g.name.toLowerCase(), op = v.isGroupOp(g.name), online = g.members.filter(m => here.has(m.key) || m.key === v.key).length, open = groupsOpen.has(k);
+          rows.push(`<div class="row"><button class="who grow" data-v="group" data-g="${esc(k)}"><b>⚑ ${esc(g.name)}</b> <span class="muted">· ${online}/${g.members.length} online${g.pending.length && op ? ` · ${g.pending.length} asking` : ""}</span></button><button class="caret" data-v="group" data-g="${esc(k)}">${open ? "▾" : "▸"}</button></div>`);
+          if (!open) continue;
+          const who = m => `${here.has(m.key) || m.key === v.key ? "●" : "○"} ${esc(m.key === v.key ? "you" : (v.userOf(m.key) || m.name))}${m.key === g.owner ? " ♛" : g.ops.includes(m.key) ? " ⚔" : ""}`;
+          const subs = [];
+          if (g.about) subs.push(`<div class="muted">${esc(g.about)}</div>`);
+          subs.push(`<div>${g.members.map(m => op && m.key !== v.key && m.key !== g.owner
+            ? `<span class="seg">${who(m)} <button data-v="g_out" data-g="${esc(g.name)}" data-key="${esc(m.key)}" title="out of ${esc(g.name)}">✕</button>${g.owner === v.key || v.lobbyInfo.admin ? `<button data-v="g_op" data-g="${esc(g.name)}" data-key="${esc(m.key)}" data-op="${g.ops.includes(m.key) ? "" : "1"}" title="${g.ops.includes(m.key) ? "no longer an op" : "an op: lets people in, takes them out"}">${g.ops.includes(m.key) ? "−⚔" : "+⚔"}</button>` : ""}</span>`
+            : who(m)).join(" · ")}</div>`);
+          if (op) for (const r of g.pending) subs.push(`<div>${esc(r.name)} asks to join <button class="go" data-v="g_yes" data-g="${esc(g.name)}" data-key="${esc(r.key)}">Let in</button><button data-v="g_no" data-g="${esc(g.name)}" data-key="${esc(r.key)}">No</button></div>`);
+          subs.push(`<div class="btns">${op ? `<button data-v="g_open" data-g="${esc(g.name)}" data-open="${g.open ? "" : "1"}" title="${g.open ? "open: anyone joins (click: by asking)" : "by asking: its ops let people in (click: open)"}">${g.open ? "open" : "by asking"}</button>` : ""}<button data-v="g_leave" data-g="${esc(g.name)}">Leave</button>${g.owner === v.key || v.lobbyInfo.admin ? `<button data-v="g_end" data-g="${esc(g.name)}" title="ends it for everyone in it">End it</button>` : ""}</div>`);
+          rows.push(`<div class="row sub">${subs.join("")}</div>`);
+        }
+        if (finding) {
+          const mine = new Set(v.groups.map(g => g.name.toLowerCase())), list = v.groupList.filter(g => !mine.has(g.name.toLowerCase()));
+          for (const g of list) rows.push(`<div class="row"><span class="grow">⚑ ${esc(g.name)} <span class="muted">${g.about ? `· ${esc(g.about)} ` : ""}· ${g.online}/${g.members} online</span></span><button class="${g.open ? "go" : ""}" data-v="g_join" data-g="${esc(g.name)}" title="${g.open ? "open: you are in at once" : "its ops are asked"}">${g.open ? "Join" : "Ask"}</button></div>`);
+          if (!list.length) rows.push(`<div class="row muted">no other groups in this lobby yet</div>`);
+        }
+      }
       // People: one row each, whoever is in the lobby and whoever you are linked with, either way, linked first. A
       // linked one says where you two stand (in your room, in theirs, linked); click it for the rest: where each sees
       // the other, Go there or Put in my world, how they look in your room, Kick, Unlink. One not linked: Link.
@@ -4270,11 +4398,12 @@
           continue;
         }
         if (!o) continue;
-        const word = o.links ? "Link" : "Knock", asking = v.knocking.some(k => k.to === o.id);
+        const word = o.public ? "Walk in" : o.links ? "Link" : "Knock", asking = v.knocking.some(k => k.to === o.id);
         const why = !o.ready ? "not ready" : o.status !== "available" ? o.status : !o.links && o.visitors >= o.maxVisitors ? "full" : asking ? "asking…" : "";
         const ou = o.key && v.userOf(o.key);
-        rows.push(`<div class="row">${dot}${star(o.key, o.name)}<span class="grow" title="${esc(o.name)}">${ou ? `<b>${esc(ou)}</b> <span class="muted">(${esc(o.name)})</span>` : esc(o.name)} <span class="muted">${esc(o.sim.name || "")} ${o.visitors}/${o.maxVisitors}</span></span>
-          <button data-v="knock" data-o="${esc(o.id)}" ${why ? `disabled title="${esc(why)}"` : `title="${o.links ? "see their room in a corner, once they say yes: then go there, or put it in your world" : "an older Visit: you walk into their room once they say yes"}"`}>${asking ? `${word}ing…` : word}</button></div>`);
+        const kin = v.groupsWith(o.key);
+        rows.push(`<div class="row">${dot}${star(o.key, o.name)}<span class="grow" title="${esc(o.name)}${kin.length ? ` · in ${esc(kin.join(", "))} with you` : ""}">${ou ? `<b>${esc(ou)}</b> <span class="muted">(${esc(o.name)})</span>` : esc(o.name)}${kin.length ? " ⚑" : ""} <span class="muted">${esc(o.sim.name || "")} ${o.visitors}/${o.maxVisitors}</span>${o.about && o.about.text ? `<br><span class="muted">${esc(o.about.text)}${o.about.tags.length ? " · " + o.about.tags.map(t => "#" + esc(t)).join(" ") : ""}</span>` : ""}</span>
+          <button data-v="${o.public ? "walk" : "knock"}" data-o="${esc(o.id)}" ${why ? `disabled title="${esc(why)}"` : `title="${o.public ? "their door is open to anyone: in at once" : o.links ? "see their room in a corner, once they say yes: then go there, or put it in your world" : "an older Visit: you walk into their room once they say yes"}"`}>${asking ? (o.public ? "Walking in…" : `${word}ing…`) : word}</button></div>`);
         if (composing === o.id) rows.push(`<form class="row" data-o="${esc(o.id)}"><input maxlength="280" placeholder="a message for ${esc(o.name)}"><button class="go">${word}</button></form>`);
       }
       if (v.state === "online" && v.offices.length < 2) rows.push(`<div class="row muted">nobody else is here yet</div>`);
@@ -4286,8 +4415,8 @@
       if (html === drawn) return;   // nothing new: an open menu stays open, a click lands
       drawn = html;
       root.innerHTML = html;
-      const input = root.querySelector("form[data-o] input");   // a knock's message, being written
-      if (input) input.focus();
+      const input = root.querySelector("form[data-o] input, form[data-f] input");   // a knock's message, a group's name, your room's line
+      if (input && !root.contains(document.activeElement)) input.focus();
     }
     root.addEventListener("click", e => {
       const b = e.target.closest("button[data-v]");
@@ -4295,6 +4424,19 @@
       const act = b.dataset.v;
       if (act === "fold") { folded = !folded; try { localStorage.setItem("visit:panel", folded ? "folded" : "open"); } catch (x) { /* not kept */ } draw(); }
       else if (act === "knock") { composing = composing === b.dataset.o ? null : b.dataset.o; draw(); }
+      else if (act === "walk") v.knock(b.dataset.o);   // a public door: let in at once
+      else if (act === "describe") { describing = !describing; draw(); }
+      else if (act === "unlist") { v.setAbout(null); describing = false; draw(); }
+      else if (act === "find") { finding = !finding; if (finding) v.findGroups(); draw(); }
+      else if (act === "new") { making = !making; draw(); }
+      else if (act === "group") { if (!groupsOpen.delete(b.dataset.g)) groupsOpen.add(b.dataset.g); draw(); }
+      else if (act === "g_join") { v.joinGroup(b.dataset.g); setTimeout(() => v.findGroups(), 500); }
+      else if (act === "g_leave") v.leaveGroup(b.dataset.g);
+      else if (act === "g_end") { if (confirm(`End ${b.dataset.g} for everyone in it?`)) v.deleteGroup(b.dataset.g); }
+      else if (act === "g_yes" || act === "g_no") v.answerGroup(b.dataset.g, b.dataset.key, act === "g_yes");
+      else if (act === "g_out") v.removeFromGroup(b.dataset.g, b.dataset.key);
+      else if (act === "g_op") v.setGroupOp(b.dataset.g, b.dataset.key, !!b.dataset.op);
+      else if (act === "g_open") v.setGroup(b.dataset.g, { open: !!b.dataset.open });
       else if (act === "more") { if (!opened.delete(b.dataset.p)) opened.add(b.dataset.p); draw(); }
       else if (act === "cut") {   // every link between you two, ended both ways; no longer a guest (their world would come back)
         const k = b.dataset.p, is = who => !!who && (who.key === k || who.id === k), ends = new Set();
@@ -4339,13 +4481,23 @@
       if (e.target.dataset.v === "always") { if (e.target.checked) always.add(e.target.dataset.k); else always.delete(e.target.dataset.k); }
       if (e.target.dataset.v === "status") v.setStatus(e.target.value);
       if (e.target.dataset.v === "max") v.setMaxVisitors(Number(e.target.value));
-      if (e.target.dataset.v === "door") v.setDoor(e.target.value === "open");
+      if (e.target.dataset.v === "door") { if (e.target.value === "public") v.setPublic(true); else { if (v.publicDoor) v.setPublic(false); v.setDoor(e.target.value === "open"); } }
       if (e.target.dataset.v === "looks") v.useAvatars(e.target.value);
       if (e.target.dataset.v === "mount") { if (v.riding) v.ride(e.target.value); else { v.mount = e.target.value; try { localStorage.setItem("visit:mount", v.mount); } catch (x) { /* not kept */ } } }
     });
     root.addEventListener("submit", e => {
       e.preventDefault();
       const f = e.target.closest("form");
+      if (f.dataset.f === "group") {   // a group of your own
+        const name = f.elements.name.value.trim();
+        if (name) v.createGroup(name, { about: f.elements.about.value.trim(), open: f.elements.open.checked });
+        making = false; document.activeElement.blur(); return draw();
+      }
+      if (f.dataset.f === "about") {   // your room's line in the lobby's list
+        const tags = f.elements.tags.value.split(/[,\s]+/).map(t => t.trim().toLowerCase().replace(/^#/, "")).filter(Boolean);
+        v.setAbout(f.elements.text.value.trim(), tags);
+        describing = false; document.activeElement.blur(); return draw();
+      }
       const o = v.offices.find(x => x.id === f.dataset.o);
       (o && o.links ? v.link : v.knock).call(v, f.dataset.o, f.querySelector("input").value.trim());
       composing = null;
@@ -4427,6 +4579,7 @@
 .visit-chat .line.whisper, .visit-chat[data-scope=whisper] form { color: #ff80ff; }
 .visit-chat .line.sim, .visit-chat[data-scope=sim] form { color: #aaaaff; }
 .visit-chat .line.lobby, .visit-chat[data-scope=lobby] form { color: #ffc864; }
+.visit-chat .line.group, .visit-chat[data-scope=group] form { color: #40ff40; }
 .visit-chat .line.note { color: #ffff00; }
 .visit-chat .line[data-time]::before { content: attr(data-time); margin-right: .45em; font-size: 78%; opacity: .6; font-variant-numeric: tabular-nums; }
 .visit-chat .day { display: flex; align-items: center; gap: 8px; margin: 6px 0 3px; font-size: 72%; opacity: .7; }
@@ -4479,7 +4632,7 @@
     try {
       const ctx = chatAudio || (chatAudio = new (window.AudioContext || window.webkitAudioContext)());
       if (ctx.state === "suspended") ctx.resume();
-      const notes = scope === "whisper" ? [660, 880] : scope === "lobby" ? [392] : [523];
+      const notes = scope === "whisper" ? [660, 880] : scope === "lobby" ? [392] : scope === "group" ? [440, 587] : [523];
       notes.forEach((f, i) => {
         const o = ctx.createOscillator(), g = ctx.createGain(), at = ctx.currentTime + i * 0.09;
         o.type = "sine"; o.frequency.value = f;
@@ -4511,18 +4664,20 @@
     let to = { scope: "say" }, choices = [], typing = false, last = null, told = null, tell = null, fadeTimer = null, intro = null;
     try {   // where lines went before a reload (this tab)
       const t = JSON.parse(sessionStorage.getItem("visit:chat-to") || "null");
-      if (isObj(t) && ["say", "whisper", "sim", "lobby"].includes(t.scope)) to = { scope: t.scope, ...["key", "id", "name"].reduce((o, k) => (typeof t[k] === "string" ? { ...o, [k]: t[k] } : o), {}) };
+      if (isObj(t) && ["say", "whisper", "sim", "lobby", "group"].includes(t.scope)) to = { scope: t.scope, ...["key", "id", "name"].reduce((o, k) => (typeof t[k] === "string" ? { ...o, [k]: t[k] } : o), {}) };
     } catch (e) { /* not kept */ }
     const yours = () => ({ scope: "sim", key: v.key || "", name: v.office ? v.office.name : "" });   // your room's chat
     const room = t => t.key === v.key ? "your room" : `${t.name || "a"}'s room`;
     const whom = t => v.whisperTargets.find(o => (t.key && o.key === t.key) || o.id === t.id);   // a whisper's person, now
-    const label = t => t.scope === "lobby" ? "Lobby" : t.scope === "whisper" ? `Tell ${t.name}${whom(t) ? "" : " (away)"}` : t.scope === "sim" ? `To ${room(t)}` : "Say";
+    const label = t => t.scope === "lobby" ? "Lobby" : t.scope === "group" ? `Group ${t.name}` : t.scope === "whisper" ? `Tell ${t.name}${whom(t) ? "" : " (away)"}` : t.scope === "sim" ? `To ${room(t)}` : "Say";
+    const groupTo = g => ({ scope: "group", key: g.name.toLowerCase(), name: g.name });   // one of your world groups' chat
     const same = (a, b) => a.scope === b.scope && (a.key || a.id || null) === (b.key || b.id || null);
     // A line's text, in parts: a name ({ name, key }), in its own colour, among the rest.
     const parts = l => {
       const who = { name: `[${l.name || "someone"}]`, key: l.key || l.name };
       if (l.scope === "note") return [l.text];
       if (l.scope === "lobby") return ["[Lobby] ", who, `: ${l.text}`];
+      if (l.scope === "group") return [`[${l.group}] `, who, `: ${l.text}`];
       if (l.scope === "whisper") { const t = l.to || {}; return l.mine ? ["To ", { name: `[${t.name || ""}]`, key: t.key || t.name }, `: ${l.text}`] : [who, ` whispers: ${l.text}`]; }
       if (l.scope === "sim") { const r = room(l.to || {}); return [`[${r[0].toUpperCase() + r.slice(1)}] `, who, `: ${l.text}`]; }
       return [who, ` says: ${l.text}`];
@@ -4652,7 +4807,8 @@
     const fill = () => {   // the choices before the box: Say, a whisper to each, your room (anyone linked), each linked room, the lobby
       const linked = v.chatTargets;
       choices = [{ scope: "say" }, ...v.whisperTargets.map(o => ({ scope: "whisper", id: o.id, key: o.key, name: o.name })),
-        ...(linked.length ? [yours()] : []), ...linked.map(o => ({ scope: "sim", key: o.key, name: o.name })), ...(v.lobbyChat ? [{ scope: "lobby" }] : [])];
+        ...(linked.length ? [yours()] : []), ...linked.map(o => ({ scope: "sim", key: o.key, name: o.name })), ...(v.lobbyChat ? [{ scope: "lobby" }] : []),
+        ...(v.state === "online" ? v.groups.map(groupTo) : [])];
       if (!choices.some(c => same(c, to))) choices.splice(1, 0, to);   // (gone, or no lobby chat: said so if used)
       pick.innerHTML = choices.map((c, i) => `<option value="${i}">${esc(label(c))}:</option>`).join("");
       pick.value = String(choices.findIndex(c => same(c, to)));
@@ -4663,11 +4819,12 @@
     };
     // Tab: the box on to the next place a line can go now (back: the one before), in the choices' order, with one Tell:
     // whoever you last whispered with (the box's, else either way), else none. From a place gone: on from its kind's.
-    const KINDS = ["say", "whisper", "sim", "lobby"];
+    const KINDS = ["say", "whisper", "sim", "lobby", "group"];
     const step = back => {
       const p = [to.scope === "whisper" && to, tell, last, told].map(t => t && whom(t)).find(Boolean), linked = v.chatTargets;
       const stops = [{ scope: "say" }, ...(p && v.lobbyChat ? [{ scope: "whisper", id: p.id, key: p.key, name: p.name }] : []),
-        ...(linked.length ? [yours()] : []), ...linked.map(o => ({ scope: "sim", key: o.key, name: o.name })), ...(v.lobbyChat ? [{ scope: "lobby" }] : [])];
+        ...(linked.length ? [yours()] : []), ...linked.map(o => ({ scope: "sim", key: o.key, name: o.name })), ...(v.lobbyChat ? [{ scope: "lobby" }] : []),
+        ...(v.state === "online" ? v.groups.map(groupTo) : [])];
       const n = stops.length, i = stops.findIndex(c => same(c, to)), k = KINDS.indexOf(to.scope);
       let j = i >= 0 ? (i + (back ? n - 1 : 1)) % n : -1;
       if (i < 0) for (let x = 0; x < n; x++) if (back ? KINDS.indexOf(stops[x].scope) < k : KINDS.indexOf(stops[x].scope) > k) { j = x; if (!back) break; }
@@ -4733,7 +4890,7 @@
       drawPicker();
     };
     names.addEventListener("mousedown", e => { const b = e.target.closest("button[data-i]"); if (b) { e.preventDefault(); take(Number(b.dataset.i)); input.focus(); } });
-    const help = "/s say (everyone who can see you) · /w name (a whisper) · /r reply · /room (your room's chat) · /room name (a linked room's) · /1 the lobby · /voice (🎧) · @ a name: mention them";
+    const help = "/s say (everyone who can see you) · /w name (a whisper) · /r reply · /room (your room's chat) · /room name (a linked room's) · /1 the lobby · /g group (a group's chat; /2, /3… yours in order) · /voice (🎧) · @ a name: mention them";
     // Pictures for the next line (pasted, or dropped on the window: each kept by the visit-client at once, `media`
     // once kept), and a link's preview (made as the link is typed; ✕: none for it).
     let pending = [], linkCard = null, linkTimer = null;
@@ -4796,7 +4953,7 @@
     };
     // What was shared (🖼): the pictures, or the links, in the conversation the box talks to, newest first.
     let sharedKind = "media";
-    const conversation = () => to.scope === "sim" ? "room:" + to.key : to.scope === "whisper" ? "person:" + (to.key || "id:" + to.id) : to.scope === "lobby" ? "lobby" : v._conversationHere();
+    const conversation = () => to.scope === "sim" ? "room:" + to.key : to.scope === "whisper" ? "person:" + (to.key || "id:" + to.id) : to.scope === "lobby" ? "lobby" : to.scope === "group" ? "group:" + to.key : v._conversationHere();
     const sharedDraw = async more => {
       const c = conversation(), title = c === "lobby" ? "the lobby" : c.startsWith("person:") ? `you and ${to.name || "them"}`
         : c === "room:" + v.key ? "your room" : `${v._nameOf(c.slice(5)) || "their"}'s room`;
@@ -4857,6 +5014,13 @@
       if (cmd === "s" || cmd === "say") next = { scope: "say" };
       else if (cmd === "1" || cmd === "l" || cmd === "lobby") next = v.lobbyChat ? { scope: "lobby" } : (done && note("No lobby chat: this lobby does not carry it, or you are not in it"), null);
       else if (cmd === "r" || cmd === "reply") next = last || told || (done && note("Nobody has whispered to you yet"), null);
+      else if (/^[2-9]$/.test(cmd)) { const g = v.groups[Number(cmd) - 2]; next = g ? groupTo(g) : (done && note(`/${cmd}: your ${["second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth"][Number(cmd) - 2]} group's chat, and you are in ${v.groups.length}`), null); }
+      else if (cmd === "g" || cmd === "group") {
+        const g = named(v.groups, rest, done) || (done && !rest.trim() && v.groups.length === 1 ? v.groups[0] : null);
+        if (g) { next = groupTo(g); rest = rest.slice(g.name.length + 1); }
+        else if (!done) return false;
+        else note(v.groups.length ? `/${cmd} and one of your groups: ${v.groups.map(x => x.name).join(", ")}` : "You are in no group: the panel finds them");
+      }
       else if (["w", "t", "whisper", "tell", "room", "sim"].includes(cmd)) {
         const rooms = cmd === "room" || cmd === "sim", o = named(rooms ? v.chatTargets : v.whisperTargets, rest, done) || (!rooms && named(v.awayTargets, rest, done));
         if (o) { next = rooms ? { scope: "sim", key: o.key, name: o.name } : { scope: "whisper", id: o.id, key: o.key, name: o.name }; rest = rest.slice(o.name.length + 1); }
@@ -4885,6 +5049,13 @@
     pick.addEventListener("change", () => { to = choices[Number(pick.value)] || { scope: "say" }; fill(); input.focus(); });
     // A line said where the box talks to: false (and why, said) if it could not be.
     const send = (t, media, links) => {
+      if (to.scope === "group") {
+        if (media.length || links.length) { note("Pictures, voice messages and links go to rooms, and to those you are linked with: not through the lobby"); return false; }
+        if (!v.groups.some(g => g.name.toLowerCase() === to.key)) { note(`You are no longer in ${to.name}`); to = { scope: "say" }; fill(); return false; }
+        if (v.say(t, { group: to.name })) return true;
+        note(v.state !== "online" ? "Not in the lobby now" : `Too fast: at most ${CHATS} lines every ${CHAT_WINDOW / 1000} s`);
+        return false;
+      }
       const p = to.scope === "whisper" && whom(to), away = to.scope === "whisper" && !p && /^[0-9a-f]{64}$/.test(to.key || "");   // (away: kept for them)
       if (v.say(t, to.scope === "say" ? undefined : to.scope === "lobby" ? "lobby" : to.scope === "whisper" ? (away ? { whisper: to.key, name: to.name } : { whisper: p ? p.id : "" })
         : to.key === v.key ? "room" : { key: to.key }, { media, links })) {
@@ -4920,7 +5091,8 @@
     let mailLines = [], mailMore = 0;
     const when = at => dayOf(at) === dayOf(Date.now()) ? hhmm(at) : new Date(at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
     const replyTo = l => l.scope === "whisper" ? { scope: "whisper", id: l.id, key: l.key, name: l.name }
-      : l.scope === "sim" ? (l.to && l.to.key && l.to.key !== v.key ? { scope: "sim", key: l.to.key, name: l.to.name } : yours()) : l.scope === "lobby" ? { scope: "lobby" } : { scope: "say" };
+      : l.scope === "sim" ? (l.to && l.to.key && l.to.key !== v.key ? { scope: "sim", key: l.to.key, name: l.to.name } : yours()) : l.scope === "lobby" ? { scope: "lobby" }
+      : l.scope === "group" && l.group ? { scope: "group", key: l.group.toLowerCase(), name: l.group } : { scope: "say" };
     const mailDraw = () => {
       mailbox.innerHTML = `<div class="tabs"><b>📬 For you</b><button type="button" data-m="close" title="close">✕</button></div>`;
       if (!mailLines.length && !v.held.length) mailbox.insertAdjacentHTML("beforeend", `<div class="when">Nothing new</div>`);
@@ -5031,7 +5203,13 @@
       if (!l.mine && l.id) tell = last = { scope: "whisper", id: l.id, key: l.key || null, name: l.name };
       else if (l.mine && l.to && l.to.id) tell = told = { scope: "whisper", id: l.to.id, key: l.to.key || null, name: l.to.name };
     };
-    const onError = e => { if (e && ["say", "whisper", "chat", "voice_join"].includes(e.ref)) note(String(e.message || e.code)); };
+    const onError = e => { if (e && (["say", "whisper", "chat", "voice_join", "groups", "admin", "about"].includes(e.ref) || String(e.ref || "").startsWith("group_"))) note(String(e.message || e.code)); };
+    // The lobby (LOBBY.md): its greeting as you join it; the sign-in it takes; your groups, as they change.
+    const onOnline = info => note(`In ${info.title || "the lobby"}${info.motd ? `: ${info.motd}` : ""}${v.groups.length ? ` · your groups: ${v.groups.map(g => g.name).join(", ")} (/g)` : ""}`);
+    const onSigned = on => note(on ? "Signed in on this workroom: joining the lobby" : "Nobody is signed in on this workroom: out of the lobby until someone is");
+    const onRequest = r => note(`${r.from ? r.from.name : "Someone"} asks to join ${r.group}: let them in from the panel`);
+    const onAnswered = a => note(a.accept === null ? `Asked to join ${a.group}: its ops will answer` : a.accept ? `You are in ${a.group} now: its members' rooms may be in your world, and yours in theirs` : `Not let into ${a.group}`);
+    const onLeft = l => { if (l.reason !== "left") note(l.reason === "removed" ? `Taken out of ${l.group}` : `${l.group} has ended`); };
     const onVoice = rv => {   // into a room voice (said once), or out of one (and why)
       const o = rv && rv.out;
       if (o) note(o.why === "kicked" ? `${o.name} took you out of their room's voice` : o.why === "banned" ? `${o.name}'s room keeps you out of its voice` : `Out of ${o.name}'s room's voice: you are no longer linked`);
@@ -5043,17 +5221,19 @@
     addEventListener("keydown", key);
     v.on("chat", onChat); v.on("error", onError); v.on("room_voice", onVoice); v.on("banned", onBanned); v.on("change", voiceLine); v.on("voice", voiceLine);
     v.on("unseen", mailSay); v.on("held", mailSay); v.on("held_sent", onHeldSent);
+    v.on("online", onOnline); v.on("signed_in", onSigned); v.on("group_request", onRequest); v.on("group_answered", onAnswered); v.on("group_left", onLeft);
     mailSay(); look();
     voiceIn = v.roomVoice && !v.roomVoice.joining ? v.roomVoice.key : null;
     voiceLine();
     for (const l of v.chatLog) { add(l); heard(l); }
-    intro = note("Enter to chat · Tab where it goes · @ mention · paste a picture · 🎙 voice message · 🖼 shared · 🎧 voice · /s say · /w whisper · /r reply · /room yours, /room name · /1 lobby");
+    intro = note("Enter to chat · Tab where it goes · @ mention · paste a picture · 🎙 voice message · 🖼 shared · 🎧 voice · /s say · /w whisper · /r reply · /room yours, /room name · /1 lobby · /g group");
     return {
       element: root, open, close,
       release() {
         removeEventListener("keydown", key);
         v.off("chat", onChat); v.off("error", onError); v.off("room_voice", onVoice); v.off("banned", onBanned); v.off("change", voiceLine); v.off("voice", voiceLine);
         v.off("unseen", mailSay); v.off("held", mailSay); v.off("held_sent", onHeldSent);
+        v.off("online", onOnline); v.off("signed_in", onSigned); v.off("group_request", onRequest); v.off("group_answered", onAnswered); v.off("group_left", onLeft);
         recStop(false); clearInterval(lookTimer); v.attention(false);
         removeEventListener("focus", look); removeEventListener("blur", look); document.removeEventListener("visibilitychange", look);
         for (const t of STIRS) removeEventListener(t, stir, { capture: true });

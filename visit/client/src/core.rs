@@ -8,6 +8,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use lobby_proto::{About, ToLobby};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
@@ -48,6 +49,9 @@ pub enum Ev {
     PageClosed { id: u64 },
     Lobby(Value),
     LobbyDown,
+    /// Someone signed in on this workroom (a live session of its sign-in), or nobody any more: in the lobby only while
+    /// someone is (../../LOBBY.md 2, rule 3).
+    SignedIn(bool),
     /// The lobby refused this office for good (bad name, protocol): exit with this code.
     Fatal(i32),
     LinkAddr { endpoint: String, addr: Value },
@@ -238,6 +242,8 @@ const MAX_WATCHING: usize = 8;
 /// With no page for this long, its world's watches end (they are only for a page to draw); a new page that has
 /// not asked for the world this long after connecting, the same.
 const WORLD_NO_PAGE: Duration = Duration::from_secs(60);
+/// After a welcome, how long the lobby has to say this office's groups again before those it does not say are gone.
+const GROUPS_SETTLE: Duration = Duration::from_secs(3);
 const WORLD_ASK: Duration = Duration::from_secs(10);
 
 pub struct Core {
@@ -258,8 +264,21 @@ pub struct Core {
     frame_refused_at: Option<Instant>,
     idle_exit: u64,
     online: bool,
+    /// Someone is signed in on this workroom: the lobby is joined only then.
+    signed_in: bool,
     /// The lobby relays chat (8.9: its welcome said so): this office's page may say a line to everyone there.
     lobby_chat: bool,
+    /// What the lobby's welcome said of itself: its title, its message of the day, whether this office is one of its
+    /// operators.
+    lobby_info: Value,
+    /// This office's world groups (../../LOBBY.md), as the lobby last told each (`group`), by name in lower case: their
+    /// members may watch this office's plot through its open door, as guests may, and it theirs.
+    groups: BTreeMap<String, Value>,
+    /// After a welcome, the groups it had, until the lobby has had time to say them all again (`groups_settle`): until
+    /// then they count too, so nobody's watch is ended for a group not yet said again; then any not said again are
+    /// gone (left, or ended, while this office was away).
+    groups_before: BTreeMap<String, Value>,
+    groups_settle: Option<Instant>,
     /// What outlasts a run, kept in `state_file`: whether the page took this office out of the lobby
     /// (leave_lobby, until join_lobby), its key, its door and its guests.
     saved: Saved,
@@ -363,7 +382,12 @@ impl Core {
             frame_refused_at: None,
             idle_exit,
             online: false,
+            signed_in: false,
             lobby_chat: false,
+            lobby_info: Value::Null,
+            groups: BTreeMap::new(),
+            groups_before: BTreeMap::new(),
+            groups_settle: None,
             saved,
             state_file,
             key,
@@ -426,6 +450,16 @@ impl Core {
                 }
                 Ev::Tick => {
                     self.resyncs();
+                    if self.groups_settle.is_some_and(|t| Instant::now() >= t) {
+                        // The lobby has said this office's groups again: those it did not are gone (left, or ended,
+                        // while it was away), and so are the watches they alone allowed.
+                        self.groups_settle = None;
+                        for (_, g) in std::mem::take(&mut self.groups_before) {
+                            let name = g.get("name").cloned().unwrap_or(Value::Null);
+                            self.to_page(json!({ "type": "group_left", "group": name, "reason": "left" }));
+                        }
+                        self.watchers_still_allowed();
+                    }
                     self.media_expire();
                     self.admitted.retain(|_, (_, at)| at.elapsed() < ADMITTED_FOR);
                     if self.world && self.user_page.is_none() && self.page_gone.elapsed() >= WORLD_NO_PAGE {
@@ -515,6 +549,7 @@ impl Core {
                     self.to_page(json!({ "type": "offline" }));
                 }
             }
+            Ev::SignedIn(s) => self.set_signed_in(s),
             Ev::LinkAddr { endpoint, addr } => {
                 self.link = Some((endpoint, addr));
                 self.publish_link();
@@ -527,7 +562,7 @@ impl Core {
             Ev::LinkFrame { visit, frame } => self.link_frame(&visit, frame),
             Ev::LinkFailed { visit } => {
                 warn!(%visit, "the link could not be made or came back");
-                self.to_lobby(json!({ "type": "end", "visit": visit, "reason": "link_failed" }));
+                self.to_lobby(end(&visit, Some("link_failed")));
             }
             Ev::LinkStats { visit, relay, rtt_ms } => {
                 if let Some(v) = self.visits.get(&visit) {
@@ -711,6 +746,8 @@ impl Core {
         let visits: Vec<Value> = self.visits.values().filter(|v| v.up && visit_for(v).map_or(true, |r| r == role || role == PageRole::Both)).map(started).collect();
         let mut m = json!({
             "type": "ready", "version": VERSION, "office": self.office, "online": self.online, "lobby_chat": self.lobby_chat, "away": self.saved.away, "status": self.status,
+            "signed_in": self.signed_in, "lobby_info": self.lobby_info, "groups": self.groups.values().cloned().collect::<Vec<_>>(),
+            "about": self.saved.about, "public": self.saved.public,
             "max_visitors": self.max_visitors, "visits": visits, "key": self.key, "door": self.door(), "guests": self.guests(),
             "layout": self.saved.layout_json(), "avatars": self.saved.avatars_json(), "voice_range": VOICE_RANGE, "kept": self.lands.kept_json(),
             "seen": self.seen_in.iter().map(|(k, (name, at))| json!({ "key": k, "name": name, "at": at })).collect::<Vec<_>>(),
@@ -789,30 +826,60 @@ impl Core {
             "status" => match m.get("status").and_then(Value::as_str) {
                 Some(s @ ("available" | "busy")) => {
                     self.status = s.to_string();
-                    self.to_lobby(json!({ "type": "status", "status": s }));
+                    self.to_lobby(ToLobby::Status { status: Some(s.to_string()) });
                 }
                 _ => self.page_error("bad_message", "status must be available or busy", Some("status")),
             },
             "max_visitors" => match m.get("n").and_then(Value::as_u64).filter(|n| *n <= 8) {
                 Some(n) => {
                     self.max_visitors = n as u8;
-                    self.to_lobby(json!({ "type": "max_visitors", "n": n }));
+                    self.to_lobby(ToLobby::MaxVisitors { n: Some(n as u8) });
                 }
                 None => self.page_error("bad_message", "n must be 0 to 8", Some("max_visitors")),
             },
             "leave_lobby" => self.set_away(true),
             // The door, and who walks in through it without knocking (kept in the state file).
-            "door" => match m.get("open").and_then(Value::as_bool) {
-                Some(open) => {
-                    self.saved.door_open = open;
+            // The door: open (guests walk in), and public too (anyone does: the lobby's directory says so), or shut.
+            "door" => match (m.get("open").and_then(Value::as_bool), m.get("public").and_then(Value::as_bool)) {
+                (None, None) => self.page_error("bad_message", "open (and public) must be true or false", Some("door")),
+                (open, public) => {
+                    if let Some(open) = open {
+                        self.saved.door_open = open;
+                    }
+                    if let Some(p) = public {
+                        if p != self.saved.public {
+                            self.saved.public = p;   // to the lobby now, or with the next hello
+                            let _ = self.lobby.send(LobbyOut::Msg(ToLobby::Door { public: Some(p) }));
+                        }
+                    }
                     self.save_state();
                     self.tell_guests();
-                    if !open {
+                    if open == Some(false) {
                         self.end_watchers(|_| true);   // the door shut: no guest watches this plot any more
                     }
                 }
-                None => self.page_error("bad_message", "open must be true or false", Some("door")),
             },
+            // The room's line in the lobby's directory: kept, and told to the lobby (null: out of the directory).
+            "about" => {
+                let about = match m.get("about") {
+                    None | Some(Value::Null) => None,
+                    Some(a) => match about_of(a) {
+                        Some(a) => Some(a),
+                        None => return self.page_error("bad_message", "about is { text (at most 200 characters), tags (at most 5: lower-case letters, digits and -) }, or null", Some("about")),
+                    },
+                };
+                self.saved.about = about.clone();
+                self.save_state();
+                let _ = self.lobby.send(LobbyOut::Msg(ToLobby::About { about: about.clone() }));   // now, or with the next hello
+                self.to_page(json!({ "type": "about", "about": about, "public": self.saved.public }));
+            }
+            // World groups and the lobby's operators (../../LOBBY.md): the lobby decides, and says.
+            "group_create" | "group_join" | "group_leave" | "group_answer" | "group_remove" | "group_set" | "group_op" | "group_delete" | "groups" | "admin" => {
+                match serde_json::from_value::<ToLobby>(m) {
+                    Ok(x) => self.to_lobby(x),
+                    Err(_) => self.page_error("bad_message", &format!("{t} is not as it should be (../SPEC.md 5.2)"), Some(&t)),
+                }
+            }
             "guest_add" => match m.get("key").and_then(Value::as_str).filter(|k| state::key_ok(k)) {
                 Some(k) if k == self.key => self.page_error("bad_message", "that is this office's own key", Some("guest_add")),
                 Some(k) => {
@@ -861,7 +928,10 @@ impl Core {
                 } else if let Some(o) = m.as_object_mut() {
                     o.remove("watch");   // a page knocks to visit; watching is this visit-client's own (world)
                 }
-                self.to_lobby(m);
+                match serde_json::from_value::<ToLobby>(m) {
+                    Ok(x) => self.to_lobby(x),
+                    Err(_) => self.page_error("bad_message", &format!("{t} is not as it should be (../SPEC.md 5.2)"), Some(&t)),
+                }
             }
             // The world (../WORLD.md): this office watches its guests' plots for its page to draw, steps into one
             // (`enter`, where in its own terms) and out again.
@@ -880,7 +950,7 @@ impl Core {
                     if watch {
                         self.step_out(&other);
                     } else {
-                        self.to_lobby(json!({ "type": "end", "visit": other }));
+                        self.to_lobby(end(&other, None));
                     }
                 }
                 // Where it steps in, in the room's terms; none (a link's "go there"): where the room puts newcomers.
@@ -1027,6 +1097,12 @@ impl Core {
                 let to = m.get("to").filter(|t| !t.is_null() && t.as_str() != Some("here"));
                 let lobby = to.and_then(Value::as_str) == Some("lobby");
                 let room = to.and_then(Value::as_str) == Some("room");
+                // { group }: one of this office's world groups, everyone in it (../../LOBBY.md).
+                let group = to.and_then(|t| t.get("group")).and_then(Value::as_str).and_then(|g| self.groups.get(&g.to_ascii_lowercase()))
+                    .and_then(|g| g.get("name")).and_then(Value::as_str).map(str::to_string);
+                if to.and_then(|t| t.get("group")).is_some() && group.is_none() {
+                    return self.page_error("not_found", "this office is in no group of that name", Some("say"));
+                }
                 let key = to.and_then(|t| t.get("key")).and_then(Value::as_str).filter(|k| state::key_ok(k)).map(str::to_string);
                 // { whisper }: an office's id, or its key (0.22.0): by it, one in the lobby that takes whispers, else
                 // someone away, for whom this office keeps it (text only) until they and it are both in the lobby.
@@ -1036,14 +1112,14 @@ impl Core {
                 if key.as_ref().is_some_and(|k| self.banned_by.get(k).is_some_and(|b| b.2)) {
                     return self.page_error("banned", "that room keeps you out of its chat", Some("say"));
                 }
-                if to.is_some() && !lobby && !room && key.is_none() && whisper.is_none() && away.is_none() {
-                    return self.page_error("bad_message", "to is \"here\", \"room\", \"lobby\", { key } of an office linked with this one, or { whisper } an office's id or key", Some("say"));
+                if to.is_some() && !lobby && !room && key.is_none() && whisper.is_none() && away.is_none() && group.is_none() {
+                    return self.page_error("bad_message", "to is \"here\", \"room\", \"lobby\", { key } of an office linked with this one, { whisper } an office's id or key, or { group } one of this office's groups", Some("say"));
                 }
                 if let Some(k) = away {
                     let name = to.and_then(|t| t.get("name")).and_then(Value::as_str).map(state::clip_name).map(|n| n.trim().to_string()).unwrap_or_default();
                     return self.hold(k, name, text, shares);
                 }
-                if lobby && shares {
+                if (lobby || group.is_some()) && shares {
                     return self.page_error("not_supported", "the lobby carries text only: pictures and links go to rooms, and to those you are linked with", Some("say"));
                 }
                 // A whisper with pictures or links goes over a link with them, not through the lobby (8.12).
@@ -1051,7 +1127,7 @@ impl Core {
                 if let Some(None) = direct {
                     return self.page_error("no_link", "pictures and links go only to someone you are linked with", Some("say"));
                 }
-                if (lobby || (whisper.is_some() && direct.is_none())) && !(self.online && self.lobby_chat) {
+                if (lobby || group.is_some() || (whisper.is_some() && direct.is_none())) && !(self.online && self.lobby_chat) {
                     return self.page_error("not_supported", "this lobby takes no chat (or this office is not in it)", Some("say"));
                 }
                 if let Some(k) = &key {
@@ -1082,7 +1158,7 @@ impl Core {
                             attach(&mut w, line["media"].as_array().cloned().unwrap_or_default(), line["links"].as_array().cloned().unwrap_or_default());
                             self.to_peer(&k, json!({ "whisper": w }));
                         }
-                        None => self.to_lobby(json!({ "type": "whisper", "to": id, "text": text })),
+                        None => self.to_lobby(ToLobby::Whisper { to: Some(id), text: Some(text) }),
                     }
                 } else if let Some(k) = key {
                     let name = self.visits.values().find(|v| v.peer.get("key").and_then(Value::as_str) == Some(k.as_str())).and_then(|v| v.peer.get("name").cloned());
@@ -1093,7 +1169,9 @@ impl Core {
                     attach(&mut ctl, line["media"].as_array().cloned().unwrap_or_default(), line["links"].as_array().cloned().unwrap_or_default());
                     self.to_peer(&k, ctl);
                 } else if lobby {
-                    return self.to_lobby(json!({ "type": "chat", "text": text }));
+                    return self.to_lobby(ToLobby::Chat { text: Some(text) });
+                } else if let Some(g) = group {
+                    return self.to_lobby(ToLobby::GroupSay { group: Some(g), text: Some(text) });   // kept as it comes back
                 } else if room {
                     mine["scope"] = json!("sim");
                     mine["to"] = json!({ "key": self.key, "name": self.office.get("name") });
@@ -1360,7 +1438,7 @@ impl Core {
             "rename" => match m.get("name").and_then(Value::as_str) {
                 Some(n) if crate::name_ok(n) => {
                     let n = n.to_string();
-                    self.to_lobby(json!({ "type": "rename", "name": n }));
+                    self.to_lobby(ToLobby::Rename { name: Some(n) });
                 }
                 _ => self.page_error("name_invalid", "a name is 1-24 letters, digits, spaces, _ . -, starting and ending with a letter or digit", Some("rename")),
             },
@@ -1370,7 +1448,7 @@ impl Core {
                     self.page_error("bad_message", "the owner's visit is not ended: it goes with the person's page", Some("end"));
                 } else if self.visits.contains_key(visit) {
                     let v = visit.to_string();
-                    self.to_lobby(json!({ "type": "end", "visit": v }));
+                    self.to_lobby(end(&v, None));
                 } else {
                     self.page_error("no_such_visit", "you are not in a visit with that id", Some("end"));
                 }
@@ -1596,7 +1674,7 @@ impl Core {
         }
         counted(&mut self.says);
         let h = self.held.remove(i);
-        self.to_lobby(json!({ "type": "whisper", "to": id, "text": h.text }));
+        self.to_lobby(ToLobby::Whisper { to: Some(id), text: Some(h.text.clone()) });
         let _ = self.db.send(DbCmd::Unhold(h.id.clone()));
         self.held_next = Instant::now() + HELD_EVERY;
         self.to_page(json!({ "type": "held_sent", "id": h.id, "key": h.key, "name": h.name, "text": h.text, "at": h.at }));
@@ -1616,6 +1694,7 @@ impl Core {
             .map(|v| (v.role, v.peer.get("key").and_then(Value::as_str).unwrap_or("").to_string()));
         match m.get("scope").and_then(Value::as_str) {
             Some("lobby") => "lobby".into(),
+            Some("group") => format!("group:{}", m.get("group").and_then(Value::as_str).unwrap_or("").to_ascii_lowercase()),
             Some("whisper") => format!("person:{}", m.get("key").and_then(Value::as_str).filter(|k| !k.is_empty()).map_or_else(|| format!("id:{}", m["id"].as_str().unwrap_or("")), str::to_string)),
             Some("sim") if m.get("home") != Some(&json!(true)) => format!("room:{}", peer.map_or_else(|| self.key.clone(), |(_, k)| k)),
             Some("sim") => format!("room:{}", self.key),
@@ -1749,12 +1828,14 @@ impl Core {
 
     // ---------- the lobby ----------
 
-    fn to_lobby(&mut self, m: Value) {
+    fn to_lobby(&mut self, m: ToLobby) {
         if self.online {
             let _ = self.lobby.send(LobbyOut::Msg(m));
         } else {
-            let re = m.get("type").and_then(Value::as_str).map(str::to_string);
-            if self.saved.away {
+            let re = m.to_json().get("type").and_then(Value::as_str).map(str::to_string);
+            if !self.signed_in {
+                self.page_error("signed_out", "nobody is signed in on this workroom: it joins the lobby once someone is", re.as_deref());
+            } else if self.saved.away {
                 self.page_error("away", "this office is out of the lobby: join_lobby to come back", re.as_deref());
             } else {
                 self.page_error("offline", "the lobby is not reachable right now", re.as_deref());
@@ -1782,6 +1863,43 @@ impl Core {
             let _ = self.lobby.send(LobbyOut::Join);
         }
         self.to_page(json!({ "type": "offline", "away": away }));
+    }
+
+    /// Someone signed in on this workroom, or nobody any more (../../LOBBY.md 2, rule 3). Signed out, the office leaves
+    /// the lobby as if its page had taken it out (its visits end, its knocks go), until someone signs in again.
+    fn set_signed_in(&mut self, s: bool) {
+        if s == self.signed_in {
+            return;
+        }
+        self.signed_in = s;
+        let _ = self.lobby.send(LobbyOut::SignedIn(s));
+        if s {
+            info!("someone signed in on this workroom: in the lobby");
+        } else {
+            info!("nobody signed in on this workroom any more: out of the lobby");
+            self.end_all("gone");
+            self.knocks.clear();
+            self.lobby_view = None;
+            self.groups.clear();
+            self.groups_before.clear();
+            self.groups_settle = None;
+            if self.online {
+                self.online = false;
+                self.to_page(json!({ "type": "offline" }));
+            }
+        }
+        self.to_page(json!({ "type": "signed_in", "signed_in": s }));
+    }
+
+    /// The keys of everyone in this office's world groups but itself: they may watch its plot through its open door.
+    fn co_members(&self) -> HashSet<String> {
+        self.groups.values().chain(self.groups_before.values()).flat_map(|g| g.get("members").and_then(Value::as_array).cloned().unwrap_or_default())
+            .filter_map(|m| m.get("key").and_then(Value::as_str).map(str::to_string)).filter(|k| *k != self.key).collect()
+    }
+
+    /// Whether `key` may watch this office's plot (its door open aside): a guest, or someone in one of its groups.
+    fn may_watch(&self, key: &str) -> bool {
+        self.saved.guests.iter().any(|g| g.key == key) || self.co_members().contains(key)
     }
 
     fn save_state(&self) {
@@ -2245,13 +2363,13 @@ impl Core {
 
     fn tell_guests(&mut self) {
         let (door, guests) = (self.door(), self.guests());
-        self.to_page(json!({ "type": "guests", "door": door, "guests": guests }));
+        self.to_page(json!({ "type": "guests", "door": door, "guests": guests, "public": self.saved.public }));
     }
 
     /// Its link to the lobby, so others can visit: only while its page hosts its scene.
     fn publish_link(&mut self) {
         if let (true, true, Some((endpoint, addr))) = (self.online, self.hosting.is_some(), self.link.clone()) {
-            let _ = self.lobby.send(LobbyOut::Msg(json!({ "type": "link", "endpoint": endpoint, "addr": addr })));
+            let _ = self.lobby.send(LobbyOut::Msg(ToLobby::Link { endpoint: Some(endpoint), addr: Some(addr) }));
         }
     }
 
@@ -2268,14 +2386,14 @@ impl Core {
             }
             (true, false) if self.online => {
                 info!("no page hosting: withdrawn from visits until one does");
-                let _ = self.lobby.send(LobbyOut::Msg(json!({ "type": "link", "endpoint": null, "addr": null })));
+                let _ = self.lobby.send(LobbyOut::Msg(ToLobby::Link { endpoint: None, addr: None }));
             }
             _ => {}
         }
     }
 
     async fn lobby_msg(&mut self, m: Value) {
-        if self.saved.away {
+        if self.saved.away || !self.signed_in {
             return;   // the last words of a session it has left
         }
         let t = m.get("type").and_then(Value::as_str).unwrap_or("").to_string();
@@ -2300,6 +2418,11 @@ impl Core {
                 self.office = json!({ "id": m.get("id"), "name": m.get("name") });
                 self.online = true;
                 self.lobby_chat = m.get("chat") == Some(&json!(true));
+                self.lobby_info = json!({ "title": m.get("title"), "motd": m.get("motd"), "admin": m.get("admin") == Some(&json!(true)) });
+                // Each comes again, whole, after the welcome: the ones it had count meanwhile.
+                let had = std::mem::take(&mut self.groups);
+                self.groups_before.extend(had);
+                self.groups_settle = Some(Instant::now() + GROUPS_SETTLE);
                 if self.links.is_none() {
                     let relays = self.relays.take().unwrap_or_else(|| {
                         let urls: Vec<String> = m.get("relays").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
@@ -2313,7 +2436,37 @@ impl Core {
                 info!(office = %self.office, resumed, "in the lobby");
                 self.publish_link();
                 let (office, knocking) = (self.office.clone(), m.get("knocking").cloned().unwrap_or(json!([])));
-                self.to_page(json!({ "type": "online", "office": office, "knocking": knocking, "lobby_chat": self.lobby_chat }));
+                self.to_page(json!({ "type": "online", "office": office, "knocking": knocking, "lobby_chat": self.lobby_chat, "lobby_info": self.lobby_info }));
+            }
+            // A world group of this office's, whole (../../LOBBY.md): its members may watch each other's plots.
+            "group" => {
+                let Some(name) = m.get("name").and_then(Value::as_str).map(str::to_ascii_lowercase) else { return };
+                self.groups_before.remove(&name);
+                self.groups.insert(name, m.clone());
+                self.to_page(m);
+                if self.groups_settle.is_none() {
+                    self.watchers_still_allowed();
+                }
+                self.watch_guests();
+            }
+            "group_left" => {
+                if let Some(name) = m.get("group").and_then(Value::as_str) {
+                    self.groups.remove(&name.to_ascii_lowercase());
+                    self.groups_before.remove(&name.to_ascii_lowercase());
+                }
+                self.to_page(m);
+                self.watchers_still_allowed();
+            }
+            "group_chat" => {
+                let from = m.get("from").cloned().unwrap_or(Value::Null);
+                let s = |x: &Value, n: usize| x.as_str().map(|s| s.chars().filter(|c| !c.is_control()).take(n).collect::<String>());
+                if let (Some(text), Some(id), Some(group)) = (m.get("text").and_then(Value::as_str).and_then(said), s(&from["id"], 40), s(&m["group"], 24)) {
+                    let key = s(&from["key"], 100).filter(|k| state::key_ok(k));
+                    let user = key.as_deref().and_then(|k| self.visits.values().find(|v| v.peer.get("key").and_then(Value::as_str) == Some(k) && v.peer_user.is_some())).map(person);
+                    let name = user.unwrap_or_else(|| json!(s(&from["name"], 24).unwrap_or_default()));
+                    let mine = key.as_deref() == Some(self.key.as_str());
+                    self.to_page(json!({ "type": "chat", "scope": "group", "group": group, "id": id, "key": key, "name": name, "text": text, "mine": mine }));
+                }
             }
             "lobby" => {
                 self.lobby_view = Some(m.clone());
@@ -2355,7 +2508,7 @@ impl Core {
                 if !self.let_guest_in(&m) {
                     if let Some(kid) = m.get("id").and_then(Value::as_str) {
                         let kid = kid.to_string();
-                        self.to_lobby(json!({ "type": "answer", "knock": kid, "accept": false }));
+                        self.to_lobby(ToLobby::Answer { knock: Some(kid), accept: Some(false), message: None });
                     }
                 }
             }
@@ -2401,6 +2554,8 @@ impl Core {
     /// A knock from a guest, with the door open and the room hosted: answered yes here, at once, without the
     /// page (which hears the visit start). The knocker's key is the lobby's word until the visit is agreed: then
     /// the visitor's link must be that key (visit_agreed), and the link makes it prove it.
+    /// Through the open door: a guest, always; to watch, someone in one of this office's world groups too; to visit (or
+    /// link), anyone, when the door is public as well.
     fn let_guest_in(&mut self, m: &Value) -> bool {
         let from = m.get("from");
         let (Some(kid), Some(fid), Some(fkey)) = (
@@ -2410,13 +2565,15 @@ impl Core {
         ) else {
             return false;
         };
-        if !self.saved.door_open || self.hosting.is_none() || !self.saved.guests.iter().any(|g| g.key == fkey) {
+        let watch = m.get("watch") == Some(&json!(true));
+        let welcome = if watch { self.may_watch(fkey) } else { self.saved.public || self.saved.guests.iter().any(|g| g.key == fkey) };
+        if !self.saved.door_open || self.hosting.is_none() || !welcome {
             return false;
         }
         info!(knock = kid, from = fid, "a guest at the open door: let in");
         self.admitted.insert(fid.to_string(), (fkey.to_string(), Instant::now()));
         let kid = kid.to_string();
-        self.to_lobby(json!({ "type": "answer", "knock": kid, "accept": true }));
+        self.to_lobby(ToLobby::Answer { knock: Some(kid), accept: Some(true), message: None });
         true
     }
 
@@ -2434,7 +2591,7 @@ impl Core {
             return;   // told again after a resume: it is already under way
         }
         let Some(links) = self.links.clone() else {
-            return self.to_lobby(json!({ "type": "end", "visit": id, "reason": "link_failed" }));
+            return self.to_lobby(end(id, Some("link_failed")));
         };
         let role = if role == "host" { Role::Host } else { Role::Visitor };
         let peer_link = m.get("peer_link").cloned().unwrap_or(Value::Null);
@@ -2464,7 +2621,7 @@ impl Core {
             if let Some((key, _)) = self.admitted.remove(pid) {
                 if endpoint.as_deref() != Some(key.as_str()) {
                     warn!(visit = id, "a guest let in whose link is another key: ended");
-                    return self.to_lobby(json!({ "type": "end", "visit": id, "reason": "kicked" }));
+                    return self.to_lobby(end(id, Some("kicked")));
                 }
                 guest = true;
             }
@@ -2487,7 +2644,7 @@ impl Core {
             }
             Err(e) => {
                 warn!(visit = id, "cannot make its link: {e:#}");
-                self.to_lobby(json!({ "type": "end", "visit": id, "reason": "link_failed" }));
+                self.to_lobby(end(&id, Some("link_failed")));
             }
         }
     }
@@ -2609,7 +2766,7 @@ impl Core {
         } else {
             let watches: Vec<String> = self.visits.values().filter(|v| v.role == Role::Visitor && v.watch && !v.link).map(|v| v.id.clone()).collect();
             for id in watches {
-                self.to_lobby(json!({ "type": "end", "visit": id }));
+                self.to_lobby(end(&id, None));
             }
         }
     }
@@ -2627,7 +2784,13 @@ impl Core {
         let watched: Vec<String> = self.visits.values().filter(|v| v.role == Role::Visitor && v.watch)
             .filter_map(|v| v.peer.get("id").and_then(Value::as_str).map(str::to_string)).collect();
         let mut room = MAX_WATCHING.saturating_sub(watched.len() + self.watch_pending.len());
-        let offices: Vec<Value> = self.lobby_view.as_ref().and_then(|l| l.get("offices")).and_then(Value::as_array).cloned().unwrap_or_default();
+        let mut offices: Vec<Value> = self.lobby_view.as_ref().and_then(|l| l.get("offices")).and_then(Value::as_array).cloned().unwrap_or_default();
+        // Those placed in this world first, then guests, then the rest of its groups (MAX_WATCHING at most).
+        let rank = |o: &Value| {
+            let k = o.get("key").and_then(Value::as_str).unwrap_or("");
+            if self.saved.layout.iter().any(|p| p.key == k) { 0 } else if self.saved.guests.iter().any(|g| g.key == k) { 1 } else { 2 }
+        };
+        offices.sort_by_key(rank);
         for o in offices {
             if room == 0 {
                 break;
@@ -2636,16 +2799,22 @@ impl Core {
             // Only an office whose visit-client takes knocks to watch (an older one would show them to its page).
             if id == me || o.get("ready").and_then(Value::as_bool) != Some(true) || o.get("world").and_then(Value::as_bool) != Some(true)
                 || watched.iter().any(|w| w == id)
-                || self.watch_pending.contains_key(id) || self.watch_declined.contains_key(key) || !self.saved.guests.iter().any(|g| g.key == key)
+                || self.watch_pending.contains_key(id) || self.watch_declined.contains_key(key) || !self.may_watch(key)
             {
                 continue;
             }
             debug!(to = id, "a knock to watch a guest's plot");
             self.watch_pending.insert(id.to_string(), now);
             self.watch_order.push_back(id.to_string());
-            let _ = self.lobby.send(LobbyOut::Msg(json!({ "type": "knock", "to": id, "watch": true })));
+            let _ = self.lobby.send(LobbyOut::Msg(ToLobby::Knock { to: Some(id.to_string()), message: None, watch: true, link: false }));
             room -= 1;
         }
+    }
+
+    /// The watches of this office's plot by someone no longer a guest nor in any of its groups: ended.
+    fn watchers_still_allowed(&mut self) {
+        let allowed: HashSet<String> = self.co_members().into_iter().chain(self.saved.guests.iter().map(|g| g.key.clone())).collect();
+        self.end_watchers(|k| !allowed.contains(k));
     }
 
     /// The watches of this office's plot whose watcher's key passes `which`: ended (`kicked`). Not links: their
@@ -2655,7 +2824,7 @@ impl Core {
             .filter(|v| v.role == Role::Host && v.watch && !v.link && which(v.peer.get("key").and_then(Value::as_str).unwrap_or("")))
             .map(|v| v.id.clone()).collect();
         for id in ends {
-            self.to_lobby(json!({ "type": "end", "visit": id, "reason": "kicked" }));
+            self.to_lobby(end(&id, Some("kicked")));
         }
     }
 
@@ -3133,7 +3302,8 @@ fn role_may(role: PageRole, t: &str) -> bool {
     const HOST: &[&str] = &["host", "pose", "avatar_want", "possession_want", "phone", "body", "say_as"];
     const USER: &[&str] = &["input", "point", "keyframe", "scene_resync", "avatar_clear", "possessions", "user", "say", "attention", "read",
         "unhold", "media_get", "preview", "history", "shared", "voice_join", "call", "speaker", "world", "enter", "exit", "place", "unplace",
-        "seen", "plot_keep", "plot_load", "plot_forget", "link_where", "knock", "answer", "leave_lobby", "join_lobby", "status", "rename"];
+        "seen", "plot_keep", "plot_load", "plot_forget", "link_where", "knock", "answer", "leave_lobby", "join_lobby", "status", "rename",
+        "group_create", "group_join", "group_leave", "group_answer", "group_remove", "group_set", "group_op", "group_delete", "groups", "admin"];
     match role {
         PageRole::Both => true,
         PageRole::Host => !USER.contains(&t),
@@ -3257,7 +3427,28 @@ fn mentions(text: &str, names: &[Option<&str>]) -> bool {
 
 /// A conversation's name (8.12): a room's (room:<its owner's key>), a person's (person:<their key>), or the lobby's.
 fn conversation_ok(c: &str) -> bool {
-    c.len() <= 120 && (c.starts_with("room:") || c.starts_with("person:") || c == "lobby")
+    c.len() <= 120 && (c.starts_with("room:") || c.starts_with("person:") || c.starts_with("group:") || c == "lobby")
+}
+
+/// Ending a visit: `reason` none, the lobby's own (left for a visitor, kicked for a host).
+fn end(visit: &str, reason: Option<&str>) -> ToLobby {
+    ToLobby::End { visit: Some(visit.to_string()), reason: reason.map(str::to_string) }
+}
+
+/// A room's line for the directory, as its page gives it: text cut to 200 characters, plain; at most 5 tags, each
+/// lower-case letters, digits and -, each once. None if it is not that.
+fn about_of(v: &Value) -> Option<About> {
+    let a: About = serde_json::from_value(v.clone()).ok()?;
+    let mut tags: Vec<String> = Vec::new();
+    for t in a.tags {
+        if !lobby_proto::tag_ok(&t) {
+            return None;
+        }
+        if !tags.contains(&t) {
+            tags.push(t);
+        }
+    }
+    (tags.len() <= 5).then(|| About { text: lobby_proto::plain(&a.text, 200), tags })
 }
 
 fn counted(w: &mut (Instant, u32)) -> bool {

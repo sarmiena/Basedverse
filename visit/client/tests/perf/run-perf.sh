@@ -46,7 +46,8 @@ want=" $* "
 
 echo "building visit-client (release) and the perf image"
 "$here/../../cargo" build --release >/dev/null 2>&1 || "$here/../../cargo" build --release
-docker run --rm -v visit-target:/target:ro -v "$out":/o alpine sh -c 'cp /target/release/visit /o/visit-client && chmod 755 /o/visit-client'
+"$here/../../../../lobby/cargo" build --release -p lobby >/dev/null 2>&1 || "$here/../../../../lobby/cargo" build --release -p lobby
+docker run --rm -v visit-target:/target:ro -v "$out":/o alpine sh -c 'cp /target/release/visit /o/visit-client && cp /target/release/lobby /o/lobby && chmod 755 /o/visit-client /o/lobby'
 docker build -q -t visit-perf "$here" >/dev/null
 [ -z "${BROWSERS:-}" ] || docker build -q -t visit-perf-browser -f "$here/Dockerfile.browser" "$here" >/dev/null
 docker network create "$net" >/dev/null 2>&1 || true
@@ -76,8 +77,7 @@ echo "$SCENARIOS" | while IFS='|' read -r name visitors hostnet visnet room; do
   dir="$out/$name"; rm -rf "$dir"; mkdir -p "$dir"
   printf '%-14s %s visitor(s), host out: %-28s visitor out: %s\n' "$name" "$visitors" "${hostnet:-as is}" "${visnet:-as is}"
   printf '%s\n%s\n%s\n%s\n' "$visitors" "$hostnet" "$visnet" "$room" > "$dir/scenario"
-  docker run -d --name vp-lobby --network "$net" -v "$repo/lobby/server":/lobby:ro -e STUN_URLS= visit-perf \
-    sh -c 'cd /lobby && python3 -u lobby.py' >/dev/null
+  docker run -d --name vp-lobby --network "$net" -v "$out/lobby":/bin/lobby:ro --entrypoint /bin/lobby visit-perf --hosts vp-lobby:8765 >/dev/null
   for _ in $(seq 50); do docker exec vp-lobby python3 -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8765/health")' 2>/dev/null && break; sleep 0.2; done
   node host "$dir" host Host --lobby ws://vp-lobby:8765 --net "$hostnet"
   for i in $(seq "$visitors"); do node "v$i" "$dir" visitor "V$i" --lobby ws://vp-lobby:8765 --host Host --seconds "$secs" --net "$visnet"; done

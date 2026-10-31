@@ -53,6 +53,10 @@ pub struct Saved {
     /// Whom this office's room keeps out (../SPEC.md 8.9): kept in its database (Visit 0.20); a state file of the
     /// release before kept them here, and they move there once.
     pub bans: Vec<Ban>,
+    /// The room's line in the lobby's directory (../../LOBBY.md), and its door open to anyone (a knock from anyone
+    /// let in, as a guest's is): both told to the lobby.
+    pub about: Option<lobby_proto::About>,
+    pub public: bool,
 }
 
 impl Saved {
@@ -95,6 +99,8 @@ impl Saved {
             avatars_set,
             avatars_by,
             bans,
+            about: v.get("about").filter(|a| a.is_object()).and_then(|a| serde_json::from_value(a.clone()).ok()),
+            public: v.get("public") == Some(&json!(true)),
         };
         (saved, fresh)
     }
@@ -103,7 +109,7 @@ impl Saved {
         json!({
             "away": self.away, "key": hex(&self.key.to_bytes()), "door": if self.door_open { "open" } else { "closed" },
             "guests": self.guests.iter().map(|g| json!({ "key": g.key, "name": g.name })).collect::<Vec<_>>(),
-            "layout": self.layout_json(), "avatars": self.avatars_json(),
+            "layout": self.layout_json(), "avatars": self.avatars_json(), "about": self.about, "public": self.public,
         })
     }
 

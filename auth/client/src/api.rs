@@ -71,6 +71,9 @@ struct App {
     /// A hash of nothing anyone knows: an unknown name is checked against it, so it takes as long as a known one.
     dummy: String,
     hashing: Semaphore,
+    /// Whether anyone is signed in (a live session: not ended, not idle too long): what `visit` joins a lobby by
+    /// (../../LOBBY.md 2, rule 3). API keys do not count.
+    signed_in: tokio::sync::watch::Sender<bool>,
 }
 
 /// The database, reached again when its connection ends.
@@ -127,6 +130,14 @@ impl App {
             .is_some_and(|t| bool::from(t.as_bytes().ct_eq(self.cfg.token.as_bytes())))
     }
 
+    /// Whether a session is live now, told to whoever watches `signed_in` when that changes.
+    fn tell_signed_in(&self) {
+        let now = SystemTime::now();
+        let live = self.sessions.lock().unwrap().values()
+            .any(|l| now < l.expires && now.duration_since(l.seen).unwrap_or_default() < self.cfg.idle);
+        self.signed_in.send_if_modified(|v| std::mem::replace(v, live) != live);
+    }
+
     /// The live sessions and keys, read again (a session's use as this run has it, if newer).
     async fn reload(&self) -> Result<()> {
         let db = self.db.get().await?;
@@ -149,6 +160,8 @@ impl App {
             let saved = old.get(&h).map_or(r.get(2), |w| w.saved);
             m.insert(h, Key { label: r.get(1), saved });
         }
+        drop(m);
+        self.tell_signed_in();
         Ok(())
     }
 
@@ -194,6 +207,7 @@ impl App {
         db.execute("INSERT INTO auth.sessions (id_hash, user_id, created_at, last_seen_at, expires_at, client_address, user_agent) VALUES ($1, $2, $3, $3, $4, $5, $6)",
                    &[&h, &user_id, &now, &expires, &address, &agent]).await?;
         self.sessions.lock().unwrap().insert(h, Live { user: user.clone(), expires, seen: now, saved: now });
+        self.tell_signed_in();
         info!(%user, address = address.unwrap_or("-"), "signed in");
         Ok(Login::In { session, user, expires })
     }
@@ -248,6 +262,7 @@ impl App {
 
     async fn forget(&self, h: Vec<u8>) {
         self.sessions.lock().unwrap().remove(&h);
+        self.tell_signed_in();
         if let Ok(db) = self.db.get().await {
             let _ = db.execute("DELETE FROM auth.sessions WHERE id_hash = $1", &[&h]).await;
         }
@@ -418,11 +433,11 @@ pub async fn bind(cfg: &Config) -> Result<tokio::net::TcpListener> {
 }
 
 /// Serves on a port already taken ([`bind`]).
-pub async fn serve_on(cfg: Config, client: Client, listener: tokio::net::TcpListener) -> Result<()> {
+pub async fn serve_on(cfg: Config, client: Client, listener: tokio::net::TcpListener, signed_in: tokio::sync::watch::Sender<bool>) -> Result<()> {
     let dummy = tokio::task::spawn_blocking(|| secret::hash_password(&secret::hex(&secret::random(16)))).await??;
     let db = Db { url: cfg.database.clone(), client: tokio::sync::Mutex::new(Some(Arc::new(client))) };
     let at = listener.local_addr()?;
-    let app = Arc::new(App { cfg, db, sessions: Mutex::default(), keys: Mutex::default(), dummy, hashing: Semaphore::new(HASHING) });
+    let app = Arc::new(App { cfg, db, sessions: Mutex::default(), keys: Mutex::default(), dummy, hashing: Semaphore::new(HASHING), signed_in });
     app.reload().await?;
     app.sweep().await?;
     tokio::spawn(listen(app.clone()));

@@ -11,7 +11,7 @@ pieces everyone drops in unchanged.
 | doc | for |
 |---|---|
 | [INTEGRATING.md](INTEGRATING.md) | adding Visit to a workroom. Written for the coding agent doing it: hand it this file and say "integrate this into my workroom". |
-| [SPEC.md](SPEC.md) | the contract: `visit` and its local client, the page connection, the lobby (`basedverse-lobby/3`), the link between machines, scenes and input, worlds, security, limits, errors, versions. For whoever builds or changes the shared pieces. |
+| [SPEC.md](SPEC.md) | the contract: `visit` and its local client, the page connection, the lobby (`basedverse-lobby/4`), the link between machines, scenes and input, worlds, security, limits, errors, versions. For whoever builds or changes the shared pieces. |
 | [WORLD.md](WORLD.md) | worlds: why they are the way they are, and what is still to come. |
 
 ## Giving it to someone
@@ -56,7 +56,7 @@ visit/
 - [x] The spec, and the guide for integrators.
 - [x] visit-client, tested end to end with the real lobby and two clients (`client/tests/run-e2e.sh`).
 - [x] visit.js, tested in two real browsers: knocking, walking, reloads, worlds, links, the map, avatars, interactions, voice, phones (`client/tests/run-browser.sh`).
-- [x] The lobby's version 2 (`../lobby/server/`, `test_lobby2.py`), live (`../bin/deploy-lobby`).
+- [x] The lobby in Rust (`../lobby/`, 3.0): keys proved, the sign-in, world groups, its own relay, live at `wss://basedverse.app/` (`../bin/deploy-lobby`).
 - [x] A first workroom running it.
 - [ ] A relay of our own beside the lobby. Until there is one, links that cannot go direct use iroh's public
       relays (still encrypted end to end).

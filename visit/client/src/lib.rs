@@ -439,10 +439,11 @@ pub async fn run_with(a: Args, stop: impl std::future::Future<Output = ()> + Sen
     let (db_tx, db_rx) = mpsc::unbounded_channel();
     tokio::spawn(db::run(database, client, db_rx, core_tx.clone()));
     let away = saved.away;
-    let hello = lobby::Hello { name: a.name.clone(), sim, status: "available".into(), max_visitors: a.max_visitors };
+    let hello = lobby::Hello { name: a.name.clone(), sim, status: "available".into(), max_visitors: a.max_visitors,
+                               about: saved.about.clone(), public: saved.public };
     match a.lobby.clone() {
         Some(url) => {
-            tokio::spawn(lobby::run(url, hello, lobby_rx, core_tx.clone(), away));
+            tokio::spawn(lobby::run(url, saved.key.clone(), hello, lobby_rx, core_tx.clone(), away));
         }
         None => info!("no lobby (VISIT_LOBBY): the office keeps to itself"),
     }
@@ -458,7 +459,17 @@ pub async fn run_with(a: Args, stop: impl std::future::Future<Output = ()> + Sen
         let visit = a.token_file.clone().map(|f| (a.port, f));
         let serve = auth::Serve { database: pg.auth_url(), port: a.auth_port, listen: a.auth_listen, token_file, idle: a.auth_idle, max_age: a.auth_max_age, visit };
         match auth::serve_with(serve).await {
-            Ok(api) => {
+            Ok((api, mut signed_in)) => {
+                // Someone signed in, or nobody any more: what the lobby session goes by (LOBBY.md 2, rule 3).
+                let told = core_tx.clone();
+                tokio::spawn(async move {
+                    loop {
+                        let now = *signed_in.borrow_and_update();
+                        if told.send(core::Ev::SignedIn(now)).is_err() || signed_in.changed().await.is_err() {
+                            return;
+                        }
+                    }
+                });
                 let stopper = core_tx.clone();
                 tokio::spawn(async move {
                     if let Err(e) = api.await {

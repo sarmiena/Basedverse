@@ -51,11 +51,25 @@ async def start_client(name, lobby, port):
     path = "/tmp/%s.token" % name
     with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
         f.write(token)
+    service = secrets.token_hex(32)   # its sign-in's: the lobby is joined only while someone is signed in (LOBBY.md 2)
+    spath = "/tmp/%s.auth-token" % name
+    with open(os.open(spath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+        f.write(service)
     log = open("/out/%s.log" % name, "w")
     p = await asyncio.create_subprocess_exec("/bin/visit-client", "--lobby", lobby, "--name", name, "--sim", "perf/1", "--port", str(port),
-                                             "--token-file", path, "--relays", "none", "--max-visitors", "8",
+                                             "--token-file", path, "--relays", "none", "--max-visitors", "8", "--auth-token-file", spath,
+                                             "--data-dir", "/tmp/%s.data" % name,
                                              stdout=asyncio.subprocess.PIPE, stderr=log, env=dict(os.environ, RUST_LOG="visit=info,iroh=warn"))
-    json.loads(await asyncio.wait_for(p.stdout.readline(), 15))
+    json.loads(await asyncio.wait_for(p.stdout.readline(), 60))
+    add = await asyncio.create_subprocess_exec("/bin/visit-client", "auth", "--data-dir", "/tmp/%s.data" % name, "user", "add", "perf", "--password-stdin",
+                                               stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+    await add.communicate(b"perf perf perf perf\n")
+    def login():
+        import urllib.request
+        req = urllib.request.Request("http://127.0.0.1:7403/v1/login", method="POST", headers={"Authorization": "Bearer " + service, "Content-Type": "application/json"},
+                                     data=json.dumps({"user": "perf", "password": "perf perf perf perf", "client": {"address": "127.0.0.1", "agent": "perf"}}).encode())
+        return urllib.request.urlopen(req, timeout=10).status
+    await asyncio.to_thread(login)
     return p, token
 
 

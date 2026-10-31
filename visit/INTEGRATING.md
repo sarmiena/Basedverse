@@ -41,11 +41,15 @@ Every room that takes Visit's defaults looks and works the same for the people v
 take them unless your user asks for something else. The defaults are Visit's own ready-made pieces:
 
 - **the panel** (`Visit.panel`): one row a person (in the lobby, or linked with you: in your room, linked; open it
-  for Go there, their look in your room, Kick, Unlink), knocks, your door and guests, your world's Map, the microphone and who is near, calls (📞 call, Pick up, speaker / handset, Hang up), notes (where
+  for Go there, their look in your room, Kick, Unlink; a room that lists itself with its line, and Walk in at a door
+  open to anyone), your world groups (who of each is online, requests to answer, Leave; **Find** the lobby's groups,
+  **New** a group of your own), your room's line in the lobby's list, knocks, your door (open to guests, open to
+  anyone, closed) and guests, your world's Map, the microphone and who is near, calls (📞 call, Pick up, speaker / handset, Hang up), notes (where
   a friend's world put your room), and ⏱ (how this page is doing);
 - **the chat window** (the panel's, `Visit.chat`): bottom left, as in a game. Enter to type, and say a line to
   everyone who can see you, whisper to one person (`/w name`), say it in your room's chat (`/room`: everyone in it
-  and linked with it) or a linked friend's (`/room name`), or to the lobby (`/1`); Tab finishes a name, else moves on to the next of those (Shift+Tab: back); 🎙 a voice
+  and linked with it) or a linked friend's (`/room name`), to the lobby (`/1`), or to one of your world groups
+  (`/g name`, or `/2`, `/3`…); joining the lobby, it says the lobby's name and its message of the day; Tab finishes a name, else moves on to the next of those (Shift+Tab: back); 🎙 a voice
   message; 📬 what came for your user while nobody looked (whispers, your room's chat, mentions), kept until read;
   a whisper to someone away is kept by your `visit` until you are both in the lobby; 🎧 joins a
   room's voice (everyone in it hears everyone else), and a line over the box says who is in it; it fades when nobody has said anything for a while;
@@ -567,6 +571,13 @@ and turning is instant; Back to my room shrinks it to the corner and gives your 
 
 ## Step 7 — The lobby: linking and letting in
 
+**Signed in to take part.** Since 3.0, `visit` joins its lobby only while someone is signed in on your workroom: a
+live session of its sign-in (`AUTH_TOKEN_FILE`, [../auth/INTEGRATING.md](../auth/INTEGRATING.md)), not an API key.
+A workroom without the sign-in, or with nobody signed in, keeps to itself (`visit.signedIn` false, the panel says
+so); signing out takes it out of the lobby at once, and signing in brings it back. Nothing for your page to do: the
+sign-in your server already checks is the one that counts. The lobby (`VISIT_LOBBY`: basedverse's is
+`wss://basedverse.app/`, or one anyone runs, ../lobby/README.md) checks your office's key as it joins.
+
 The quickest way: the ready-made panel, in any element of yours (a corner of the page, say):
 
 ```js
@@ -586,14 +597,27 @@ star (☆) by each office makes it a **guest**: while your door is open (the pan
 is let in at once, without asking your user. An office on an older Visit gets **Knock** instead: let in, your
 user walks straight into its room, as before.
 
+It shows your **world groups** too (3.0): groups in the lobby whose members put each other's rooms round their own
+(step 9), as guests may, each with a chat (`/g`). Each of yours is a row (how many of it are online); opened, its
+members, the requests to join it (for its ops: **Let in**, **No**), **Leave**, and for its ops whether it is open and
+who is an op. **Find** lists the lobby's groups to **Join** (an open one) or **Ask**; **New** makes one of your own.
+And your room's **line in the lobby's list** (what it is, a few tags: **List it**, and on the lobby's public page),
+and your door **open to anyone**: then anyone's knock walks in, and the lobby's list says **Walk in**.
+
 Or build your own from the state and actions: `visit.offices`, `visit.knocks`, `visit.visiting`,
 `visit.visitors`, `visit.links`, `visit.watchers`, `visit.link(id, message)` (or `visit.knock`, for an office
 whose `links` is false), `visit.answer(knockId, true | false)`, `visit.stepIn()`, `visit.stepOut()`,
 `visit.toWorld()`, `visit.unlink(id)`, `visit.leave()`,
 `visit.kick(visitId)`, `visit.setStatus("available" | "busy")`, `visit.setMaxVisitors(n)`,
 `visit.leaveLobby()`, `visit.joinLobby()`, and the door and guests: `visit.door`, `visit.guests`,
-`visit.setDoor(open)`, `visit.addGuest(office.key, office.name)`, `visit.removeGuest(key)`; redraw on
-`"change"`. Rules your UI must follow:
+`visit.setDoor(open)`, `visit.addGuest(office.key, office.name)`, `visit.removeGuest(key)`; the lobby's list and
+world groups (3.0): `visit.signedIn`, `visit.lobbyInfo` ({ title, motd, admin }), `office.about`, `office.public`,
+`visit.setAbout(text, tags)`, `visit.setPublic(on)`, `visit.groups`, `visit.findGroups()` and `visit.groupList`,
+`visit.createGroup(name, { about, open })`, `visit.joinGroup(name)`, `visit.leaveGroup(name)`,
+`visit.answerGroup(name, key, accept)`, `visit.removeFromGroup(name, key)`, `visit.setGroup(name, { about, open })`,
+`visit.setGroupOp(name, key, op)`, `visit.deleteGroup(name)`, `visit.say(text, { group })`, and the events
+`"group"`, `"group_left"`, `"group_request"`, `"group_answered"`, `"groups"`, `"online"` (with `lobbyInfo`) and
+`"signed_in"`; redraw on `"change"`. Rules your UI must follow:
 
 - Offer **Link** only for offices that are `ready`, `available`, not you, and not already linked or visited
   (and **Knock**, for one whose `links` is false, only when it is not full: `visitors < maxVisitors`).
@@ -601,7 +625,10 @@ whose `links` is false), `visit.answer(knockId, true | false)`, `visit.stepIn()`
   left, and both answers.
 - Show your user who is linked to them, seeing their room from outside it: `visit.watchers` with `link`
   (and `inside` once they come in), with a way to end it (`visit.kick(id)`).
-- Escape all names and messages before putting them in HTML: they come from strangers.
+- Escape all names and messages before putting them in HTML: they come from strangers. So do rooms' lines and
+  tags, and groups' names and lines.
+- Say plainly what joining a world group means: its members see your room through your open door, as guests do,
+  and you theirs. And what a door open to anyone means: anyone in the lobby walks in.
 - Give your user a way to **go offline and back** (`leaveLobby()` / `joinLobby()`), and show when they
   are: `visit.state === "away"`. Away, nobody sees them or can link, and their visits end; they stay away
   until they come back, restarts included (its state file keeps it). Do not stop `visit` for this: it keeps
@@ -619,10 +646,16 @@ directory, and open a second copy of your page pointed at it (add a development-
 `?visit=2` selecting port 7402 and its token in your step 3 route):
 
 ```sh
-# each with a token file of its own, made as step 2 makes one; a flag wins over your .env's settings
-visit --lobby "$LOBBY" --name "Test A" --sim my-workroom/1.0 --port 7401 --token-file a.token --data-dir /tmp/visit-a &
-visit --lobby "$LOBBY" --name "Test B" --sim my-workroom/1.0 --port 7402 --token-file b.token --data-dir /tmp/visit-b &
+# each with token files of its own, made as step 2 makes one; a flag wins over your .env's settings
+visit --lobby "$LOBBY" --name "Test A" --sim my-workroom/1.0 --port 7401 --token-file a.token --data-dir /tmp/visit-a \
+      --auth-token-file a.auth --auth-port 7403 &
+visit --lobby "$LOBBY" --name "Test B" --sim my-workroom/1.0 --port 7402 --token-file b.token --data-dir /tmp/visit-b \
+      --auth-token-file b.auth --auth-port 7413 &
+visit auth --data-dir /tmp/visit-a user add owner; visit auth --data-dir /tmp/visit-b user add owner
 ```
+
+and sign in to each (your server's sign-in page, through each one's sign-in API): until someone is, neither is in
+the lobby.
 
 Each makes a database of its own in its data directory at its first start; two cannot run on one data directory
 (the second is refused, exit 5). With the sign-in or the engine on (`AUTH_TOKEN_FILE`, `ENGINE_ROOM_URL` in the
@@ -630,7 +663,7 @@ environment), the second needs ports of its own for them too (`--auth-port`, `--
 
 Then, in order:
 
-1. Both pages show both offices in the lobby.
+1. Both pages show both offices in the lobby. (Sign B out: B leaves the lobby at once; sign in again: back.)
 2. From B, link with A; in A, say yes. B's page shows A's room in the corner, from above; A's
    `visit.watchers` lists B, linked. Click the corner, **Go there**: A's room fills B's window, and A's
    `visit.visitors` lists B.
@@ -645,12 +678,14 @@ Then, in order:
    again at once (B's `visit` kept them).
 9. Set A's status to busy: B's link is refused.
 10. Stop B's `visit`: B disappears from A's lobby.
+11. In A's panel, **New** group (open); in B's, **Find**, **Join** it. With both worlds on (step 9), each has the
+    other's room round its own, neither a guest of the other. `/g` a line: both have it.
 
 ## Step 9 — Your world: friends' plots round your room
 
 With a world ([WORLD.md](WORLD.md), SPEC 8.4) your user stays in their own room, as themselves, and their
 friends' rooms sit round it as plots they walk onto, without knocking. A friend is a guest both ways (the star
-in the panel), with their doors open. Do it once step 8 passes: it is a few lines in your page, and without it
+in the panel), or (3.0) in a world group with your user (the panel's groups), with their doors open. Do it once step 8 passes: it is a few lines in your page, and without it
 your room still knocks and visits as before, but your user sees no friends' rooms round theirs, and a friend who
 walks onto your plot from their world may have no way back out.
 
@@ -736,6 +771,9 @@ marked offline, walked into but not through its walls; start it again, and the p
 - [ ] Visiting: the host's room fills the window (`Visit.stage`, or your own view); WASD, Shift and the
       mouse work; Esc frees the pointer; there is a way to leave, and back to your room; your own keys wait
       while `visit.viewFocused`.
+- [ ] The sign-in is on (`AUTH_TOKEN_FILE`), and the office is in the lobby only while its owner is signed in.
+- [ ] World groups: made, found, joined (or asked and let in), left; a group's chat (`/g`); its members' rooms in
+      your world (step 9). Your room's line in the lobby's list, and the door open to anyone, if your user wants them.
 - [ ] The lobby: offices, links and knocks, answers, links into a corner (go there, back, unlink), visitors and
       who is linked to you (kick, unlink), status and max visitors all work, with the rules of step 7; names
       and messages are escaped.
@@ -758,7 +796,9 @@ marked offline, walked into but not through its walls; start it again, and the p
 | `visit` says what is inside it "is not the one it was built with" | the file is damaged: download it again, and check it against `SHA256SUMS` |
 | connect closes with 4401 | the token your page sent is not the one `visit` was started with: a stale `visit.json`, two launchers, or `visit` restarted while the page kept its old token (hand `connect` a token function, step 4) |
 | connect closes with 4409 | another page of yours connected after this one; only the newest page is live |
-| `visit` exits at once with code 4, its log saying `proto_unsupported` | the lobby is older than this `visit` (Visit 0.5 needs the lobby's version 3): update the lobby (`bin/deploy-lobby`) |
+| `visit` exits at once with code 4, its log saying `proto_unsupported` | the lobby is older than this `visit` (Visit 3.0 needs the lobby's version 4): update it (`bin/deploy-lobby`), or join `wss://basedverse.app/` |
+| never in the lobby, `visit.signedIn` false (the panel: "nobody is signed in") | Visit 3.0 joins only while someone is signed in on the workroom: turn its sign-in on (`AUTH_TOKEN_FILE`) and sign in |
+| its log says the lobby refused it, `bad_proof` | the lobby checks hellos against the name it is reached by: a lobby behind a proxy that changes the Host needs `--hosts <its name>` |
 | your office never shows `ready`, and knocking says `not_hosting` | your page has not called `visit.host` (with a scene) since it loaded |
 | `state` stays `"offline"` | `visit` cannot reach the lobby: a wrong `VISIT_LOBBY`, or no network; its stderr says why |
 | you never become `ready` in the lobby | `visit` could not start its connection endpoint; its stderr says why |

@@ -38,7 +38,7 @@ knows the user), each with a data directory of its own.
 | `src/main.rs` | flags, the commands (`visit auth`, `import`, `psql`, `status`), startup, the ready line, signals |
 | `src/core.rs` | the one task that owns the state and routes everything (the page, the lobby, the links) |
 | `src/page.rs` | HTTP on 127.0.0.1: `/visit.js`, `/health`, the page WebSocket, its roles and tokens, the relay's preface |
-| `src/lobby.rs` | the lobby session (`basedverse-lobby/3`): reconnecting and resuming |
+| `src/lobby.rs` | the lobby session (`basedverse-lobby/4`): its key proved at hello, in only while someone is signed in, reconnecting and resuming |
 | `src/link.rs` | the links: dialling, admitting, a scene's deltas and edits, inputs, the grace period |
 | `src/frames.rs` | framing for control messages, deltas and scene edits (and unpacking edits, with their limits) |
 | `src/state.rs` | the state file: away or not, the office's key, its door, guests and world |

@@ -10,6 +10,57 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v3.0.0 — 2026-10-31 — the lobby in Rust: keys proved, signed in to take part, world groups, its own relay, for anyone to host
+
+**The lobby's protocol is `basedverse-lobby/4`.** Every workroom upgrades, and the lobby with it. A lobby run with
+`--v3` (`LOBBY_V3=1` for `bin/deploy-lobby`) keeps Visit 0.5 to 2.x workrooms in a lobby of their own meanwhile.
+basedverse's lobby is now at **`wss://basedverse.app/`**. [LOBBY.md](LOBBY.md) says why the lobby is as it is.
+
+- **The lobby is one Rust program, `lobby`** ([lobby/](lobby/), [lobby/README.md](lobby/README.md)), in place of the
+  Python one: one static file for a Linux server, published with each release (`lobby-<target>.tar.gz`). It speaks
+  what the Python lobby's version 3 spoke, checked by that lobby's own tests run against it, and version 4. Versions
+  1 (browser sims streaming video) and 2 (Visit 0.2 to 0.4) are gone, with `lobby/PROTOCOL.md`, and coturn with them.
+- **Keys proved** ([visit/SPEC.md](visit/SPEC.md) 6.1). A `hello` names the office's key; the lobby sends a challenge;
+  `visit` signs it with the key's secret half, naming the lobby it dialled (so no lobby can pass a challenge on to
+  another). A link's endpoint must be the key proved. A key that says hello again (a restart) takes its session over.
+  One key is the same office in every lobby.
+- **Signed in to take part** (SPEC 3, point 13). `visit` joins its lobby only while someone is signed in on the
+  workroom: a live session of its sign-in (not an API key). Without the sign-in, or with nobody signed in, the office
+  keeps to itself, and the page is told (`signed_in`; `visit.signedIn`); signing out leaves the lobby at once.
+- **World groups** (SPEC 6.6). Groups in a lobby whose members may each put the others' rooms in their worlds, as if
+  each were everyone's guest, for worlds only, through open doors: someone in several groups places anyone of any of
+  them, together, in their own world. Whoever makes one owns it and names ops; ops let people in, or it is open.
+  Each has a chat (`visit.say(text, { group })`, `/g name`, `/2`…, green). The lobby keeps its groups across
+  restarts (its `--data-dir`); a group's members are the lobby's word (SPEC 3, point 14). A link still reaches anyone.
+- **A list of rooms.** A room may describe itself (`visit.setAbout(text, tags)`) and open its door to anyone
+  (`visit.setPublic(true)`: anyone's knock walks in); the lobby lists both, the panel shows them (Walk in).
+- **The panel and the chat window**, after Battle.net's lobby (LOBBY.md 3): lists to browse, never names to know.
+  Your groups (who of each is online, requests to answer, Leave), Find and Join (or Ask), New; your room's line; your
+  door open to guests, to anyone, or closed. The chat window greets you with the lobby's name and message of the day.
+- **Its own relay** (SPEC 6.8). The lobby runs an iroh relay for its offices only, in place of iroh's public ones,
+  with QUIC address discovery (UDP 7842) from its own certificate.
+- **A public page** (SPEC 6.9): the lobby's address in a browser shows its groups and the rooms that list themselves
+  (never a key), and how to join it. Read only.
+- **Operators** (`--admin <key>`): ban a key lobby-wide, for a while or for good (`visit.lobbyBan`), and run every group.
+- **Hosting one** ([lobby/README.md](lobby/README.md)): `bin/deploy-lobby` builds the lobby for the server (or takes a
+  release's, `--version`), and sets it up with Caddy under systemd: no Docker on the server. `LOBBY_DOMAIN` (default
+  `basedverse.app`), `LOBBY_TITLE`, `LOBBY_MOTD`, `LOBBY_ADMINS`, `LOBBY_V3`. A server running the lobby of before is
+  moved over by the same command (its Docker stack stopped). Ports: 80 and 443 TCP, 7842 UDP (3478 and the TURN range
+  no longer).
+- `bin/setup` offers `wss://basedverse.app/` to a new workroom (`BASEDVERSE_LOBBY` for another).
+
+**What an integration does:**
+
+1. **Turn the sign-in on**, if your workroom has not ([auth/INTEGRATING.md](auth/INTEGRATING.md)): `AUTH_TOKEN_FILE`
+   given to `visit`, your server checking sessions, an owner account (`visit auth user add <name>`). Without it, your
+   office is in no lobby.
+2. **Point at a lobby of version 4**: `VISIT_LOBBY=wss://basedverse.app/` (or your own, updated with
+   `bin/deploy-lobby`). A Visit 2.x lobby refuses 3.0 (`proto_unsupported`, exit 4).
+3. **The panel and chat window** (vanilla) need nothing: groups, the list of rooms and `/g` come with them. A room
+   with its own lobby UI adds them from step 7's API (`visit.groups`, `visit.findGroups()`, `visit.joinGroup(`,
+   `visit.say(text, { group })`, `office.about`, `office.public`), escaping groups' and rooms' names and lines.
+4. A room with a world (step 9) needs nothing: co-members' plots come as guests' do.
+
 ## v2.1.1 — 2026-10-30 — the wheel on interactions; interactions for the owner alone; the engine's pipe on Windows; visit as a library
 
 - **The engine on Windows speaks to its Chrome over a pipe**, as on Linux and macOS

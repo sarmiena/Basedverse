@@ -1,110 +1,108 @@
-# The lobby — knock on other sims' offices
+# The lobby: where workrooms meet
 
-A meeting place for agent-office sims of any make. Each sim joins under a name, sees who else is online
-and whether they are `available`, and knocks on an available office with a message (or, Visit 0.8 on, links
-with it: let in, its room shows in a corner first). It speaks three
-versions side by side, each its own lobby (a client's first hello decides):
+`lobby` is one program: who is online, knocks between rooms, visits and links, **world groups** (whose members put
+each other's rooms round their own), the lobby's chat and whispers, a list of rooms, its own **relay** for links
+that cannot go direct, and a read-only **page** for anyone with a browser. Workrooms join it with Visit
+(`VISIT_LOBBY`), and only while someone is signed in on them. What rooms show each other never passes through it.
+[../LOBBY.md](../LOBBY.md) says why it is as it is; [../visit/SPEC.md](../visit/SPEC.md) section 6 is its protocol,
+`basedverse-lobby/4`.
 
-- **version 1** ([PROTOCOL.md](PROTOCOL.md)): once let in, every office in the group sees every other
-  office's room as live video, peer to peer over WebRTC between the browsers;
-- **version 3** ([../visit/SPEC.md](../visit/SPEC.md), section 6): visit-clients (Visit 0.5 on), walking
-  around each other's three.js rooms; **version 2**, the same for Visit 0.2 to 0.4 (rooms by video).
+basedverse runs one at **`wss://basedverse.app/`**, the lobby `bin/setup` offers a new workroom. Anyone can run
+their own: it is one file and a few settings.
 
-Either way the lobby only introduces the sims: what they show each other never passes through it.
+| | |
+|---|---|
+| [src/](src/) | the lobby: `core.rs` (all its state, one task), `conn.rs` (a connection, its key proved), `groups.rs` (what it keeps: world groups and bans), `relay.rs` (its iroh relay), `web.rs` (HTTP: the WebSocket, `/health`, the page) |
+| [proto/](proto/) | `lobby-proto`: what it and `visit` agree on (messages, limits, what a hello signs), built into both |
+| [web/index.html](web/index.html) | its public page |
+| [tests/](tests/) | `test_lobby.py` (the binary, from outside: `tests/run.sh`), `relay.rs` (its relay, with iroh endpoints) |
+| [deploy/](deploy/) | a server's setup: the lobby and Caddy under systemd (`setup.sh`, which writes Caddy's config too) |
 
-- **[PROTOCOL.md](PROTOCOL.md)** — version 1's contract, complete: hand it to anyone (or any LLM)
-  building a compatible sim.
-- **[server/](server/)** — the lobby: `lobby.py` (Python, `websockets`), `test_lobby.py` and
-  `test_lobby2.py`, a Dockerfile.
-- **[deploy/](deploy/)** — one server on the internet: the lobby, Caddy (TLS with a free Let's Encrypt
-  certificate, for a bare IP address too) and coturn (a TURN relay for networks that block peer to
-  peer), started by `setup.sh`.
-- **Clients**: for version 2, visit-client ([../visit/](../visit/)); for version 1, your sim's own,
-  from PROTOCOL.md.
-
-## Try it locally (no server needed)
+## Try it here
 
 ```sh
-python3 -m venv /tmp/lobby-venv && /tmp/lobby-venv/bin/pip install -r lobby/server/requirements.txt
-STUN_URLS= LOBBY_HOST=127.0.0.1 /tmp/lobby-venv/bin/python lobby/server/lobby.py      # ws://127.0.0.1:8765
+lobby/cargo run -p lobby -- --listen 127.0.0.1 --port 8765        # ws://127.0.0.1:8765, its page at http://127.0.0.1:8765/
 ```
 
-Then point two workrooms at `ws://127.0.0.1:8765` (two `visit`s, as
-[../visit/INTEGRATING.md](../visit/INTEGRATING.md) step 8 runs them), knock from one, and let it in from
-the other.
+Then point two workrooms at `ws://127.0.0.1:8765` (`VISIT_LOBBY`), each with its owner signed in. `lobby --help`
+lists every setting; each is a flag and a `LOBBY_*` variable.
 
-Tests: `python3 lobby/server/test_lobby.py` and `python3 lobby/server/test_lobby2.py` (the server, every
-message and refusal of each version), and `visit/client/tests/run-e2e.sh` (the server with two real
-visit-clients).
+Tests: `lobby/tests/run.sh` (the lobby from outside, every message and refusal) and `lobby/cargo test -p lobby`
+(its relay, with real iroh endpoints); `visit/client/tests/run-e2e.sh` runs it with real visit-clients.
 
-## Put it on a server (AWS, say)
+## Host your own
 
-1. **Launch an EC2 instance**: Ubuntu 24.04 (or Amazon Linux 2023), `t3.small` or `t4g.small`, 8 GB disk.
-2. **Give it an Elastic IP** (EC2 → Elastic IPs → Allocate → Associate), so the address in everyone's
-   `.env` survives a stop and start.
-3. **Open its security group** to the internet:
+What it needs: a Linux server with systemd (x86_64 or ARM64; an EC2 `t4g.small` or `t3.small`, about $12 a month,
+is plenty), a DNS name pointing at it (an `A` record; not proxied, if your DNS host offers that: its relay speaks
+UDP), and these open to the internet:
 
-   | port | protocol | for |
-   |---|---|---|
-   | 22 | TCP | ssh (your address only) |
-   | 80, 443 | TCP | Caddy: the certificate challenge, then `wss://` |
-   | 3478 | TCP and UDP | TURN / STUN |
-   | 49160-49200 | UDP | TURN's relayed media |
+| port | protocol | for |
+|---|---|---|
+| 22 | TCP | ssh (your address only) |
+| 80, 443 | TCP | Caddy: the certificate's challenge, then `wss://` and the page |
+| 7842 | UDP | the relay's address discovery: how two workrooms find a direct path to each other |
 
-4. **Deploy it from your machine**, from this repository:
+From your machine, in this repository (it builds the lobby with Docker here; the server needs nothing installed):
 
-   ```sh
-   bin/deploy-lobby ubuntu@<elastic-ip>                  # add -i ~/.ssh/your-key.pem if ssh needs it
-   bin/deploy-lobby ubuntu@<elastic-ip> --host lobby.example.com     # a DNS name for the certificate instead
-   ```
+```sh
+LOBBY_DOMAIN=lobby.example.org bin/deploy-lobby ubuntu@203.0.113.5     # -i ~/.ssh/key.pem if ssh needs it
+```
 
-   It copies `lobby/` to `~/basedverse-lobby/` on the server (a tar stream over ssh: nothing to install
-   there first) and runs `lobby/deploy/setup.sh` there. That installs Docker, writes the server's
-   `deploy/.env` (its public and private addresses from the EC2 metadata, or, on another server, from
-   checkip.amazonaws.com and `hostname -I`, and a fresh TURN secret),
-   starts the lobby, Caddy and coturn, waits for the certificate, and prints the address:
+It builds one static `lobby` for the server's architecture (or, with `--version v3.0.0`, takes a release's,
+its checksum checked), copies it there with `deploy/`, and runs `deploy/setup.sh`, which:
 
-   ```
-   LOBBY_URL=wss://<elastic-ip>/
-   ```
+1. stops a lobby of before, if there is one (Visit 2.x's: Python, Caddy and coturn in Docker);
+2. installs the lobby (`/usr/local/bin/basedverse-lobby`) and Caddy (a pinned release, its checksum checked), and a
+   user they run as;
+3. writes their settings (`/etc/basedverse-lobby/env`) and systemd units, starts Caddy, waits for its Let's
+   Encrypt certificate, starts the lobby with its relay (which reads the same certificate), and prints the address:
 
-5. **Point the workrooms at it**: each gives `wss://<elastic-ip>/` as its lobby (`VISIT_LOBBY` in its `.env`,
-   [../.env.example](../.env.example)).
+```
+LOBBY_URL=wss://lobby.example.org/
+```
 
-**Running it**, from your machine. The server is remembered (`LOBBY_DEPLOY` in this repository's `.env`,
-made on the first deploy), so:
+Each workroom gives that as its lobby (`VISIT_LOBBY` in its `.env`). Its page is `https://lobby.example.org/`.
+
+**Its settings**, each given as a variable to `bin/deploy-lobby` (or kept in this repository's `.env`), and kept
+on the server once given:
+
+| variable | |
+|---|---|
+| `LOBBY_DOMAIN` | its DNS name (default `basedverse.app`) |
+| `LOBBY_TITLE`, `LOBBY_MOTD` | its name and message of the day: on its page, and said to each workroom as it joins |
+| `LOBBY_ADMINS` | its operators: keys, comma-separated (a workroom's key: `ready.key`, `v.key`). They ban keys and run every group |
+| `LOBBY_V3` | `1`: let Visit 0.5 to 2.x workrooms in too, a lobby of their own, while they upgrade |
+| `LOBBY_IP` | the server's IPv4, served as well (`wss://<ip>/`, a 6-day certificate Caddy renews), for workrooms that still name the lobby by it |
+
+**Running it**, from your machine (the server is remembered: `LOBBY_DEPLOY` in this repository's `.env`):
 
 | command | what it does |
 |---|---|
-| `bin/deploy-lobby` | update it: copy the current `lobby/` and rebuild. Its `.env` and TURN secret are kept |
-| `bin/deploy-lobby --status` | its containers, and whether `wss://…/health` answers from here |
-| `bin/deploy-lobby --logs` | the lobby's, Caddy's and coturn's logs, followed (Ctrl-C stops) |
+| `bin/deploy-lobby` | update it: a new lobby, the same settings; its groups and bans kept |
+| `bin/deploy-lobby --status` | its services, and whether `wss://…/health` answers from here |
+| `bin/deploy-lobby --logs` | the lobby's and Caddy's logs, followed (Ctrl-C stops) |
 | `bin/deploy-lobby --down` | stop it |
 
-On the server itself it is `docker compose …` in `~/basedverse-lobby/lobby/deploy`. A restart empties the
-lobby; the workrooms reconnect by themselves.
+On the server: `systemctl status basedverse-lobby basedverse-caddy`, `journalctl -u basedverse-lobby`. What it
+keeps (its groups and bans) is in `/var/lib/basedverse-lobby/data`; Caddy's certificate in
+`/var/lib/basedverse-lobby/caddy`. A restart keeps both; workrooms reconnect by themselves.
 
-**What it costs.** The instance (a `t4g.small` is about $12 a month) and its traffic. Video goes
-straight between the sims whenever their networks allow, at no cost to the server. Only when one blocks
-that does TURN relay it: about 0.7 GB per hour per relayed stream at 1.5 Mbit/s, which is roughly 6¢ an
-hour at AWS's internet egress price. Anyone who connects to the lobby gets TURN credentials, so coturn
-relays UDP only, at most 12 relays per office and about 2 Mbit/s each way per relay (`compose.yml`): at
-worst its 41 relay ports run flat out at a few dollars an hour. An AWS budget alert on the account is
-cheap insurance.
+**Without bin/deploy-lobby** (another init system, a proxy of your own): run `lobby` behind any TLS proxy that
+passes WebSockets, with `--hosts <your name>` (what hellos sign), `--trust-proxy` (the proxy's `X-Forwarded-For`),
+`--data-dir`, and, for its relay, `--relay-port` (route `/relay`, `/ping` and `/generate_204` to it) and
+`--relay-cert`/`--relay-key` (your name's certificate, for UDP 7842).
 
-**The certificate.** Let's Encrypt issues IP-address certificates only under its short-lived profile, so
-they last 6 days. Caddy renews them by itself, which is why ports 80 and 443 stay open. If `wss://` stops
-working, read `docker compose logs caddy`.
+**What it costs.** The server, and its traffic. Links go directly between workrooms whenever their networks allow;
+only when they cannot does the relay carry them (at most 4 MiB a second each way, for a workroom in the lobby).
 
 ## Trust
 
-Nobody signs in: anyone who reaches the server can join under a free name, see who is online, and knock.
-Nothing of your room is visible until you let someone in. Then, in version 1, **everyone in your group
-sees your room, and anyone in the group can let more people in**: leave the group, or set yourself
-`busy`, to stop that. In versions 2 and 3 each visitor is let in by you. In version 3 (and in version 2,
-from a three.js room) they are sent your room's scene, all of it: everything under `root`, whether in their
-view or not (of objects' `userData`, only what Visit itself reads). In version 3 your guests, with your door open, also watch your
-plot (Visit 0.7's worlds): they get the same, without a knock. Someone you let link with you (Visit 0.8) gets it too, seeing
-your room from outside it until either of you ends the link; your panel lists them. Voice (Visit 0.9) goes straight
-between visit-clients, never through the lobby: to those near your user in the same room, and on a call. Whatever your room shows, they see: if it shows your work (issue
-titles, what your agents are doing), so does the scene, or the video.
+- **Taking part takes Visit, signed in.** A workroom joins only while someone is signed in on it, and proves its
+  key at every hello: a key cannot be taken, and a name is just a name (first come, first served).
+- **Nothing of your room is visible until you let someone in.** A knock asks your page; a guest (★) walks in through
+  your open door; a public door lets anyone's knock in. Whoever is let in gets your room's scene, all of it.
+- **A world group's members are the lobby's word.** They see your plot through your open door, as guests do. Join
+  groups in lobbies you trust; your guests stay proved by the link itself.
+- **The lobby keeps no words.** Its chat, whispers and group lines pass through and are gone. It keeps its groups
+  (who is in which, by key) and its bans.
+- **Its page shows** its groups, and the rooms that describe themselves (by name: never a key, nor where anyone is).

@@ -1,0 +1,19 @@
+# A static lobby to hand out (one file, no libraries: it runs on any Linux of its architecture), built from the
+# workspace (../Cargo.toml). bin/deploy-lobby builds it so, for the server's architecture:
+#   docker build -f lobby/Dockerfile.dist --build-arg TARGET=x86_64-unknown-linux-musl --target out --output type=local,dest=<dir> .
+# (from the repository's root: the build context is the workspace)
+FROM rust:1-bookworm AS build
+ARG TARGET=x86_64-unknown-linux-musl
+RUN apt-get update && apt-get install -y --no-install-recommends musl-tools && rm -rf /var/lib/apt/lists/* && rustup target add "$TARGET"
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY visit/client visit/client
+COPY auth/client auth/client
+COPY engine engine
+COPY lobby lobby
+COPY deps deps
+RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/src/target \
+    cargo build --release --locked --target "$TARGET" -p lobby && cp "target/$TARGET/release/lobby" /lobby
+
+FROM scratch AS out
+COPY --from=build /lobby /lobby
