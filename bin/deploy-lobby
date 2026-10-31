@@ -1,26 +1,32 @@
 #!/usr/bin/env bash
-# Deploy the lobby (lobby/) to a server over ssh, and update it later the same way.
+# Deploy the lobby (lobby/, LOBBY.md) to a server over ssh, and update it later the same way.
 #
-#   bin/deploy-lobby ubuntu@203.0.113.5     copy lobby/ there and run its setup: Docker, the lobby, Caddy
-#                                           (TLS) and coturn (lobby/deploy/setup.sh). Run again to update.
+#   bin/deploy-lobby ubuntu@203.0.113.5     build the lobby for the server (one static file), copy it there with
+#                                           lobby/deploy/, and run its setup: the lobby and Caddy (TLS) under
+#                                           systemd, no Docker. Run again to update.
 #   bin/deploy-lobby                        the same, to the server it last deployed to, with the same key
 #                                           (LOBBY_DEPLOY and LOBBY_DEPLOY_KEY in .env)
-#   --host lobby.example.com                a DNS name for the certificate instead of the server's IP
-#                                           (first deploy only: the server keeps what it was set up with)
+#   --version v3.0.0                        that release's lobby (downloaded here, its checksum checked), not one
+#                                           built from this checkout
 #   -i ~/.ssh/key.pem                       the ssh key (else your ssh config and agent decide)
-#   --status | --logs | --down              the server's stack: its containers and health, its log
-#                                           (follows it; Ctrl-C to stop), or stop it
+#   --status | --logs | --down              the server's lobby: its services and health, its log (follows it;
+#                                           Ctrl-C to stop), or stop it
 #
-# The server: Linux with a public IPv4, which you can ssh into and sudo on (an EC2 instance: lobby/README.md
-# says which ports to open). The copy goes to ~/basedverse-lobby/ there (or the directory LOBBY_DEPLOY_DIR
-# in .env names), as a tar stream over ssh, so the server needs nothing installed first. Its deploy/.env
-# (its addresses and the TURN secret) is never overwritten. The server and key are remembered in this
-# repository's .env (made if there is none; see .env.example).
+# Its settings come from the environment, else this repository's .env, and are kept on the server once given:
+#   LOBBY_DOMAIN   the lobby's DNS name, pointing at the server (default basedverse.app): its certificate's, and
+#                  what workrooms join (wss://LOBBY_DOMAIN/)
+#   LOBBY_TITLE, LOBBY_MOTD, LOBBY_ADMINS (operators' keys, comma-separated), LOBBY_V3 (1: Visit 2.x workrooms too),
+#   LOBBY_IP (the server's IPv4, served as well, for workrooms that still name the lobby by it)
+#
+# The server: Linux with systemd (x86_64 or ARM64), a public address that LOBBY_DOMAIN points at, which you can ssh
+# into and sudo on; ports 80 and 443 (TCP) and 7842 (UDP) open (lobby/README.md). Building needs Docker here; the
+# server needs nothing installed first. The server and key are remembered in this repository's .env.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV="${BASEDVERSE_ENV:-$ROOT/.env}"
 SSH_BIN="${DEPLOY_SSH:-ssh}"   # tests stand in a fake
+RELEASES="https://github.com/sarmiena/Basedverse/releases"
 die() { echo "deploy-lobby: $*" >&2; exit 1; }
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit "${1:-0}"; }
 
@@ -51,13 +57,15 @@ u = sys.argv[1].replace("wss://", "https://", 1).replace("ws://", "http://", 1).
 print(urllib.request.urlopen(u, timeout=5).read().decode().strip())
 PY
 }
+# A shell word, quoted for the server's shell.
+q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
-target="" host="" key="" action="deploy"
+target="" key="" action="deploy" version=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help) usage ;;
-    --host) host="${2:?--host needs a name}"; shift ;;
     -i) key="${2:?-i needs a key file}"; shift ;;
+    --version) version="${2:?--version needs a release, like v3.0.0}"; shift ;;
     --status) action=status ;;
     --logs) action=logs ;;
     --down) action=down ;;
@@ -73,45 +81,64 @@ REMOTE_DIR="${REMOTE_DIR:-basedverse-lobby}"
 case "$REMOTE_DIR" in *[!A-Za-z0-9._-]*) die "LOBBY_DEPLOY_DIR $REMOTE_DIR is not a directory name" ;; esac
 [ -n "$target" ] || { echo "deploy-lobby: which server? e.g. bin/deploy-lobby ubuntu@203.0.113.5" >&2; usage 2; }
 case "$target" in *[!A-Za-z0-9@._:-]*) die "$target does not look like user@host" ;; esac
-case "$host" in *[!A-Za-z0-9.-]*) die "--host $host is not a DNS name or an IPv4 address" ;; esac
+case "$version" in ""|v[0-9]*.[0-9]*.[0-9]*) ;; *) die "--version $version: a release, like v3.0.0" ;; esac
 
 ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
 [ -n "$key" ] && ssh_opts+=(-i "$key")
 tty=(); [ -t 0 ] && [ -t 1 ] && tty=(-t)
 on_server() { "$SSH_BIN" "${ssh_opts[@]}" "$@"; }
-# The remote stack's `docker compose`, with sudo when the login user is not in the docker group.
-COMPOSE='cd ~/'"$REMOTE_DIR"'/lobby/deploy 2>/dev/null || { echo "no lobby deployed there yet" >&2; exit 1; }; D=docker; docker info >/dev/null 2>&1 || D="sudo docker"; $D compose'
+setting() { local v="${!1:-}"; [ -n "$v" ] || v="$(envval "$1")"; printf '%s' "$v"; }
+domain="$(setting LOBBY_DOMAIN)"; domain="${domain:-basedverse.app}"
 
 case "$action" in
   status)
-    on_server "$target" "$COMPOSE ps"
-    lobby_host="$(on_server "$target" "sed -n 's/^LOBBY_HOST=//p' ~/$REMOTE_DIR/lobby/deploy/.env" 2>/dev/null || true)"
-    if [ -n "$lobby_host" ]; then
-      up="$(lobby_health "wss://$lobby_host/")"
-      echo "wss://$lobby_host/: ${up:-did not answer from here}"
-    fi
+    on_server "$target" "systemctl --no-pager status basedverse-lobby basedverse-caddy | grep -E '^(●|  *(Active|Main PID):)'"
+    up="$(lobby_health "wss://$domain/")"
+    echo "wss://$domain/: ${up:-did not answer from here}"
     exit 0 ;;
-  logs) exec "$SSH_BIN" "${ssh_opts[@]}" "${tty[@]}" "$target" "$COMPOSE logs --tail 100 -f" ;;
-  down) on_server "$target" "$COMPOSE down"; exit 0 ;;
+  logs) exec "$SSH_BIN" "${ssh_opts[@]}" "${tty[@]}" "$target" "sudo journalctl -u basedverse-lobby -u basedverse-caddy -n 100 -f" ;;
+  down) on_server "$target" "sudo systemctl stop basedverse-lobby basedverse-caddy"; exit 0 ;;
 esac
 
-# -- deploy: copy, then the server's own setup ----------------------------------------------------
-echo "copying lobby/ to $target:~/$REMOTE_DIR/"
-tar -C "$ROOT" --exclude='lobby/deploy/.env' --exclude='__pycache__' --exclude='*.pyc' -czf - lobby \
-  | on_server "$target" "mkdir -p ~/$REMOTE_DIR && tar -xzf - -C ~/$REMOTE_DIR" \
-  || die "could not copy to $target (can you ssh to it? add -i KEY for a key file)"
+# -- the lobby, for the server's architecture: built here (Docker), or a release's ----------------------------
+arch="$(on_server "$target" uname -m)" || die "could not reach $target (can you ssh to it? add -i KEY for a key file)"
+case "$arch" in x86_64|amd64) rt=x86_64-unknown-linux-musl ;; aarch64|arm64) rt=aarch64-unknown-linux-musl ;; *) die "$target is $arch: x86_64 or ARM64 only" ;; esac
+work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/lobby"
+if [ -n "$version" ]; then
+  echo "getting the lobby of $version for $rt"
+  curl -fsSL -o "$work/lobby.tar.gz" "$RELEASES/download/$version/lobby-$rt.tar.gz" || die "$version has no lobby-$rt.tar.gz"
+  curl -fsSL -o "$work/SHA256SUMS" "$RELEASES/download/$version/SHA256SUMS" || die "$version has no SHA256SUMS"
+  (cd "$work" && grep " lobby-$rt.tar.gz\$" SHA256SUMS | sed "s# lobby-$rt.tar.gz\$# lobby.tar.gz#" | sha256sum -c --quiet -) || die "its checksum does not match"
+  tar -xzf "$work/lobby.tar.gz" -C "$work/lobby" lobby
+else
+  command -v docker >/dev/null 2>&1 || die "building the lobby takes Docker here (or give --version, a release's)"
+  here_arch="$(uname -m)"; case "$here_arch" in arm64) here_arch=aarch64 ;; amd64) here_arch=x86_64 ;; esac
+  [ "${rt%%-*}" = "$here_arch" ] || die "$target is ${rt%%-*}, this machine $here_arch: give --version (a release's lobby), or deploy from a machine like it"
+  echo "building the lobby for $rt (Docker; the first build takes a few minutes)"
+  docker build -q -f "$ROOT/lobby/Dockerfile.dist" --build-arg TARGET="$rt" --target out --output "type=local,dest=$work/lobby" "$ROOT" >/dev/null
+fi
+cp -R "$ROOT/lobby/deploy" "$work/lobby/deploy"
+
+echo "copying the lobby to $target:~/$REMOTE_DIR/lobby/"
+tar -C "$work" -czf - lobby | on_server "$target" "mkdir -p ~/$REMOTE_DIR && tar -xzf - -C ~/$REMOTE_DIR" \
+  || die "could not copy to $target"
 setenv LOBBY_DEPLOY "$target"
 setenv LOBBY_DEPLOY_KEY "$key"
 
-echo "running its setup (Docker, the lobby, Caddy, coturn; the first time takes a few minutes)"
-log="$(mktemp)"; trap 'rm -f "$log"' EXIT
+echo "running its setup (the lobby and Caddy, under systemd; $domain's certificate the first time)"
+vars="LOBBY_DOMAIN=$(q "$domain")"
+for k in LOBBY_TITLE LOBBY_MOTD LOBBY_ADMINS LOBBY_V3 LOBBY_IP; do
+  v="$(setting "$k")"; [ -n "$v" ] && vars="$vars $k=$(q "$v")"
+done
+log="$(mktemp)"; trap 'rm -rf "$work" "$log"' EXIT
 set +e
-on_server "${tty[@]}" "$target" "${host:+LOBBY_HOST=$host }~/$REMOTE_DIR/lobby/deploy/setup.sh" | tee "$log"
+on_server "${tty[@]}" "$target" "sudo env $vars ~/$REMOTE_DIR/lobby/deploy/setup.sh ~/$REMOTE_DIR/lobby/lobby" | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
-[ "$status" = 0 ] || die "the setup on $target failed (above). bin/deploy-lobby --logs shows the stack's log"
+[ "$status" = 0 ] || die "the setup on $target failed (above). bin/deploy-lobby --logs shows the lobby's log"
 
 url="$(tr -d '\r' < "$log" | sed -n 's/^[[:space:]]*LOBBY_URL=//p' | tail -n 1)"
 [ -n "$url" ] && setenv LOBBY_DEPLOY_URL "$url"   # for bin/setup
-[ -n "$url" ] && printf '\nthe lobby: %s\neach workroom gives that as its lobby (VISIT_LOBBY for a visit-client)\n' "$url"
+[ -n "$url" ] && printf '\nthe lobby: %s (its page: https://%s/)\neach workroom gives that as its lobby (VISIT_LOBBY)\n' "$url" "$domain"
 exit 0

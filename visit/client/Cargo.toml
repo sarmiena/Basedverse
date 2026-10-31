@@ -1,6 +1,6 @@
 [package]
 name = "visit"
-version = "2.1.1"
+version = "3.0.0"
 edition = "2021"
 license = "MIT"
 description = "Visit, the one program a workroom needs (../../V2.md): the lobby session, the links to other workrooms, the page connection, the sign-in API"
@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 auth = { path = "../../auth/client" }
+lobby-proto = { path = "../../lobby/proto" }
 engine = { path = "../../engine" }
 anyhow = "1.0.104"
 axum = { version = "0.8.9", features = ["ws"] }

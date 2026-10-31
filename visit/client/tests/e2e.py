@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""visit-client end to end: the real lobby (in-process), two real visit-clients (A hosts, B visits) and
-two stand-in pages speaking basedverse-visit-local/2 (../../SPEC.md section 5). Everything on this
-machine's loopback; the visit-clients link directly (no relay).
+"""visit-client end to end: the real lobby (the `lobby` binary beside visit, ../../../lobby), two real
+visit-clients (A hosts, B visits), each signed in on its own workroom (the lobby is joined only then:
+../../../LOBBY.md 2, rule 3), and two stand-in pages speaking basedverse-visit-local/2 (../../SPEC.md
+section 5). Everything on this machine's loopback; the visit-clients link directly (no relay).
 
-    python3 e2e.py path/to/visit-client   (run-e2e.sh runs it in a container)
+    python3 e2e.py path/to/visit [path/to/lobby]   (run-e2e.sh runs it in a container)
 """
 import asyncio
 import gzip
@@ -17,14 +18,14 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.request
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "lobby", "server"))
-import lobby  # noqa: E402
 from websockets.asyncio.client import connect  # noqa: E402
-from websockets.asyncio.server import serve  # noqa: E402
 from websockets.exceptions import ConnectionClosed  # noqa: E402
 
 BIN = sys.argv[1]
+LOBBY_BIN = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(BIN), "lobby")
+PASSWORD = "correct horse battery staple"
 VERSION = re.search(r'^version = "(.*)"', open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Cargo.toml")).read(), re.M).group(1)
 TMP = tempfile.mkdtemp()
 fails = 0
@@ -114,10 +115,84 @@ async def run_bin(*args, timeout=40):
     return p.returncode, out.decode(), err.decode()
 
 
-async def start_client(name, port, url, *extra, binary=None, user_token=False):
+class Lobby:
+    """The lobby, run for the test: pinging every second and dropping a connection that does not answer within one
+    (the keepalive check), with its test aid (--debug): its state, a connection dropped, knocks that lie."""
+
+    async def __aenter__(self):
+        self.log = open(os.path.join(TMP, "lobby.log"), "w")
+        self.p = await asyncio.create_subprocess_exec(LOBBY_BIN, "--listen", "127.0.0.1", "--port", "0", "--ping", "1", "--debug",
+                                                      stdout=asyncio.subprocess.PIPE, stderr=self.log)
+        ready = json.loads(await asyncio.wait_for(self.p.stdout.readline(), 10))
+        self.url, self.http = "ws://127.0.0.1:%d" % ready["port"], "http://127.0.0.1:%d" % ready["port"]
+        return self
+
+    async def __aexit__(self, *exc):
+        self.p.terminate()
+        await self.p.wait()
+
+    async def state(self):
+        def get():
+            with urllib.request.urlopen(self.http + "/debug/state", timeout=3) as r:
+                return json.loads(r.read())
+        return await asyncio.to_thread(get)
+
+    async def post(self, path, body=b""):
+        def go():
+            with urllib.request.urlopen(urllib.request.Request(self.http + path, data=body, method="POST"), timeout=3) as r:
+                return r.status
+        return await asyncio.to_thread(go)
+
+    async def id_of(self, name):
+        """The id of the office of that name (whatever its case), or None."""
+        return next((i for n, i in (await self.state())["by_name"].items() if n.lower() == name.lower()), None)
+
+
+async def auth_call(port, token, path, body):
+    """A call to a workroom's sign-in API (../../../auth/SPEC.md 3), as its server makes it: (status, answer)."""
+    def go():
+        req = urllib.request.Request("http://127.0.0.1:%d%s" % (port, path), data=json.dumps(body).encode(), method="POST",
+                                     headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"{}")
+    return await asyncio.to_thread(go)
+
+
+SIGNED = {}   # name -> (its sign-in's port, its service token, its session)
+
+
+async def sign_in(name):
+    """Its owner signs in (an account made once, in its terminal: `visit auth user add`), as its server would."""
+    port, token, _ = SIGNED[name]
+    p = await asyncio.create_subprocess_exec(BIN, "auth", "--data-dir", os.path.join(TMP, name + ".data"), "user", "add", "owner", "--password-stdin",
+                                             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    await asyncio.wait_for(p.communicate((PASSWORD + "\n").encode()), 60)   # (made already, after a restart: refused, and so be it)
+    code, body = await auth_call(port, token, "/v1/login", {"user": "owner", "password": PASSWORD, "client": {"address": "127.0.0.1", "agent": "e2e"}})
+    assert code == 200, (code, body)
+    SIGNED[name] = (port, token, body["session"])
+    return body["session"]
+
+
+async def sign_out(name):
+    port, token, session = SIGNED[name]
+    return await auth_call(port, token, "/v1/logout", {"session": session})
+
+
+async def start_client(name, port, url, *extra, binary=None, user_token=False, signed_in=True):
     """`user_token`: with a user token too (engine/SPEC.md 6.2): then (process, token, user token). Its data in
-    TMP/<name>.data: a restart is the same workroom, its database kept."""
+    TMP/<name>.data: a restart is the same workroom, its database kept. Its sign-in on port+1000; its owner signed in
+    (unless `signed_in` is False), so it joins the lobby."""
     extra = ("--data-dir", os.path.join(TMP, name + ".data")) + extra
+    service = secrets.token_hex(32)
+    spath = os.path.join(TMP, name + ".auth-token")
+    fd = os.open(spath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.write(fd, service.encode())
+    os.close(fd)
+    extra = extra + ("--auth-token-file", spath, "--auth-port", str(port + 1000))
+    SIGNED[name] = (port + 1000, service, None)
     token = secrets.token_hex(32)
     path = os.path.join(TMP, name + ".token")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -138,6 +213,8 @@ async def start_client(name, port, url, *extra, binary=None, user_token=False):
                                              env=dict(os.environ, RUST_LOG=os.environ.get("RUST_LOG", "visit=debug,auth=debug,iroh=warn")))
     ready = json.loads(await asyncio.wait_for(p.stdout.readline(), 30))   # (the first start makes its database)
     check("%s prints its ready line" % name, (ready["ready"], ready["port"], ready["proto"]), (True, port, "basedverse-visit-local/2"))
+    if signed_in:
+        await sign_in(name)
     return (p, token, utoken) if user_token else (p, token)
 
 
@@ -157,10 +234,8 @@ def unframe(b):
 
 
 async def main():
-    # Pings every second, dropping a connection that does not answer within one: the keepalive check below.
-    async with serve(lobby.handler, "127.0.0.1", 0, max_size=lobby.LIMITS["frame"], process_request=lobby.health,
-                     ping_interval=1, ping_timeout=1) as server:
-        url = "ws://127.0.0.1:%d" % server.sockets[0].getsockname()[1]
+    async with Lobby() as L:
+        url = L.url
         state = os.path.join(TMP, "A.state.json")   # where A keeps whether it is away
         a_flags = ("--origins", "http://room.test", "--state-file", state)
 
@@ -228,6 +303,22 @@ async def main():
         check("renaming to a free name: the same office, its new name for all", [o["id"] for o in lob["offices"] if o["name"] == "B2"], [ids["B"]])
         await b.send(type="rename", name="B")
         await a.until(lambda m: m["type"] == "lobby" and any(o["name"] == "B" for o in m["offices"]))
+        await a.drain()
+        await b.drain()
+
+        print("\nsigned in to take part (LOBBY.md 2, rule 3): the lobby only while someone is signed in on the workroom")
+        check("both pages' ready: signed in", (ra["signed_in"], rb["signed_in"]), (True, True))
+        await sign_out("B")
+        si = await b.until(lambda m: m["type"] == "signed_in")
+        check("B's owner signs out: B's page hears it", si["signed_in"], False)
+        lob = await a.until(lambda m: m["type"] == "lobby" and not any(o["name"] == "B" for o in m["offices"]))
+        check("and B leaves the lobby at once", [o["name"] for o in lob["offices"]], ["A"])
+        await b.send(type="knock", to=ids["A"])
+        check("signed out, B cannot knock: refused, signed_out", (await b.until(lambda m: m["type"] == "error"))["code"], "signed_out")
+        await sign_in("B")
+        lob = await a.until(both)
+        ids = {o["name"]: o["id"] for o in lob["offices"]}
+        check("signed in again: B is back (a new office), its link published", sorted(ids), ["A", "B"])
         await a.drain()
         await b.drain()
 
@@ -372,8 +463,7 @@ async def main():
         print("\nthe lobby connection drops and resumes")
         await a.drain()
         await b.drain()
-        office_b = lobby.OFFICES2[ids["B"]]
-        await office_b.ws.close()
+        await L.post("/debug/drop/" + ids["B"])
         check("B's page hears it is offline", (await b.until(lambda m: m["type"] in ("offline", "online")))["type"], "offline")
         on = await b.until(lambda m: m["type"] == "online", timeout=10)
         check("then online again as the same office", on["office"]["id"], ids["B"])
@@ -435,21 +525,16 @@ async def main():
         other = "5866666666666666666666666666666666666666666666666666666666666666"   # ed25519's base point: a key
         await a.send(type="guest_add", key=other, name="someone")
         await a.expect("guests")
-        real = lobby.knock_msg
-        def lying(kid):
-            m = real(kid)
-            m["from"]["key"] = other
-            return m
-        lobby.knock_msg = lying
+        await L.post("/debug/lie", other.encode())
         try:
             await b.send(type="knock", to=ids["A"])
             await asyncio.sleep(1.5)
         finally:
-            lobby.knock_msg = real
+            await L.post("/debug/lie")
         seen_a = [m["type"] for m in [a.texts.get_nowait() for _ in range(a.texts.qsize())] if m]
         seen_b = [m["type"] for m in [b.texts.get_nowait() for _ in range(b.texts.qsize())] if m]
         check("a lobby lying about whose knock it is: no visit (A's page asked nothing, B's never in)",
-              ("knock" in seen_a, "visit_started" in seen_a, "visit_started" in seen_b, len(lobby.VISITS2)), (False, False, False, 0))
+              ("knock" in seen_a, "visit_started" in seen_a, "visit_started" in seen_b, (await L.state())["visits"]), (False, False, False, 0))
         await a.send(type="guest_remove", key=other)
         await a.expect("guests")
 
@@ -576,7 +661,7 @@ async def main():
         await b.drain()
         await a.send(type="guest_remove", key=kb)
         await a.expect("guests")
-        check("and every visit is over", len(lobby.VISITS2), 0)
+        check("and every visit is over", (await L.state())["visits"], 0)
 
         print("\nlinks: a knock let in as a watch, seen in a corner, stepped into")
         await a.drain()
@@ -620,7 +705,54 @@ async def main():
         await b.send(type="end", visit=lb["id"])
         await a.until(lambda m: m["type"] == "visit_ended")
         await b.until(lambda m: m["type"] == "visit_ended")
-        check("B ends it: every visit over", len(lobby.VISITS2), 0)
+        check("B ends it: every visit over", (await L.state())["visits"], 0)
+
+        print("\nworld groups (LOBBY.md): members watch each other's plots through open doors, as guests do; and a public door")
+        await a.drain()
+        await b.drain()
+        await a.send(type="group_create", group="Hollow", open=True, about="the valley")
+        ga = await a.until(lambda m: m["type"] == "group")
+        check("A makes a world group: its page has it, A its owner and only member", (ga["name"], ga["owner"], [m["key"] for m in ga["members"]]), ("Hollow", ka, [ka]))
+        await b.send(type="world", on=True)
+        await asyncio.sleep(0.6)
+        check("B's world on, A neither its guest nor in a group with it: nothing watched", [t for t in quiet_types(b) if t == "visit_started"], [])
+        await b.send(type="group_join", group="hollow")
+        gb = await b.until(lambda m: m["type"] == "group")
+        check("B joins it (it is open): both in it", sorted(m["key"] for m in gb["members"]), sorted([ka, kb]))
+        wb = await b.until(lambda m: m["type"] == "visit_started")
+        wa = await a.until(lambda m: m["type"] == "visit_started")
+        check("in a group with A: B's world watches A's plot, A's open door lets it (no guest, nobody asked)",
+              (wb["role"], wb.get("watch"), wb["peer"]["name"], wa["role"], wa.get("watch")), ("visitor", True, "A", "host", True))
+        await b.send(type="say", text="hello hollow", to={"group": "HOLLOW"})
+        x = await a.until(lambda m: m["type"] == "chat")
+        y = await b.until(lambda m: m["type"] == "chat")
+        check("a line to the group: A has it, in the group's conversation; B's own comes back as its",
+              ({k: x.get(k) for k in ("scope", "group", "text", "conversation")}, y.get("mine")),
+              ({"scope": "group", "group": "Hollow", "text": "hello hollow", "conversation": "group:hollow"}, True))
+        await b.send(type="say", text="x", to={"group": "Nowhere"})
+        check("to a group it is not in: refused", (await b.until(lambda m: m["type"] == "error"))["code"], "not_found")
+        await b.send(type="group_leave", group="Hollow")
+        await b.until(lambda m: m["type"] == "group_left")
+        e = await a.until(lambda m: m["type"] == "visit_ended")
+        check("B leaves the group: its watch of A's plot ends", e["id"], wa["id"])
+        await b.until(lambda m: m["type"] == "visit_ended")
+        await b.send(type="world", on=False)
+        await a.send(type="group_delete", group="Hollow")
+        check("A ends the group", (await a.until(lambda m: m["type"] == "group_left"))["reason"], "deleted")
+        await a.send(type="door", public=True)
+        await a.until(lambda m: m["type"] == "guests")
+        await b.until(lambda m: m["type"] == "lobby" and any(o["name"] == "A" and o.get("public") for o in m["offices"]))
+        await b.send(type="knock", to=ids["A"])
+        va = await a.until(lambda m: m["type"] == "visit_started")
+        vb = await b.until(lambda m: m["type"] == "visit_started")
+        check("A's door public (the lobby says so): B, no guest, knocks and is let in, A's page never asked",
+              (va["role"], va.get("guest"), vb["role"], [t for t in quiet_types(a) if t == "knock"]), ("host", True, "visitor", []))
+        await b.send(type="end", visit=vb["id"])
+        await a.until(lambda m: m["type"] == "visit_ended")
+        await b.until(lambda m: m["type"] == "visit_ended")
+        await a.send(type="door", public=False)
+        await a.until(lambda m: m["type"] == "guests")
+        check("A's state file keeps the door's public", json.load(open(state))["public"], False)
 
         print("\navatars: asked for by a host, sent by the visitor's visit-client")
         await a.drain()
@@ -963,7 +1095,7 @@ async def main():
         check("a picture nobody has: media_none", (await b.until(lambda m: m["type"] == "media_none"))["id"], "0" * 64)
         await a.send(type="say", text="x", to="lobby", media=[pic])
         check("a picture into the lobby: refused (it carries text only)", (await a.until(lambda m: m["type"] == "error"))["code"], "not_supported")
-        await a.send(type="say", text="psst", to={"whisper": lobby.BY_NAME2["c"]}, media=[pic])
+        await a.send(type="say", text="psst", to={"whisper": await L.id_of("c")}, media=[pic])
         check("a whisper with a picture to C, not linked with A: refused", (await a.until(lambda m: m["type"] == "error"))["code"], "no_link")
         hits = []
         class Site(http.server.BaseHTTPRequestHandler):   # a site with a page to preview, and its picture
@@ -1195,7 +1327,7 @@ async def main():
         await a.send(type="host", three="128")
         await asyncio.sleep(1.5)
         check("A restarted with its state file: still away, and not in the lobby",
-              (ra["away"], ra["online"], "a" in lobby.BY_NAME2), (True, False, False))
+              (ra["away"], ra["online"], await L.id_of("a") is not None), (True, False, False))
         check("and the same key as before: the same office to its friends", ra["key"], ka)
         check("whom it keeps out, from its database: B, out of its chat", ra["bans"], [{"key": kb, "name": "B", "voice": False, "chat": True}])
         cl = await a.until(lambda m: m["type"] == "chat_log")

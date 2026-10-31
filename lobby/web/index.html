@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lobby</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='5' width='12' height='9' rx='1' fill='%23c9a227'/%3E%3Cpath d='M1 6 8 1l7 5' stroke='%23c9a227' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+<style>
+  /* The lobby's public page (LOBBY.md 2, rule 10): read only. What it shows comes from /api/lobby: the rooms that
+     describe themselves, the world groups, how many are online. Nothing here is anyone's key, nor where anyone is. */
+  :root {
+    --bg: #0b0d12; --panel: #12161f; --line: #232a37; --text: #e7e2d6; --muted: #9a9384; --gold: #d4af37; --gold-dim: #8a7428;
+    --green: #6fd38a; --blue: #8fb4ff; --font: ui-serif, Georgia, "Times New Roman", serif; --ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --bg: #f4f1ea; --panel: #fffdf8; --line: #ddd5c4; --text: #2a2620; --muted: #6f6758; --gold: #8a6d12; --gold-dim: #b49a52; --green: #1f7a3c; --blue: #2d5bb8; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 var(--ui); }
+  main { max-width: 980px; margin: 0 auto; padding: 32px 16px 64px; }
+  header { border-bottom: 1px solid var(--line); padding-bottom: 20px; margin-bottom: 24px; }
+  h1 { font: 600 clamp(28px, 5vw, 40px)/1.15 var(--font); color: var(--gold); margin: 0 0 6px; letter-spacing: .01em; }
+  .motd { color: var(--text); margin: 6px 0 0; font-style: italic; }
+  .count { color: var(--muted); font-size: 14px; margin-top: 10px; }
+  .count b { color: var(--green); font-weight: 600; }
+  .join { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 14px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; font-size: 14px; }
+  .join code { font: 14px ui-monospace, Consolas, monospace; color: var(--gold); background: none; overflow-wrap: anywhere; }
+  .join button { font: inherit; font-size: 13px; color: var(--text); background: none; border: 1px solid var(--gold-dim); border-radius: 5px; padding: 2px 10px; cursor: pointer; }
+  .join a { color: var(--blue); }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  @media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+  h2 { font: 600 20px/1.3 var(--font); color: var(--gold); margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  .list { display: flex; flex-direction: column; gap: 8px; }
+  .item { padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--gold-dim); border-radius: 6px; }
+  .item .top { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .item .name { font-weight: 600; }
+  .item .meta { margin-left: auto; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .item .about { color: var(--text); opacity: .85; font-size: 14px; margin-top: 2px; overflow-wrap: anywhere; }
+  .tag { font-size: 12px; color: var(--blue); margin-right: 6px; }
+  .badge { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; border: 1px solid currentColor; border-radius: 4px; padding: 0 5px; }
+  .badge.open { color: var(--green); }
+  .badge.ask { color: var(--muted); }
+  .empty { color: var(--muted); font-size: 14px; padding: 10px 0; }
+  footer { margin-top: 40px; color: var(--muted); font-size: 13px; }
+  footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">A basedverse lobby</h1>
+    <p class="motd" id="motd" hidden></p>
+    <div class="count" id="count">…</div>
+    <div class="join">
+      <span>Join with Visit: put this in your workroom's <code>.env</code></span>
+      <code id="url"></code>
+      <button type="button" id="copy">Copy</button>
+      <a href="https://github.com/sarmiena/Basedverse/releases/latest" rel="noopener">get Visit</a>
+    </div>
+  </header>
+  <div class="cols">
+    <section>
+      <h2>World groups</h2>
+      <p class="sub">Their members put each other's rooms round their own, as neighbours on a map. Open ones take anyone; the rest ask their ops.</p>
+      <div class="list" id="groups"></div>
+    </section>
+    <section>
+      <h2>Rooms</h2>
+      <p class="sub">Rooms that list themselves. Open to anyone: walk in from Visit. The rest: knock.</p>
+      <div class="list" id="rooms"></div>
+    </section>
+  </div>
+  <footer>Read only: taking part takes Visit, signed in on your own workroom. <span id="ver"></span></footer>
+</main>
+<script>
+  "use strict";
+  const $ = id => document.getElementById(id);
+  const lobbyUrl = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/";
+  $("url").textContent = "VISIT_LOBBY=" + lobbyUrl;
+  $("copy").addEventListener("click", () => {
+    navigator.clipboard.writeText("VISIT_LOBBY=" + lobbyUrl).then(() => { $("copy").textContent = "Copied"; setTimeout(() => { $("copy").textContent = "Copy"; }, 1500); }, () => {});
+  });
+  // Text only, made into elements: nothing anyone typed becomes markup.
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  function item(name, meta, about, extra) {
+    const d = el("div", "item"), top = el("div", "top");
+    top.append(el("span", "name", name), ...extra, el("span", "meta", meta));
+    d.append(top);
+    if (about) d.append(about);
+    return d;
+  }
+  function draw(x) {
+    const l = x.lobby || {};
+    document.title = x.title || "Lobby";
+    $("title").textContent = x.title || "A basedverse lobby";
+    $("motd").hidden = !x.motd; $("motd").textContent = x.motd || "";
+    const n = l.online || 0;
+    $("count").replaceChildren(el("b", null, String(n)), document.createTextNode(n === 1 ? " workroom in the lobby" : " workrooms in the lobby"));
+    $("ver").textContent = x.version ? "lobby " + x.version : "";
+    const groups = (l.groups || []).slice().sort((a, b) => b.online - a.online || b.members - a.members || a.name.localeCompare(b.name));
+    $("groups").replaceChildren(...(groups.length ? groups.map(g => item(g.name, `${g.online}/${g.members} online`, g.about ? el("div", "about", g.about) : null,
+      [el("span", "badge " + (g.open ? "open" : "ask"), g.open ? "open" : "by asking")])) : [el("div", "empty", "No groups yet: make one from Visit's panel.")]));
+    const rooms = (l.rooms || []).filter(r => r.ready).sort((a, b) => (b.public - a.public) || a.name.localeCompare(b.name));
+    $("rooms").replaceChildren(...(rooms.length ? rooms.map(r => {
+      const about = el("div", "about", (r.about && r.about.text) || "");
+      for (const t of (r.about && r.about.tags) || []) about.append(" ", el("span", "tag", "#" + t));
+      const extra = [];
+      if (r.public) extra.push(el("span", "badge open", "open to anyone"));
+      if (r.status === "busy") extra.push(el("span", "badge ask", "busy"));
+      return item(r.name, `${r.visitors}/${r.max_visitors} inside`, about, extra);
+    }) : [el("div", "empty", "No rooms list themselves yet.")]));
+  }
+  async function refresh() {
+    try {
+      const r = await fetch("/api/lobby", { cache: "no-store" });
+      if (r.ok) draw(await r.json());
+    } catch (e) { $("count").textContent = "the lobby is not answering"; }
+  }
+  refresh();
+  setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 10000);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refresh(); });
+</script>
+</body>
+</html>

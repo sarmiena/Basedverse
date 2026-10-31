@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""visit.js in real browsers: the real lobby (in-process), two visit-clients, the test room (room.html, three.js)
+"""visit.js in real browsers: the real lobby (the `lobby` binary beside visit), two visit-clients (each signed in on its
+own workroom: the lobby is joined only then), the test room (room.html, three.js)
 open in two headless Chromes driven over the DevTools protocol, A's made with three.js r128 and B's with r160.
 B knocks on A, draws A's scene, walks around it with real key presses, sees what A changes, and both pages
 reload mid-visit. Then worlds: each draws the other's plot round its own, walks onto it and off, sees where the
@@ -25,12 +26,11 @@ import threading
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "lobby", "server"))
-import lobby  # noqa: E402
 import websockets  # noqa: E402
-from websockets.asyncio.server import serve  # noqa: E402
 
 BIN, CDP_A, CDP_B, OUT = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+LOBBY_BIN = os.path.join(os.path.dirname(BIN), "lobby")
+PASSWORD = "correct horse battery staple"
 
 
 def free_ports(n):
@@ -45,7 +45,8 @@ def free_ports(n):
     return ports
 
 
-LOBBY_PORT, WEB_PORT, PORT_A, PORT_B, PORT_C = free_ports(5)
+LOBBY_PORT, WEB_PORT, PORT_A, PORT_B, PORT_C, AUTH_A, AUTH_B, AUTH_C = free_ports(8)
+AUTH = {"A": AUTH_A, "B": AUTH_B, "C": AUTH_C}
 TMP = tempfile.mkdtemp()
 fails = 0
 
@@ -194,12 +195,30 @@ async def start_client(name, port, url, user_token=False, tokens=None, extra_arg
             f.write(utoken)
         extra = ["--user-token-file", upath]
     extra += list(extra_args)
+    # Its sign-in (auth/SPEC.md), and its owner signed in once it is up: a workroom is in the lobby only then.
+    service = secrets.token_hex(32)
+    spath = os.path.join(TMP, name + ".auth-token")
+    with open(spath, "w") as f:
+        f.write(service)
+    os.chmod(spath, 0o600)
+    extra += ["--auth-token-file", spath, "--auth-port", str(AUTH[name])]
     # Its database: the Postgres inside visit, in a data directory of its own (unpacked once, under TMP/xdg).
     p = await asyncio.create_subprocess_exec(BIN, "--lobby", url, "--name", name, "--sim", "test-room/1", "--port", str(port),
                                              "--token-file", path, "--relays", "none", "--data-dir", os.path.join(TMP, name + ".data"), *extra,
                                              stdout=asyncio.subprocess.PIPE, stderr=open(os.path.join(OUT, name + ".log"), "w"),
                                              env=dict(os.environ, XDG_DATA_HOME=os.path.join(TMP, "xdg")))
     await asyncio.wait_for(p.stdout.readline(), 30)
+    add = await asyncio.create_subprocess_exec(BIN, "auth", "--data-dir", os.path.join(TMP, name + ".data"), "user", "add", "owner", "--password-stdin",
+                                               stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                                               env=dict(os.environ, XDG_DATA_HOME=os.path.join(TMP, "xdg")))
+    await asyncio.wait_for(add.communicate((PASSWORD + "\n").encode()), 60)
+    def login():
+        req = urllib.request.Request("http://127.0.0.1:%d/v1/login" % AUTH[name], method="POST",
+                                     data=json.dumps({"user": "owner", "password": PASSWORD, "client": {"address": "127.0.0.1", "agent": "browser test"}}).encode(),
+                                     headers={"Authorization": "Bearer " + service, "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status
+    assert await asyncio.to_thread(login) == 200, "%s's owner could not sign in" % name
     return (p, token, utoken) if user_token else (p, token)
 
 
@@ -241,8 +260,19 @@ async def main():
     handler = functools.partial(Handler, directory=HERE)
     web = http.server.ThreadingHTTPServer(("127.0.0.1", WEB_PORT), handler)
     threading.Thread(target=web.serve_forever, daemon=True).start()
-    async with serve(lobby.handler, "127.0.0.1", LOBBY_PORT, max_size=lobby.LIMITS["frame"]):
-        url = "ws://127.0.0.1:%d" % LOBBY_PORT
+    lobby = await asyncio.create_subprocess_exec(LOBBY_BIN, "--listen", "127.0.0.1", "--port", str(LOBBY_PORT),
+                                                 stdout=asyncio.subprocess.PIPE, stderr=open(os.path.join(OUT, "lobby.log"), "w"))
+    await asyncio.wait_for(lobby.stdout.readline(), 10)
+    try:
+        return await run(a, b, "ws://127.0.0.1:%d" % LOBBY_PORT)
+    finally:
+        web.shutdown()
+        lobby.terminate()
+        await lobby.wait()
+
+
+async def run(a, b, url):
+    if True:
         (pa, ta), (pb, tb) = await start_client("A", PORT_A, url), await start_client("B", PORT_B, url)
         # A's room is made with three.js r128, B's with r160: each draws the other's with its own (a world), or with
         # the other's very release (a visit).
@@ -1311,7 +1341,6 @@ async def main():
         for p in (pa, pb):
             p.terminate()
             await p.wait()
-    web.shutdown()
     print("\n%d failure(s)" % fails)
     return 1 if fails else 0
 

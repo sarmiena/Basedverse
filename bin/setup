@@ -32,6 +32,8 @@ from urllib.parse import quote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 RELEASES = "https://github.com/sarmiena/Basedverse/releases"
+# The lobby a new workroom is offered: basedverse's own, unless BASEDVERSE_LOBBY says another (LOBBY.md).
+DEFAULT_LOBBY = os.environ.get("BASEDVERSE_LOBBY") or "wss://basedverse.app/"
 NAME = re.compile(r"[A-Za-z0-9]([A-Za-z0-9 _.-]{0,22}[A-Za-z0-9])?")   # the lobby's rule for office names
 SIM = re.compile(r"[A-Za-z0-9._+-]{1,40}/[A-Za-z0-9._+-]{1,40}")
 TARGETS = {   # (system, machine) -> the release's build for it
@@ -191,9 +193,10 @@ def deploy(target, key, host):
     bash = shutil.which("bash")
     if not bash or not (shutil.which("ssh") or os.environ.get("DEPLOY_SSH")):
         die("deploying a lobby needs bash and ssh")
-    cmd = [bash, str(ROOT / "bin" / "deploy-lobby"), target] + (["-i", key] if key else []) + (["--host", host] if host else [])
+    cmd = [bash, str(ROOT / "bin" / "deploy-lobby"), target] + (["-i", key] if key else [])
     say("\nDeploying the lobby to %s (bin/deploy-lobby):" % target)
-    if subprocess.run(cmd).returncode != 0:   # its own terminal: ssh may ask for a password
+    env = dict(os.environ, **({"LOBBY_DOMAIN": host} if host else {}))   # its DNS name (deploy-lobby: basedverse.app)
+    if subprocess.run(cmd, env=env).returncode != 0:   # its own terminal: ssh may ask for a password
         die("the deploy did not finish (above)")
     url = read_env(deploy_env()).get("LOBBY_DEPLOY_URL", "")
     if not url:
@@ -213,14 +216,14 @@ def choose_lobby(args, ask, env):
     deployed = read_env(deploy_env())
     if args.deploy:
         return deploy(args.deploy, args.key or deployed.get("LOBBY_DEPLOY_KEY", ""), args.host), True
-    have = env.get("VISIT_LOBBY") or deployed.get("LOBBY_DEPLOY_URL", "")
-    options = {"a": "an address I have (a lobby someone runs, or one I deployed before)",
-               "b": "deploy one on my own server, over ssh (it installs Docker, the lobby, TLS and TURN there)"}
+    have = env.get("VISIT_LOBBY") or deployed.get("LOBBY_DEPLOY_URL", "") or DEFAULT_LOBBY
+    options = {"a": "an address: basedverse's lobby (%s), one someone else runs, or one I deployed before" % DEFAULT_LOBBY,
+               "b": "deploy one on my own server, over ssh (the lobby and Caddy for TLS, under systemd: no Docker there)"}
     if ask.choose("\nThe lobby (where workrooms find each other):", options, "a") == "b":
         target = ask.ask("Your server, as user@host (e.g. ubuntu@203.0.113.5)", deployed.get("LOBBY_DEPLOY", ""),
                          lambda a: None if re.fullmatch(r"[A-Za-z0-9._-]+@[A-Za-z0-9.:-]+", a) else "user@host")
         key = ask.ask("Its ssh key file (Enter: none, or your ssh config's)", deployed.get("LOBBY_DEPLOY_KEY", ""))
-        host = ask.ask("A DNS name for its certificate (Enter: its IP address)", "")
+        host = ask.ask("Its DNS name, pointing at that server (its certificate's; Enter: LOBBY_DOMAIN, else basedverse.app)", "")
         return deploy(target, key, host), True
     return lobby_url(ask.ask("The lobby's address (wss://...)", have, lambda a: lobby_check(lobby_url(a)), "--lobby")), False
 
@@ -375,7 +378,7 @@ def owner(visit, data, ask):
     if r.returncode != 0 or "no users yet" not in r.stdout:
         say("  accounts: " + (", ".join(l.split()[0] for l in r.stdout.splitlines()[1:]) or "(see visit auth user list)"))
         return
-    if not ask.on or not ask.ask("\nMake the owner's account now, to sign in to your workroom with? (y/n)", "y",
+    if not ask.on or not ask.ask("\nMake the owner's account now, to sign in to your workroom with (the lobby is joined only while someone is signed in)? (y/n)", "y",
                                  lambda a: None if a.lower() in ("y", "n", "yes", "no") else "y or n").lower().startswith("y"):
         say("  later, in a terminal: visit auth user add <name>")
         return
@@ -412,7 +415,7 @@ def main():
     p.add_argument("--lobby", help="a lobby's address (wss://...; a bare name or IP means wss://it/)")
     p.add_argument("--deploy", metavar="USER@HOST", help="deploy a lobby on that server instead, and use it")
     p.add_argument("--key", help="with --deploy: the ssh key file")
-    p.add_argument("--host", help="with --deploy: a DNS name for its certificate (else its IP)")
+    p.add_argument("--host", help="with --deploy: its DNS name, pointing at the server (default: LOBBY_DOMAIN, else basedverse.app)")
     p.add_argument("--name", help="the office's name in the lobby")
     p.add_argument("--sim", help="the sim, as name/version, shown to others (e.g. my-workroom/1.0)")
     p.add_argument("--page", help="the workroom page's address, as the browser shows it (e.g. http://localhost:3000)")

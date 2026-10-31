@@ -1,5 +1,6 @@
 # visit for each platform, built, tested and started fresh on that platform (V2.md 6.2): one file with Postgres and
-# Chrome inside it (the archives deps/pinned.json pins, from their deps-<n> release). A tag v<version> (the version
+# Chrome inside it (the archives deps/pinned.json pins, from their deps-<n> release). And the lobby (LOBBY.md), for
+# Linux servers: one static file, for anyone to host one. A tag v<version> (the version
 # in visit/client/Cargo.toml, auth/client/Cargo.toml and engine/Cargo.toml) publishes a release with the files; run
 # by hand (Actions → release → Run workflow), it only builds them, as the run's artifacts.
 name: release
@@ -41,7 +42,9 @@ jobs:
         if: matrix.native
         run: cargo test --locked --workspace --target ${{ matrix.target }}
       - name: Build
-        run: cargo build --release --locked -p visit --target ${{ matrix.target }}
+        run: |
+          cargo build --release --locked -p visit --target ${{ matrix.target }}
+          if [[ ${{ matrix.target }} == *linux* ]]; then cargo build --release --locked -p lobby --target ${{ matrix.target }}; fi
       - name: A fresh start
         if: matrix.native
         run: |
@@ -57,6 +60,10 @@ jobs:
             (cd dist && 7z a -tzip -bso0 "$name.zip" visit.exe LICENSE && rm visit.exe LICENSE)
           else
             tar -czf "dist/$name.tar.gz" -C "$out" visit -C "$PWD" LICENSE
+          fi
+          if [[ ${{ matrix.target }} == *linux* ]]; then
+            "$out/lobby" --version
+            tar -czf "dist/lobby-${{ matrix.target }}.tar.gz" -C "$out" lobby -C "$PWD" LICENSE
           fi
           ls -l dist
       - uses: actions/upload-artifact@v4
@@ -77,7 +84,7 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' visit/client/Cargo.toml | head -n 1)
           [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "tag $GITHUB_REF_NAME, but visit/client/Cargo.toml says $version"; exit 1; }
-          for crate in auth/client engine; do
+          for crate in auth/client engine lobby lobby/proto; do
             v=$(sed -n 's/^version = "\(.*\)"/\1/p' $crate/Cargo.toml | head -n 1)
             [ "$v" = "$version" ] || { echo "$crate/Cargo.toml says $v, visit/client/Cargo.toml $version: they are built together"; exit 1; }
           done
@@ -116,6 +123,8 @@ jobs:
           | \`visit-aarch64-apple-darwin.tar.gz\` | macOS, Apple silicon |
           | \`visit-x86_64-apple-darwin.tar.gz\` | macOS, Intel |
           | \`visit-x86_64-pc-windows-msvc.zip\` | Windows, x86_64 |
+          | \`lobby-x86_64-unknown-linux-musl.tar.gz\` | the lobby, to host one: a Linux server, x86_64 ([lobby/README.md]($repo/blob/$GITHUB_REF_NAME/lobby/README.md)) |
+          | \`lobby-aarch64-unknown-linux-musl.tar.gz\` | the same, ARM64 |
 
           \`SHA256SUMS\` has their checksums. About 150 MB each: Postgres and Chrome are inside, unpacked once into
           your data folder on first start. The macOS builds are not notarized: one downloaded with a browser needs

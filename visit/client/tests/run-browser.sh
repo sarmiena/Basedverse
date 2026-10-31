@@ -14,7 +14,7 @@ if [ "$(uname -s)" = Linux ]; then render+=(--use-angle=gl); fi
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/../../.." && pwd)"
 out="${OUT:-$(mktemp -d)}"; mkdir -p "$out"
-"$here/../cargo" build
+"$here/../cargo" build -p visit -p lobby
 pids=()
 for p in 9351 9352; do
   google-chrome --headless=new --remote-debugging-port=$p --user-data-dir="$(mktemp -d)" --window-size=1280,720 \

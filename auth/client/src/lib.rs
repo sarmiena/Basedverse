@@ -144,8 +144,9 @@ pub struct Serve {
 }
 
 /// Readies the API: its token read, its database at the schema it needs, its port taken; then what serves it,
-/// until it fails. A `visit` awaits this before it says it is ready, so a sign-in that cannot start stops it.
-pub async fn serve_with(s: Serve) -> anyhow::Result<impl std::future::Future<Output = anyhow::Result<()>>> {
+/// until it fails, and whether anyone is signed in (a live session), as that changes. A `visit` awaits this before
+/// it says it is ready, so a sign-in that cannot start stops it.
+pub async fn serve_with(s: Serve) -> anyhow::Result<(impl std::future::Future<Output = anyhow::Result<()>>, tokio::sync::watch::Receiver<bool>)> {
     let token = read_token(&s.token_file).map_err(|e| anyhow::anyhow!(e))?;
     if s.idle > s.max_age {
         anyhow::bail!("--auth-idle is at most --auth-max-age");
@@ -154,7 +155,8 @@ pub async fn serve_with(s: Serve) -> anyhow::Result<impl std::future::Future<Out
     let cfg = api::Config { database: s.database, listen: s.listen, port: s.port, token, idle: s.idle, max_age: s.max_age,
                             visit: s.visit, visit_probe: false };
     let listener = api::bind(&cfg).await?;
-    Ok(api::serve_on(cfg, client, listener))
+    let (signed_in, watch) = tokio::sync::watch::channel(false);
+    Ok((api::serve_on(cfg, client, listener, signed_in), watch))
 }
 
 /// The service token in `f`: at least 32 characters (and a warning when others may read it).

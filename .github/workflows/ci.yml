@@ -23,12 +23,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - name: Lobby
-        run: |
-          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/repo:ro -w /repo/lobby/server python:3.13-slim-bookworm \
-            sh -c 'pip install -q --user -r requirements.txt 2>/dev/null && python3 -u test_lobby.py && python3 -u test_lobby2.py'
-      - name: Unit tests (visit, auth, engine)
+      - name: Unit tests (visit, auth, engine, the lobby and its relay)
         run: visit/client/cargo test --locked --workspace
+      - name: Lobby
+        run: lobby/tests/run.sh
       - name: visit end to end
         run: visit/client/tests/run-e2e.sh
       - name: auth end to end
