@@ -1773,7 +1773,9 @@ impl Core {
             if v.get("conversation").is_none() {
                 v["conversation"] = json!(self.conversation_of(&v));
             }
-            self.keep_chat(v.clone());
+            if v.get("far") != Some(&json!(true)) {   // (3.4.2: a line said out of its user's hearing is not theirs to keep)
+                self.keep_chat(v.clone());
+            }
         }
         let text = v.to_string();
         if let Some(id) = self.only {
@@ -2510,8 +2512,23 @@ impl Core {
         }
         let mut line = line;
         line["owner"] = json!(true);
+        // 3.4.2 (#54): as its user's voice goes: to each visitor in the room within VOICE_RANGE of them; across a plot's
+        // side, to each friend near them in both worlds (seam_said). A room that has not placed its user (voice_where):
+        // as before, everyone in it and watching it.
+        let me = self.voice.me;
         for v in self.visits.values().filter(|v| v.up && v.role == Role::Host && !v.local && !self.chat_banned(v.peer.get("key").and_then(Value::as_str).unwrap_or(""))) {
-            let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "said": line })));
+            if me.is_none_or(|me| v.inside && self.voice.visitors.get(&v.channel).is_none_or(|p| flat(*p, me) <= VOICE_RANGE)) {
+                let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "said": line })));
+            }
+        }
+        if let Some(me) = me {
+            let seam: Vec<String> = self.voice.world.iter().filter(|(k, p)| self.seam(k) && !self.chat_banned(k) && flat(**p, me) <= VOICE_RANGE)
+                .map(|(k, _)| k.clone()).collect();
+            for k in seam {
+                if let Some(v) = self.link_with(&k).and_then(|ch| self.visits.values().find(|v| v.up && v.channel == ch)) {
+                    let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "seam_said": line })));
+                }
+            }
         }
     }
 
@@ -2529,12 +2546,23 @@ impl Core {
         if self.chat_banned(line["key"].as_str().unwrap_or("")) {   // kept out of this room's chat
             return;
         }
+        // 3.4.2 (#54): as its sayer's voice goes: to each other visitor within VOICE_RANGE of them (a visitor's line goes
+        // no farther: not across the room's plot's side). One the room has not placed (voice_where): as before, to
+        // everyone in it and watching it.
+        let at = self.voice.visitors.get(&from).copied();
         for v in self.visits.values().filter(|v| v.up && v.role == Role::Host && !v.local && v.channel != from && !self.chat_banned(v.peer.get("key").and_then(Value::as_str).unwrap_or(""))) {
-            let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "said": line })));
+            if at.is_none_or(|at| v.inside && self.voice.visitors.get(&v.channel).is_none_or(|p| flat(*p, at) <= VOICE_RANGE)) {
+                let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "said": line })));
+            }
         }
         let mut chat = line;
         chat["type"] = json!("chat");
         chat["channel"] = json!(from);
+        // Its own page has every line said in its room (the room's logic may want them); one its user is not near (more
+        // than VOICE_RANGE off, or not in it) is marked `far`: no line in its chat, no bubble, not kept.
+        if at.is_some_and(|at| self.voice.me.is_none_or(|me| flat(at, me) > VOICE_RANGE)) {
+            chat["far"] = json!(true);
+        }
         self.to_page(chat);
     }
 
@@ -3206,6 +3234,25 @@ impl Core {
             attach(&mut line, media, links);
             self.want_media(&line, id);
             return self.to_page(line);
+        }
+        if let Some(line) = m.get("seam_said").and_then(said_from) {   // 3.4.2 (#54): said by the other office's user, at home, near this one's across a plot's side
+            if !counted(&mut v.says) {
+                return;
+            }
+            let (key, name) = (v.peer.get("key").and_then(Value::as_str).unwrap_or("").to_string(), person(v));
+            // Only if this side has them within VOICE_RANGE too (both at home, near in both worlds, each by its own
+            // world's measure, as in_person has it), and does not keep them out of its chat.
+            let near = self.voice.me.zip(self.voice.world.get(&key)).is_some_and(|(me, p)| flat(*p, me) <= VOICE_RANGE);
+            if self.visiting().is_none() && near && self.seam(&key) && !self.chat_banned(&key) && line["text"].as_str().is_some_and(|t| !t.is_empty()) {
+                // By the visit that shows their room here (its plot in this office's world first, else a link's
+                // corner), as a line from a room seen from outside comes: over its owner's head there.
+                let shows = |world: bool| self.visits.values().find(|x| x.up && x.role == Role::Visitor && x.watch && (x.in_world || !x.link) == world
+                    && x.peer.get("key").and_then(Value::as_str) == Some(key.as_str())).map(|x| x.channel);
+                let channel = shows(true).or_else(|| shows(false)).unwrap_or(ch);
+                let conversation = format!("room:{key}");
+                return self.to_page(json!({ "type": "chat", "key": key, "name": name, "text": line["text"], "owner": true, "seam": true, "channel": channel, "conversation": conversation }));
+            }
+            return;
         }
         if let Some(mid) = m.get("media_want").and_then(Value::as_str).filter(|i| media::id_ok(i)) {   // a picture this office passed on (8.12)
             let _ = self.db.send(DbCmd::GetMedia { id: mid.to_string(), to: MediaTo::Link(id.to_string()) });
