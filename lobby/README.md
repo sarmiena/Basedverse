@@ -42,14 +42,15 @@ UDP), and these open to the internet:
 | 80, 443 | TCP | Caddy: the certificate's challenge, then `wss://` and the page |
 | 7842 | UDP | the relay's address discovery: how two workrooms find a direct path to each other |
 
-From your machine, in this repository (it builds the lobby with Docker here; the server needs nothing installed):
+From your machine, in this repository (nothing to install, here or on the server):
 
 ```sh
 LOBBY_DOMAIN=lobby.example.org bin/deploy-lobby ubuntu@203.0.113.5     # -i ~/.ssh/key.pem if ssh needs it
 ```
 
-It builds one static `lobby` for the server's architecture (or, with `--version v3.0.0`, takes a release's,
-its checksum checked), copies it there with `deploy/`, and runs `deploy/setup.sh`, which:
+It takes the release's `lobby` for the server's architecture (the release of this checkout's version, its checksum
+checked; `--version` another; `--build` one built from this checkout, with Docker), copies it there with
+`deploy/`, and runs `deploy/setup.sh`, which:
 
 1. stops a lobby of before, if there is one (Visit 2.x's: Python, Caddy and coturn in Docker);
 2. installs the lobby (`/usr/local/bin/basedverse-lobby`) and Caddy (a pinned release, its checksum checked), and a
@@ -78,7 +79,7 @@ kept in this repository's `.env`) is kept on the server:
 
 | command | what it does |
 |---|---|
-| `bin/deploy-lobby` | update it: a new lobby, the same settings; its groups and bans kept |
+| `bin/deploy-lobby` | update it: the lobby of this checkout's release, the same settings; its groups and bans kept |
 | `bin/deploy-lobby --status` | its services, and whether `wss://…/health` answers from here |
 | `bin/deploy-lobby --logs` | the lobby's and Caddy's logs, followed (Ctrl-C stops) |
 | `bin/deploy-lobby --down` | stop it |
