@@ -10,6 +10,30 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v3.4.0 — 2026-11-01 — a room's own sounds, heard by everyone in it, from where they are (#36)
+
+- **Room sounds** ([visit/SPEC.md](visit/SPEC.md) 8.13; [#36](https://github.com/sarmiena/Basedverse/issues/36)). A
+  room's page gives its sounds as files, by name (`v.sounds({ kind: file })`: WAV or MP3 up to 4 MB, Ogg, WebM or MP4
+  up to 2 MB, 32 at most). Its visit-client keeps each once, and everyone in the room fetches it from there over the
+  link the first time they hear it (no URL of the room's: visitors cannot reach it). **Loops** come from anything in
+  its scene marked `userData.visitSound = { kind, volume, ref, far }` (`bed: true`: everywhere in the room the same),
+  heard by distance and side as voices are, the nearest 8 at once, each started where the wall clock has it so everyone
+  hears about the same part. **One-shots**: `v.soundAt(objectOrPoint, kind, { volume, ref, far })`, sent to everyone
+  in the room (10 a second at most). Files, never code: a room that synthesizes renders each sound to a file once
+  (`OfflineAudioContext`). The panel's 🔈 turns a room's sounds off or on in that browser (`v.setRoomSounds`), apart
+  from voices. Nothing goes quieter under voices yet.
+- The lobby is 3.3.0's (only its version): no new deploy.
+
+**What an integration does:** nothing, unless your room has sounds of its own. With some, step by step:
+1. On your room's page (the server page on the engine), give them once as files: `await v.sounds({ waterfall: blob,
+   shot: blob })` (a Blob, an ArrayBuffer, or a URL your page can fetch). Sounds made with Web Audio: render each once
+   with an `OfflineAudioContext` and encode it as a WAV.
+2. Mark each thing that sounds over and over, before it goes into your scene: `object.userData.visitSound = { kind:
+   "waterfall", volume, ref, far }` (`ref`: metres heard at full volume; `far`: not at all past it), or `bed: true` for
+   one heard everywhere in your room.
+3. Play the moments once: `v.soundAt(objectOrPoint, "shot", { volume, ref, far })`.
+4. Your own page's sound code for those can go: Visit plays them for your user too (the panel's 🔈 turns them off).
+
 ## v3.3.0 — 2026-11-01 — worlds are who may come in; you pick whose rooms are round yours; ignore people and figures in chat; targets and lines meant for a room's figures
 
 - **A world's members are each other's guests** ([visit/SPEC.md](visit/SPEC.md) 3, points 9 and 14; 6.6). While your

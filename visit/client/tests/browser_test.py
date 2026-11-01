@@ -1300,6 +1300,28 @@ async def run(a, b, url):
         check("a guide that answers its room's owner alone (talk: owner): A's card offers no Say or Whisper, and says why", await a.until(
             f"(c => !c.hidden && [(c.querySelector('.ab.no') || {{}}).textContent, [...c.querySelectorAll('.bt button')].map(b => b.textContent)])({card})"),
               ["only its room's owner may talk to it", ["spin it"]])
+
+        print("\nroom sounds (3.4, #36): B's room's own sounds, a loop by A and a one-shot, heard by A in it")
+        await b.js("""window.wav = secs => { const r = 8000, n = Math.round(r * secs), b = new ArrayBuffer(44 + n * 2), d = new DataView(b), s = (o, t) => [...t].forEach((c, i) => d.setUint8(o + i, c.charCodeAt(0)));
+          s(0, 'RIFF'); d.setUint32(4, 36 + n * 2, true); s(8, 'WAVEfmt '); d.setUint32(16, 16, true); d.setUint16(20, 1, true); d.setUint16(22, 1, true); d.setUint32(24, r, true); d.setUint32(28, r * 2, true);
+          d.setUint16(32, 2, true); d.setUint16(34, 16, true); s(36, 'data'); d.setUint32(40, n * 2, true);
+          for (let i = 0; i < n; i++) d.setInt16(44 + i * 2, Math.round(Math.sin(i / r * 2 * Math.PI * 440) * 8000), true); return b; };
+          window.soundIds = null; v.sounds({ hum: wav(1), ding: wav(0.3) }).then(t => { window.soundIds = t; }); 1""")
+        check("B's room keeps its sounds (v.sounds): a hum and a ding, each by its id", await b.until("window.soundIds && Object.keys(soundIds).sort()"), ["ding", "hum"])
+        await b.js("(T => { const p = v.visitors[0].pose, o = new T.Object3D(); o.name = 'hummer'; o.position.set(p.x + 0.5, 1, p.z); "
+                   "o.userData.visitSound = { kind: 'hum', volume: 0.5, ref: 2, far: 40 }; room.scene.add(o); })(room.THREE)")
+        check("B puts a humming thing by A (userData.visitSound): A, in B's room, plays its loop, its clip fetched from B", await a.until(
+            "[...v._loops.values()].some(L => L.kind === 'hum' && !!L.src && L.src.buffer.duration > 0.9)", 20), True)
+        n0 = await a.js("v._shotsPlayed")
+        check("B plays its ding once at its spinner (v.soundAt): sent", await b.js("v.soundAt(room.spinner, 'ding')"), True)
+        check("A hears it once", await a.until(f"v._shotsPlayed > {n0} && v._shotsPlayed - {n0}", 15), 1)
+        check("A's panel: 🔈 (the room's sounds on)", await a.js("(b => b && b.textContent)(document.querySelector('.visit-panel button[data-v=sounds]'))"), "🔈")
+        await a.js("document.querySelector('.visit-panel button[data-v=sounds]').click()")
+        check("🔈 clicked: off in this browser (🔇), and the loop stopped", await a.until("!v.roomSounds && v._loops.size === 0 && document.querySelector('.visit-panel button[data-v=sounds]').textContent === '🔇'"), True)
+        await a.js("document.querySelector('.visit-panel button[data-v=sounds]').click()")
+        check("and on again: the loop back", await a.until("v.roomSounds && [...v._loops.values()].some(L => L.kind === 'hum' && !!L.src)", 15), True)
+        await b.js("room.scene.remove(room.scene.getObjectByName('hummer'))")
+        check("B takes the humming thing away: A's loop stops", await a.until("![...v._loops.values()].some(L => L.kind === 'hum')", 15), True)
         await a.js("v.setTarget({ kind: 'figure', id: 'guide' })")
         await a.js("v.leave()")
         await b.until("v.visitors.length === 0")

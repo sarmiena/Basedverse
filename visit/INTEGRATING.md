@@ -482,6 +482,14 @@ visit.host({
   alone, a whisper). Whom your figures answer is yours to decide (`from.owner`: your user; an answer that costs you
   something can be theirs alone). A figure's bubble shows 4 rows at most: cut its long text into lines that fit, and
   say them one after another (`sayAs` takes 200 characters, 5 lines every 10 s from each figure).
+- **Your room's own sounds** (3.4, SPEC 8.13; optional): heard by your visitors too, each from where it is. Give your
+  sounds as files, by name: `await visit.sounds({ waterfall: blob, shot: blob })` (WAV or MP3 up to 4 MB, Ogg, WebM or
+  MP4 up to 2 MB; a Blob, an ArrayBuffer, or a URL your page can fetch). Mark what loops in your scene before it goes
+  in: `waterfall.userData.visitSound = { kind: "waterfall", volume: 0.8, ref: 3, far: 40 }` (`bed: true` for one heard
+  everywhere in your room); play one once with `visit.soundAt(objectOrPoint, "shot")` (on the engine, from your server
+  page). A room that makes its sounds with Web Audio renders each once (`OfflineAudioContext`, then a WAV of it) and
+  gives that: Visit plays files, never your code. Your own page then needs no sound code of its own for those: Visit
+  plays them for you too (the panel's 🔈 turns them off).
 - **Your user's name** (if your room knows it): `visit.setName(name)`, now and whenever it changes. Others then see
   it with what your user says, over their voice, and in their panel ("Ann (Duckroom)"); without it, your office's
   name.

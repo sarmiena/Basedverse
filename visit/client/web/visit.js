@@ -13,7 +13,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "3.3.0", PROTO = "basedverse-visit-local/2";
+  const VERSION = "3.4.0", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -64,6 +64,9 @@
   const KEY = 1, EDIT = 2, AVATAR = 4, AUDIO = 8, RELAY = 16, LAND = 32, POSSESSION = 64, MEDIA = 128;   // frames' flags: bit 0 a key delta; bit 1 a scene edit, bit 2 this office's avatar (page to visit-client); bit 3 voice; bit 5 this room's landscape (page to visit-client); bit 6 one of its possessions, its slot the channel (8.11); bit 7 a picture shared in chat (8.12) (SPEC 5.4)
   const MEDIA_MAX = 8 << 20, MEDIA_KINDS = ["image/png", "image/jpeg", "image/webp", "image/gif"];   // a picture shared (8.12): at most 8 MB, of these kinds
   const VOICE_MAX = 2 << 20, VOICE_SECS = 60, VOICE_KINDS = ["audio/webm", "audio/ogg", "audio/mp4"];   // a voice message (0.22.0): at most 2 MB, a minute, of these kinds
+  // A room's own sounds (3.4, #36): clips its page names (at most SOUNDS kinds, SOUND_MAX each: WAV, MP3, Ogg, WebM or
+  // MP4), loops from things in it (the nearest SOUND_LOOPS at once) and one-shots (SOUND_SHOTS at once).
+  const SOUND_MAX = 4 << 20, SOUNDS = 32, SOUND_LOOPS = 8, SOUND_SHOTS = 6, SOUND_SCAN = 500;
   // A landscape (SPEC 8.10) goes to visit-client this long after what is static last changed: once, for a room still
   // loading.
   const LAND_QUIET = 1000;
@@ -379,6 +382,15 @@
   // the host's own, where a sim keeps its state (who a figure is, its handles), and never leaves its page; it is
   // put back as it was the moment the JSON is made.
   const SHARED_DATA = ["visitor", "visitPoint", "visitRider"];
+  // 3.4 (#36): something that sounds, a loop of one of the room's sounds (`kind`), from where it is, or (`bed`) everywhere
+  // in the room: its volume (0 to 1), and how far (metres) it is heard at its full volume (`ref`) and at all (`far`).
+  const soundMark = x => isObj(x) && typeof x.kind === "string" && /^[\w.-]{1,40}$/.test(x.kind) ? {
+    kind: x.kind, volume: Number.isFinite(Number(x.volume)) ? Math.max(0, Math.min(1, Number(x.volume))) : 1,
+    ref: Number(x.ref) > 0 ? Math.min(1000, Number(x.ref)) : 2, far: Number(x.far) > 0 ? Math.min(10000, Number(x.far)) : 30, ...(x.bed === true ? { bed: true } : {}) } : null;
+  // A room's sounds, as its scene names them: kind -> { id (a clip's, as its page put it), mime }.
+  const panAt = (node, p, t) => { if (node.positionX) { node.positionX.setValueAtTime(p.x, t); node.positionY.setValueAtTime(p.y, t); node.positionZ.setValueAtTime(p.z, t); } else node.setPosition(p.x, p.y, p.z); };
+  const soundTable = t => new Map(Object.entries(isObj(t) ? t : {}).slice(0, SOUNDS)
+    .filter(([k, x]) => /^[\w.-]{1,40}$/.test(k) && isObj(x) && typeof x.id === "string" && /^[0-9a-f]{64}$/.test(x.id)).map(([k, x]) => [k, { id: x.id, mime: String(x.mime || "") }]));
   // A geometry three.js's loader makes from no recipe: an EdgesGeometry or a WireframeGeometry (lines along another
   // geometry's edges) says in its JSON only what it was made from, which is not there to make it from again.
   const NO_RECIPE = new Set(["EdgesGeometry", "WireframeGeometry"]);
@@ -390,6 +402,8 @@
       if (!u || typeof u !== "object" || !Object.keys(u).length) return;
       const shared = {};
       for (const k of SHARED_DATA) if (["string", "number", "boolean"].includes(typeof u[k])) shared[k] = u[k];
+      const vs = soundMark(u.visitSound);
+      if (vs) shared.visitSound = vs;
       kept.push([x, u]);
       x.userData = shared;
     });
@@ -547,7 +561,7 @@
       if (props.length) edit.props = props;
       if (scene) edit.scene = scene;
       if (inter) edit.interactions = this.inter;
-      if (figs && this.figs) { edit.figures = this.figs.figures; edit.targeting = this.figs.targeting; }
+      if (figs && this.figs) { edit.figures = this.figs.figures; edit.targeting = this.figs.targeting; edit.sounds = this.figs.sounds; }
       if (land) edit.landscape = land;
       return { edit: Object.keys(edit).length > 1 ? edit : null, moved };
     }
@@ -702,7 +716,7 @@
       this.interSig = JSON.stringify(this.inter);
       this.figSig = JSON.stringify(this.figs || null);
       return { type: "scene", three: String(three.REVISION), json, ids: [...this.objs.values()].map(r => [r.o.uuid, r.idx]), targets: this.targets(root), interactions: this.inter,
-        ...(this.figs ? { figures: this.figs.figures, targeting: this.figs.targeting } : {}),
+        ...(this.figs ? { figures: this.figs.figures, targeting: this.figs.targeting, sounds: this.figs.sounds } : {}),
         renderer: rendererProps(renderer, three), fov: Number(hooks.fov) || 70, near: Number(this.cfg.near) || 0.1, far: Number(this.cfg.far) || 1000,
         walk: w && Number(w.speed) > 0 ? { speed: Number(w.speed), mounts: w.mounts === true } : null, yaw0: h.yaw0,
         pose: h.pose ? Object.assign({}, h.pose, { y: (Number(h.pose.y) || 0) + (h.eyes || 0) }) : h.pose,   // its eyes: where its camera goes
@@ -734,6 +748,10 @@
       this.picks = [];         // whose plots your world shows (3.3), at most MAX_PICKS: [{ key, name }]
       this.ignored = [];       // whom your user ignores in chat (3.3), at most MAX_IGNORED: [{ key, npc, name }]
       this.target = null;      // 3.3 (#48): your user's target in the room they are in: { kind, id, name, room, ... } or null
+      // 3.4 (#36): a room's own sounds, as this page plays them: on or off (the panel's 🔈, kept in this browser); the
+      // loops playing (by room and object), the one-shots, the clips decoded (by id).
+      this._roomSoundsOn = (() => { try { return localStorage.getItem("visit:room-sounds") !== "off"; } catch (e) { return true; } })();
+      this._loops = new Map(); this._shots = []; this._buffers = new Map(); this._shotsPlayed = 0;
       this._targeting = true;  //   and whether Visit picks it itself, the room's way (v.targeting(false): your page does)
       this.knocks = [];        // on your door: { id, from, message, until, link }
       this.knocking = [];      // yours, waiting: { id, to, link }
@@ -1069,6 +1087,7 @@
           break;
         case "keyframe": case "input": case "scene_resync": case "point": case "shared_adds": case "landscapes": this._hostMessage(m); break;
         case "act": this._act(m); break;
+        case "sound": if (this.role !== "host") this._soundOnce(m); break;   // 3.4 (#36): a one-shot of the room your user is in
         // 3.3 (#48): a line meant for one of this room's figures, whoever said it (from: { id (their visit here) | owner,
         // key, name }), aloud or (whisper) to it alone. The room answers with sayAs, aloud or { to } them alone.
         case "addressed": {
@@ -1194,6 +1213,50 @@
       this._figures = out;
       this._targetCheck();
       this._changed();
+    }
+    // 3.4 (#36): your room's own sounds, by name: { kind: a Blob or File, an ArrayBuffer or typed array, or a URL your page
+    // can fetch } (WAV or MP3, at most 4 MB each; Ogg, WebM or MP4, at most 2 MB; 32 in all). Your visit-client keeps each once (by its
+    // bytes), and everyone in your room fetches it from there, over the link, the first time they hear it. Then mark what
+    // sounds: object.userData.visitSound = { kind, volume, ref, far } (a loop, from where it is: heard at its full volume
+    // within `ref` metres, fading with distance, not at all past `far`; `bed: true`, everywhere in your room the same),
+    // set before it goes into your scene; and v.soundAt(...) plays one once. Called again, these replace those. Resolves to
+    // { kind: id }. Files, never code: a room's synth can render each of its sounds once (OfflineAudioContext) and give that.
+    async sounds(map) {
+      this._as("host", "sounds");
+      const entries = Object.entries(isObj(map) ? map : {}), table = {};
+      if (entries.length > SOUNDS) throw new Error(`visit.sounds: at most ${SOUNDS}`);
+      for (const [kind, src] of entries) {
+        if (!/^[\w.-]{1,40}$/.test(kind)) throw new Error(`visit.sounds: "${kind}" is not a name (letters, digits, _ . -, at most 40)`);
+        let bytes = null;
+        if (src instanceof ArrayBuffer) bytes = new Uint8Array(src);
+        else if (ArrayBuffer.isView(src)) bytes = new Uint8Array(src.buffer, src.byteOffset, src.byteLength);
+        else if (src && typeof src.arrayBuffer === "function") bytes = new Uint8Array(await src.arrayBuffer());
+        else if (typeof src === "string") { const r = await fetch(src); if (!r.ok) throw new Error(`visit.sounds: "${kind}": ${src} answered ${r.status}`); bytes = new Uint8Array(await r.arrayBuffer()); }
+        if (!bytes || !bytes.length) throw new Error(`visit.sounds: "${kind}" is a Blob, an ArrayBuffer or a URL`);
+        if (bytes.length > SOUND_MAX) throw new Error(`visit.sounds: "${kind}" is more than ${SOUND_MAX >> 20} MB`);
+        const m = await this._put(bytes, "visit.sounds");
+        if (!/^audio\//.test(m.mime)) throw new Error(`visit.sounds: "${kind}" is not a sound (WAV, MP3, Ogg, WebM or MP4)`);
+        table[kind] = { id: m.id, mime: m.mime };
+      }
+      this._soundTable = table;
+      this._changed();
+      return Object.fromEntries(Object.entries(table).map(([k, x]) => [k, x.id]));
+    }
+    // One of your room's sounds, once, from a thing in it (an object) or a point ({ x, y, z } or [x, y, z], your scene's
+    // units): everyone in your room hears it, by their distance and side (`volume`, `ref`, `far` as a loop's). At most 10 a
+    // second. False if not sent.
+    soundAt(at, kind, { volume = 1, ref = 2, far = 30 } = {}) {
+      this._as("host", "soundAt");
+      const x = (this._soundTable || {})[kind], T = this._hooks && this._hooks.scene.three;
+      let p = null;
+      if (at && at.isObject3D && T) { at.updateWorldMatrix(true, false); p = at.getWorldPosition(new T.Vector3()).toArray(); }
+      else if (Array.isArray(at)) p = at.slice(0, 3).map(Number);
+      else if (isObj(at)) p = [at.x, at.y, at.z].map(Number);
+      if (!x || !p || p.length !== 3 || !p.every(Number.isFinite) || !this._ws || this._ws.readyState !== 1) return false;
+      const m = { id: x.id, at: p, volume: Number(volume), ref: Number(ref), far: Number(far) };
+      this._send({ type: "sound_at", ...m });
+      if (this.role !== "host") this._soundOnce({ channel: null, ...m });   // your own page, your room its own: you hear it here
+      return true;
     }
     // A figure's action from someone's card (3.3, #48): run as a point at the figure would be, by its type's own rules
     // (who may, how far, cosmetic or agreed), and only one the figure lists.
@@ -1970,6 +2033,7 @@
         if (s.panner.positionX) { s.panner.positionX.setValueAtTime(p.x, ctx.currentTime); s.panner.positionY.setValueAtTime(p.y, ctx.currentTime); s.panner.positionZ.setValueAtTime(p.z, ctx.currentTime); }
         else s.panner.setPosition(p.x, p.y, p.z);
       }
+      if (this.role !== "host") this._soundTick();   // 3.4 (#36): the room's own sounds (a host page hears none)
     }
     // Where everyone in your room is, in metres, for your visit-client (8.7): your user while they are at home (where
     // your world, or listener(), has them), your phone, and each visitor in it (where your room has them). Sent when
@@ -2251,8 +2315,13 @@
       const voice = /^audio\//.test(blob.type);
       if (voice && blob.size > VOICE_MAX) throw new Error("visit.share: a voice message is at most a minute (2 MB)");
       const b = voice || (blob.size <= MEDIA_MAX && MEDIA_KINDS.includes(blob.type)) ? blob : await smaller(blob);
-      const bytes = new Uint8Array(await b.arrayBuffer());
-      if (!this._ws || this._ws.readyState !== 1) throw new Error("visit.share: not connected to visit-client");
+      const m = await this._put(new Uint8Array(await b.arrayBuffer()), "visit.share");
+      if (!this._media.has(m.id)) this._media.set(m.id, Promise.resolve(URL.createObjectURL(b)));
+      return m;
+    }
+    // Bytes to keep in your visit-client's media (a picture, a voice message, a room's sound): { id, mime, size }.
+    _put(bytes, who) {
+      if (!this._ws || this._ws.readyState !== 1) return Promise.reject(new Error(`${who}: not connected to visit-client`));
       const slot = this._slot = (this._slot % 65535) + 1;
       const kept = new Promise((resolve, reject) => {
         const t = setTimeout(() => { this._puts.delete(slot); reject(new Error("visit-client did not answer")); }, 30000);
@@ -2261,18 +2330,16 @@
       const f = new Uint8Array(11 + bytes.length);
       new DataView(f.buffer).setUint16(0, slot); f[2] = MEDIA; f.set(bytes, 11);
       this._ws.send(f);
-      const m = await kept;
-      if (!this._media.has(m.id)) this._media.set(m.id, Promise.resolve(URL.createObjectURL(b)));
-      return m;
+      return kept;
     }
     // A picture by its id, as a URL this page can show: once your visit-client has it (it asks whoever sent it), or
     // null if it cannot be had.
-    media(id) {
+    media(id, { channel = null } = {}) {
       let p = this._media.get(id);
       if (p) return p;
       p = new Promise(resolve => {
         this._mediaWait.set(id, resolve);
-        this._send({ type: "media_get", id: String(id) });
+        this._send({ type: "media_get", id: String(id), ...(channel != null ? { channel } : {}) });   // (3.4: channel, the room it is from)
         setTimeout(() => { if (this._mediaWait.get(id) === resolve) { this._mediaWait.delete(id); this._media.delete(id); resolve(null); } }, 90000);
       });
       this._media.set(id, p);
@@ -2442,6 +2509,130 @@
         if (at) out.push({ key: k, text: c.text, at });
       }
       return out;
+    }
+
+    // ---------- a room's own sounds (3.4, #36): what everyone in it hears, by distance and side ----------
+    // On or off on this page (voices are apart): the panel's 🔈, kept in this browser.
+    get roomSounds() { return this._roomSoundsOn !== false; }
+    setRoomSounds(on) {
+      this._roomSoundsOn = on !== false;
+      try { localStorage.setItem("visit:room-sounds", this._roomSoundsOn ? "on" : "off"); } catch (e) { /* not kept */ }
+      if (!this._roomSoundsOn) this._soundStop();
+      this._changed();
+    }
+    // The room your user is in, for its sounds: its scene (your own, at home on a page that hosts it), its sounds, how many
+    // metres one of the frame's units is, and the channel its clips come by.
+    _soundRoom() {
+      const r = this._room();
+      if (!r.ears) return null;
+      if (r.s) return { r, s: r.s, table: r.s.sounds || new Map(), k: r.k, channel: r.w ? r.w.channel : null, key: r.w ? "c" + r.w.channel : "home" };
+      const hk = this._hooks;
+      if (!hk) return null;
+      const s = this._ownSounds || (this._ownSounds = { v: new hk.scene.three.Vector3(), T: hk.scene.three });
+      s.root = hk.scene.root;
+      return { r, s, table: new Map(Object.entries(this._soundTable || {})), k: r.k, channel: null, key: "own" };
+    }
+    // What sounds in a scene (looked for every SOUND_SCAN ms): each thing marked userData.visitSound.
+    _soundMarks(s, now) {
+      if (s._snd && now - s._sndAt < SOUND_SCAN) return s._snd;
+      const out = [];
+      s.root.traverse(o => { const m = o.userData && soundMark(o.userData.visitSound); if (m) out.push({ o, m }); });
+      s._snd = out; s._sndAt = now;
+      return out;
+    }
+    // A clip, decoded, by its id (fetched by the room it is from, `channel`, the first time): null if it cannot be had.
+    _soundBuffer(id, channel) {
+      let p = this._buffers.get(id);
+      if (p) return p;
+      p = this.media(id, { channel }).then(async url => {
+        if (!url) return null;
+        return await this._audio().decodeAudioData(await (await fetch(url)).arrayBuffer());
+      }).catch(e => { console.warn("visit: a room's sound could not be played", e); return null; });
+      this._buffers.set(id, p);
+      p.then(b => { if (!b) setTimeout(() => { if (this._buffers.get(id) === p) this._buffers.delete(id); }, 10000); });   // (again, a while on)
+      return p;
+    }
+    // Every 33 ms (with voices): the loops of the room your user is in, the nearest SOUND_LOOPS within their reach (beds
+    // first), each where its thing is now; the rest, and every other room's, stopped. A loop starts where everyone's wall
+    // clock has it, so all in the room hear about the same part.
+    _soundTick() {
+      const sr = this._roomSoundsOn ? this._soundRoom() : null;
+      if (!sr) { if (this._loops.size) this._soundStop(); return; }
+      const now = performance.now(), ears = sr.r.ears, want = [];
+      const shown = o => { for (; o; o = o.parent) if (!o.visible) return false; return true; };
+      for (const e of this._soundMarks(sr.s, now)) {
+        const x = sr.table.get(e.m.kind);
+        if (!x || !e.o.parent || !shown(e.o)) continue;
+        if (e.m.bed) { want.push({ e, x, d: -1 }); continue; }
+        const p = this._where(sr.s, e.o, sr.k), d = Math.hypot(p.x - ears.x, p.y - ears.y, p.z - ears.z);
+        if (d <= e.m.far) want.push({ e, x, d, p });
+      }
+      want.sort((a, b) => a.d - b.d);
+      const keep = new Set(), ctx = this._ctx;
+      for (const w of want.slice(0, SOUND_LOOPS)) {
+        const id = sr.key + "|" + w.e.o.uuid;
+        keep.add(id);
+        let L = this._loops.get(id);
+        if (!L) this._loops.set(id, L = { id, kind: w.e.m.kind, src: null, gain: null, panner: null, loading: false, d: w.d });
+        L.d = w.d;
+        if (!L.src) { this._soundStart(L, w.x.id, sr.channel, w.e.m); continue; }
+        const t = ctx.currentTime, fade = w.e.m.bed ? 1 : Math.max(0, Math.min(1, (w.e.m.far - w.d) / (0.2 * w.e.m.far)));
+        L.gain.gain.setTargetAtTime(w.e.m.volume * fade, t, 0.05);
+        if (L.panner && w.p) panAt(L.panner, w.p, t);
+      }
+      for (const [id, L] of [...this._loops]) if (!keep.has(id)) this._soundEnd(L);
+    }
+    _soundStart(L, id, channel, m) {
+      if (L.loading) return;
+      L.loading = true;
+      this._soundBuffer(id, channel).then(buf => {
+        L.loading = false;
+        if (!buf || this._loops.get(L.id) !== L || L.src) return;
+        const ctx = this._audio(), src = ctx.createBufferSource(), gain = ctx.createGain();
+        src.buffer = buf; src.loop = true; gain.gain.value = 0;
+        src.connect(gain);
+        if (m.bed) gain.connect(ctx.destination);
+        else {
+          const pn = ctx.createPanner();
+          Object.assign(pn, { panningModel: "HRTF", distanceModel: "inverse", refDistance: m.ref, maxDistance: m.far, rolloffFactor: 1 });
+          gain.connect(pn); pn.connect(ctx.destination); L.panner = pn;
+        }
+        src.start(0, (Date.now() / 1000) % buf.duration);
+        Object.assign(L, { src, gain });
+      });
+    }
+    _soundEnd(L) {
+      this._loops.delete(L.id);
+      if (!L.src) return;
+      const t = this._ctx.currentTime;
+      L.gain.gain.setTargetAtTime(0, t, 0.08);
+      try { L.src.stop(t + 0.4); } catch (e) { /* (stopped) */ }
+    }
+    _soundStop() { for (const L of [...this._loops.values()]) this._soundEnd(L); }
+    // A one-shot of the room your user is in (from its page, through visit-client: `sound`), from a point in it (its units),
+    // within its reach; at most SOUND_SHOTS at once.
+    _soundOnce(m) {
+      const sr = this._roomSoundsOn ? this._soundRoom() : null;
+      if (!sr || (m.channel == null ? sr.channel != null : sr.channel !== m.channel) || this._shots.length >= SOUND_SHOTS) return;
+      const at = Array.isArray(m.at) ? m.at.map(Number) : [], T = sr.s.T || (this._hooks && this._hooks.scene.three);
+      if (at.length !== 3 || !at.every(Number.isFinite) || !T || typeof m.id !== "string") return;
+      sr.s.root.updateWorldMatrix(true, false);
+      const w = new T.Vector3(at[0], at[1], at[2]).applyMatrix4(sr.s.root.matrixWorld), p = { x: w.x * sr.k, y: w.y * sr.k, z: w.z * sr.k };
+      const ears = sr.r.ears, far = Number(m.far) > 0 ? Number(m.far) : 30, ref = Number(m.ref) > 0 ? Number(m.ref) : 2;
+      if (Math.hypot(p.x - ears.x, p.y - ears.y, p.z - ears.z) > far) return;
+      const shot = { src: null };
+      this._shots.push(shot);
+      this._soundBuffer(m.id, sr.channel).then(buf => {
+        if (!buf) { this._shots = this._shots.filter(x => x !== shot); return; }
+        const ctx = this._audio(), src = ctx.createBufferSource(), gain = ctx.createGain(), pn = ctx.createPanner();
+        Object.assign(pn, { panningModel: "HRTF", distanceModel: "inverse", refDistance: ref, maxDistance: far, rolloffFactor: 1 });
+        panAt(pn, p, ctx.currentTime);
+        gain.gain.value = Math.max(0, Math.min(1, Number.isFinite(Number(m.volume)) ? Number(m.volume) : 1));
+        src.buffer = buf; src.connect(gain); gain.connect(pn); pn.connect(ctx.destination);
+        src.onended = () => { this._shots = this._shots.filter(x => x !== shot); };
+        shot.src = src; this._shotsPlayed++;
+        src.start();
+      });
     }
 
     // ---------- phones (8.8) ----------
@@ -2755,7 +2946,7 @@
         }
         const sync = this._sync, ready = hs.filter(h => h.sceneSent);
         sync.inter = this._interList();
-        sync.figs = { figures: this._figures || [], targeting: targetingOf(this._hooks.targeting) };
+        sync.figs = { figures: this._figures || [], targeting: targetingOf(this._hooks.targeting), sounds: this._soundTable || {} };
         sync.shared = ready.every(h => h.sharedAdds);   // one visitor on an older Visit: every add whole, as it reads them
         const t0 = this._perf ? performance.now() : 0, { edit, moved } = sync.scan(now);
         if (this._perf) this._pt("scan", performance.now() - t0);
@@ -2886,7 +3077,7 @@
         walk: isObj(e.walk) && num(e.walk.speed, 0) > 0 ? { speed: Math.min(50, num(e.walk.speed, 2.5)), mounts: e.walk.mounts === true } : null,
         eye: num(e.eye, 0) > 0 ? num(e.eye, 0) : null,   // our eyes over our feet there (its units; `body` says again): an older host's, unsaid
         hist: [], vis: { x: 0, y: 0, z: 0 }, waitKey: true, own: [], last: 0, gcAt: performance.now(), q: new T.Quaternion(), v: new T.Vector3(), relight: null,
-        interactions: interMap(e.interactions), figures: figMap(e.figures), targeting: targetingOf(e.targeting), landParents: isObj(e.landscape) && Array.isArray(e.landscape.parents) ? e.landscape.parents : null };
+        interactions: interMap(e.interactions), figures: figMap(e.figures), targeting: targetingOf(e.targeting), sounds: soundTable(e.sounds), landParents: isObj(e.landscape) && Array.isArray(e.landscape.parents) ? e.landscape.parents : null };
       this._sceneAdopt(s, root);
       const byUuid = new Map();
       root.traverse(o => byUuid.set(o.uuid, o));
@@ -3016,6 +3207,7 @@
       if (Array.isArray(e.interactions)) s.interactions = interMap(e.interactions);
       if (Array.isArray(e.figures)) { s.figures = figMap(e.figures); this._targetCheck(); }
       if (typeof e.targeting === "string") s.targeting = targetingOf(e.targeting);
+      if (isObj(e.sounds)) s.sounds = soundTable(e.sounds);
       for (const idx of Array.isArray(e.remove) ? e.remove : []) {
         const o = idx ? s.byIdx.get(idx) : null;
         if (!o) continue;
@@ -4723,7 +4915,7 @@
           ? `<button data-v="speaker" data-key="${esc(c.key)}" class="${c.speaker ? "go" : ""}" title="${c.speaker ? "on speaker: everyone near your phone hears and is heard (click: to your ear)" : "to your ear: only you (click: on speaker, for everyone near your phone)"}">${c.speaker ? "🔊 speaker" : "📞 handset"}</button>` : ""}<button data-v="hang_up" data-key="${esc(c.key)}">${c.state === "ringing" ? "Not now" : "Hang up"}</button></div></div>`);
       // Voice (8.7): those near you in the room you are in; your microphone on or off.
       if (v.state === "online") rows.push(`<div class="row"><span class="grow">${v.voices.length ? "near you: " + v.voices.map(x => `<b class="${x.speaking ? "speaking" : ""}">${x.speaking ? "🔊 " : ""}${esc(x.name)}</b>`).join(", ") : `voice <span class="muted">· nobody near you</span>`}</span>
-        <button data-v="mic" class="${v.mic ? "go" : ""}" title="${v.mic ? "those near you hear you (click: microphone off)" : "your microphone: those near you hear you, the nearer the louder (headphones are best)"}">${v.mic ? "🎙 on" : "🎙 off"}</button></div>`);
+        <button data-v="mic" class="${v.mic ? "go" : ""}" title="${v.mic ? "those near you hear you (click: microphone off)" : "your microphone: those near you hear you, the nearer the louder (headphones are best)"}">${v.mic ? "🎙 on" : "🎙 off"}</button><button data-v="sounds" class="${v.roomSounds ? "go" : ""}" title="${v.roomSounds ? "the room's own sounds, from where they are (click: off, in this browser)" : "the room's own sounds: off (click: on)"}">${v.roomSounds ? "🔈" : "🔇"}</button></div>`);
       // The room voice you are in (8.7): whose, who is in it; Leave.
       if (v.roomVoice) { const rv = v.roomVoice; rows.push(`<div class="row"><span class="grow">🎧 ${esc(rv.key === v.key ? "your room's" : `${rv.name}'s room's`)} voice${rv.joining ? " <span class=\"muted\">· joining…</span>"
         : `: ${rv.members.map(x => `<b class="${x.speaking ? "speaking" : ""}">${x.speaking ? "🔊 " : ""}${esc(x.key === v.key ? "you" : x.name)}</b>`).join(", ")}`}</span><button data-v="voice_leave" title="out of this voice">Leave</button></div>`); }
@@ -4929,6 +5121,7 @@
       else if (act === "back") v.joinLobby();
       else if (act === "pick") v.isPicked(b.dataset.key) ? v.unpick(b.dataset.key) : v.pick(b.dataset.key, b.dataset.name);
       else if (act === "ignored") { ignoredOpen = !ignoredOpen; draw(); }
+      else if (act === "sounds") v.setRoomSounds(!v.roomSounds);
       else if (act === "ig_clear") { if (confirm(`Hear everyone you ignore again (${v.ignored.length})?`)) v.clearIgnored(); }
       else if (act === "unignore") v.unignore(b.dataset.key, { npc: b.dataset.npc || null });
       else if (act === "ignore") v.isIgnored(b.dataset.key) ? v.unignore(b.dataset.key) : v.ignore(b.dataset.key, { name: b.dataset.name });
