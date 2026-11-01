@@ -698,6 +698,23 @@ async def browser(lob, sk=None, pass_=None, host=None, verify=None):
             return c, m
 
 
+async def forget_hello(lob, b, signer=None):
+    """3.2.3: a browser's `hello` with `forget` (it unlinks itself, its office in the lobby or not), proved with its key
+    (or `signer`'s, a forgery): how it was closed, (code, reason)."""
+    host = "127.0.0.1:%d" % lob.port
+    c = Client(await connect(lob.url, user_agent_header=UA))
+    await c.send(type="hello", proto=P4, browser=b.key, forget=True)
+    ch = await c.expect("challenge")
+    await c.send(type="prove", signature=(signer or b.sk).sign(("%s browser\n%s\n%s\n%s" % (P4, host, ch["nonce"], b.key)).encode()).hex())
+    try:
+        while True:
+            await asyncio.wait_for(c.ws.recv(), 2)
+    except ConnectionClosed as e:
+        return (e.rcvd.code, e.rcvd.reason) if e.rcvd else None
+    except asyncio.TimeoutError:
+        return "open"
+
+
 async def t_browsers(L):
     """3.1: a browser with its own key, linked to an office (by a web pass its office made, or by the pairing code it
     shows, typed in the office's room), speaks for the office while the office is in the lobby: its chat, whispers,
@@ -799,11 +816,24 @@ async def t_browsers(L):
     await w3.close()
     w4, wel4 = await browser(L, pass_=web_pass(a.sk, a.key, host))
     await w4.quiet()
+    w6, _ = await browser(L, pass_=web_pass(a.sk, a.key, host))
+    await w6.quiet(); await a.quiet()
+    check("3.2.3: a browser unlinks itself by its hello (forget), its office in: closed 1000, unlinked", await forget_hello(L, w6), (1000, "unlinked"))
+    check("its tab that was in, out (4403)", ((await w6.expect("error", skip=("lobby", "group")))["code"], await closed_code(w6)), ("unlinked", 4403))
+    check("its office's list without it", w6.key in [x["key"] for x in (await a.expect("browsers", skip=("lobby",)))["browsers"]], False)
     await a.send(type="bye")
     e = await w4.expect("error", skip=("lobby", "group"))
     check("its office leaves: the browser is told, and closed", (e["code"], await closed_code(w4)), ("office_gone", 4410))
     w5, e = await browser(L, sk=w4.sk)
     check("linked, its office not in the lobby: refused until it is", (e.get("code"), await closed_code(w5)), ("not_in_lobby", 4410))
+    forged, _ = keypair()
+    check("3.2.3: forget without its key's proof: refused (4401)", (await forget_hello(L, w4, signer=forged))[0], 4401)
+    w5, e = await browser(L, sk=w4.sk)
+    check("and it is linked still", (e.get("code"), await closed_code(w5)), ("not_in_lobby", 4410))
+    check("3.2.3: its office not in the lobby, the browser unlinks itself all the same (forget): closed 1000, unlinked", await forget_hello(L, w4), (1000, "unlinked"))
+    w5, e = await browser(L, sk=w4.sk)
+    check("its key linked to nothing now: a code, not a wait for its office", e["type"], "browser_code")
+    await w5.close()
     await b.send(type="bye")
 
 

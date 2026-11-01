@@ -227,6 +227,7 @@ footer button { font: inherit; color: var(--blue); background: none; border: 0; 
           </div>
           <p class="small">Or from your room: <b>🌐 Lobby</b> opens this page linked; <b>📱 On my phone</b> puts the lobby on your phone.</p>
           <div class="row" id="again" hidden><button class="btn blue" id="newcode" type="button">New code</button></div>
+          <div class="row" id="unlinkrow" hidden><button class="btn dim" id="unlink" type="button">Unlink this browser</button></div>
           <div id="confirmed" hidden>
             <div class="code">✓</div>
             <p><b id="cfwhat">That browser</b> <span class="pics" id="cfpics" style="font-size:18px"></span> is linked to <b id="cfoffice">your workroom</b> now: it is in the lobby there.</p>
@@ -586,25 +587,27 @@ footer button { font: inherit; color: var(--blue); background: none; border: 0; 
     $("count").textContent = String(count);
   }
   // The card in place of the chat, unlinked: why, and its code (or why there is none).
-  function linkCard(why, code, pics, again) {
+  // `unlink`: linked, its workroom not here: it can still let go of it (3.2.3).
+  function linkCard(why, code, pics, again, unlink) {
     $("linkwhy").textContent = why;
     $("confirming").hidden = true; $("confirmed").hidden = true;
     $("pairing").hidden = !code;
     if (code) { $("code").textContent = code.slice(0, 4) + "-" + code.slice(4); $("pics").textContent = pics || ""; }
     $("again").hidden = !again;
+    $("unlinkrow").hidden = !unlink;
   }
 
   // ---------- connecting: this browser's key proved; linked, or a code to link it ----------
   let retry = null;
   const later = (ms, pass) => { clearTimeout(retry); retry = setTimeout(() => connect(pass), ms); };
-  async function connect(pass, sw, verify) {
+  async function connect(pass, sw, verify, forget) {
     clearTimeout(retry);
     let k;
     try { k = await browserKey(); }
     catch (e) { linkCard("This browser cannot keep a key of its own (Ed25519, in its Web Crypto), so it cannot be linked: a recent Chrome, Firefox or Safari can.", null, null, false); return; }
     if (S.ws) { const old = S.ws; S.ws = null; old.close(); }
     const ws = S.ws = new WebSocket(lobbyUrl);
-    ws.onopen = () => ws.send(JSON.stringify(Object.assign({ type: "hello", proto: P4, browser: k.pub }, pass ? { pass } : {}, sw ? { switch: true } : {}, verify ? { verify } : {})));
+    ws.onopen = () => ws.send(JSON.stringify(Object.assign({ type: "hello", proto: P4, browser: k.pub }, pass ? { pass } : {}, sw ? { switch: true } : {}, verify ? { verify } : {}, forget ? { forget: true } : {})));
     ws.onmessage = async e => {
       let m; try { m = JSON.parse(e.data); } catch (x) { return; }
       if (m.type === "challenge") { ws.send(JSON.stringify({ type: "prove", signature: await sign(`${P4} browser\n${host}\n${m.nonce}\n${k.pub}`) })); return; }
@@ -615,12 +618,12 @@ footer button { font: inherit; color: var(--blue); background: none; border: 0; 
       const was = S.me;
       S.ws = null;
       if (was) readOnly();
-      if (e.code === 1000 && e.reason === "unlinked") { await forgetKey(); note("This browser is unlinked: its key forgotten"); return connect(); }
+      if (e.code === 1000 && e.reason === "unlinked") { await forgetKey(); kept("lobby:name", null); note("This browser is unlinked: its key forgotten"); return connect(); }
       if (e.code === 1000 && e.reason === "confirmed") return;   // this device confirmed another browser: done here
       if (e.code === 4403) { linkCard("Your room unlinked this browser. Link it again with a new code:", null, null, false); return later(1500); }
       if (e.code === 4410) {   // linked, its workroom not in the lobby (or it left): in again when it is
         const name = kept("lobby:name") || "Your workroom";
-        linkCard(`${name} is not in the lobby now. This page comes in as it, when it does.`, null, null, false);
+        linkCard(`${name} is not in the lobby now. This page comes in as it, when it does.`, null, null, false, true);
         return later(20000);
       }
       if (e.code === 4408) { S.code = null; linkCard("That code's time is up.", null, null, true); return; }
@@ -640,6 +643,11 @@ footer button { font: inherit; color: var(--blue); background: none; border: 0; 
     };
   }
   $("newcode").addEventListener("click", () => { S.retries = 0; connect(); });
+  // 3.2.3: unlinked by itself while its workroom is not in the lobby (the footer's button is for when it is in).
+  $("unlink").addEventListener("click", () => {
+    const name = kept("lobby:name") || "your workroom";
+    if (confirm(`Unlink this browser from ${name}? It forgets its key; linking it again takes a new code.`)) { S.retries = 0; connect(null, false, null, true); }
+  });
   // 3.2: the room's confirmation, typed (a device with no camera, or none to hand).
   $("confform").addEventListener("submit", e => {
     e.preventDefault();
