@@ -61,10 +61,12 @@ visit-clients talk to each other**. A page reload breaks nothing but the localho
 - **Signed in**: a workroom with a live session of its sign-in (../auth/SPEC.md 4). Only then is its office in
   the lobby (section 3, point 13).
 - **World** in the lobby (6.6; the protocol's **group**): offices kept together by a lobby, public (anyone joins) or
-  with a password, whose members may each watch the others' plots through their open doors, as guests may: their
-  rooms round each other's (8.4). Each has a chat and an owner.
-- **Guest**: a key on an office's guest list. **Door**: open (its guests come in without knocking: the
-  visit-client answers their knocks yes itself, 6.4) or closed (everyone knocks).
+  with a password, whose members are each other's guests. Each has a chat and an owner.
+- **Guest** (3.3): anyone in a world with an office. **Door**: open (its guests come in without knocking, and may
+  put its room in their worlds: the visit-client answers their knocks yes itself, 6.4) or closed (everyone knocks).
+  Before 3.3 a guest was a key on the office's own list (★); the list is gone.
+- **Picks** (3.3): whose rooms an office's world shows round its own (8.4), its user's choice among its guests, at
+  most 8. Nobody's room is in it by itself.
 - **World** (8.4): an office's own room with its friends' rooms round it, each on its **plot** (the rectangle
   of its floor that is its land), drawn by the office's own page. **Watch**: a visit that sees a plot from
   outside it, sending nothing, until the watcher **steps in** (`enter`) and is in the room as a visitor is,
@@ -116,17 +118,16 @@ program listening on their machine.
    edit with a limit and checks it before the page sees it.
 
 9. **Guests by key, proved by the link.** A host's visit-client lets a knocker in without asking its page
-   only when its door is open and the key the lobby gives for the knocker is on its guest list; when the lobby
-   then agrees the visit, the visitor's link endpoint MUST be that very key, or the visit ends at once
-   (`kicked`), before any link is made. A lobby that lies about whose knock it is gets nobody in who is not a
-   guest. Adding a guest by a key the lobby lists trusts the lobby once, for whose key is whose; a key taken
-   from a visit (its `peer.key`, 5.3) the link has proved.
+   only when its door is open and the key the lobby gives for the knocker is a guest's (in one of its worlds,
+   point 14); when the lobby then agrees the visit, the visitor's link endpoint MUST be that very key, or the
+   visit ends at once (`kicked`), before any link is made. A lobby that lies about whose knock it is gets nobody
+   in who is not a guest.
 10. **The state file is a secret.** It holds the office's secret key: the visit-client writes it readable by
     its owner only. Whoever has it can be that office to its friends.
 11. **A watch is a visit's exposure, decided the same way.** A watcher gets the host's whole scene, as a visitor
     does. A host's visit-client admits a watch only from a guest, through an open door (point 9), and never asks
-    its page; anyone else's is declined. Shutting the door ends every watch of the plot; taking a guest off
-    ends theirs. A watcher's input and points count only while it has stepped in, and stepping in counts toward
+    its page; anyone else's is declined. Shutting the door ends every watch of the plot; a guest no longer (out of
+    every world the two shared) has theirs ended. A watcher's input and points count only while it has stepped in, and stepping in counts toward
     `max_visitors`.
 12. **A layout is told to nobody whole.** Each friend in it hears where its own plot sits, over a link between
     the two offices (which proves who it is), and nothing of anyone else's.
@@ -135,11 +136,12 @@ program listening on their machine.
     Without the sign-in API (no `AUTH_TOKEN_FILE`), or with nobody signed in, the office keeps to itself, as with no
     lobby, and its page is told (`signed_in`). Signed out, it leaves at once (`bye`: its visits end). The lobby
     cannot see into a workroom: this is the visit-client's rule. What the lobby can check, the key, it checks (6.1).
-14. **A world's members are the lobby's word.** A host's visit-client lets a co-member of any of its worlds (6.6)
-    watch its plot through its open door, as it does a guest, on the lobby's word for who is in the world. The key
-    that knocks is proved (6.1, and by the link as for a guest: point 9); whether that key is in the world is not,
-    beyond the lobby. Join worlds in lobbies you trust. A public world is anyone's to join: its members see your plot
-    (your door decides, as for any world); walking into your room is still a knock you answer. A world's password
+14. **A world's members are the lobby's word.** A host's visit-client takes a co-member of any of its worlds (6.6)
+    as its guest (3.3): through its open door, they put its plot in their world and walk in without asking, on the
+    lobby's word for who is in the world. The key that knocks is proved (6.1, and by the link: point 9); whether
+    that key is in the world is not, beyond the lobby. Join worlds in lobbies you trust. A public world is anyone's
+    to join: its members walk into your room while your door is open (shut it, or keep to worlds with a password,
+    and they knock). A world's password
     is kept by the lobby only as its Argon2id hash; one office tries at most 5 a minute, one world takes at most 30
     wrong ones an hour from everyone together (keys cost nothing to make), and the lobby hashes at most 4 at once
     (`busy`). Pick a password that is not a word.
@@ -163,7 +165,7 @@ program listening on their machine.
 
 Visitors get the host's whole scene: a sim that shows issue titles or agent activity in its room shows them
 to its visitors, wherever they stand and whether they look or not. Letting someone in is the host's
-decision, one knock at a time, or once and for all for its guests (point 9).
+decision, one knock at a time, or once and for all for the worlds it joins (its guests, points 9 and 14).
 
 ## 4. The visit-client: `visit`
 
@@ -195,7 +197,7 @@ visit --lobby wss://lobby.example/ --name "Magic Room" --sim my-sim/1.0 \
 | `--origins` | `VISIT_ORIGINS` | none | the page origins allowed to connect (`http://localhost:3000`, comma-separated); none: any page with the token (section 3, point 4) |
 | `--relays` | `VISIT_RELAYS` | the lobby's | the relays for links: `none`, `default` (iroh's own), or URLs, comma-separated |
 | `--data-dir` | `VISIT_DATA_DIR` | `basedverse/<the name>` in the user's data folder (4.4) | where the workroom keeps everything (4.4): its database, its state file, friends' landscapes. A launcher SHOULD give one, so a renamed office keeps its data |
-| `--state-file` | `VISIT_STATE_FILE` | `state.json` in the data directory | a file where it keeps what outlasts a run: whether the office is away (`leave_lobby`, 5.2), so a restart stays away; its key (section 2), so it is the same office to its guests' hosts; its door and its guests; its world's layout (8.4); whose look its visitors have (8.6). Readable by its owner only (section 3, point 10) |
+| `--state-file` | `VISIT_STATE_FILE` | `state.json` in the data directory | a file where it keeps what outlasts a run: whether the office is away (`leave_lobby`, 5.2), so a restart stays away; its key (section 2), so it is the same office to its guests' hosts; its door; whose plots its world shows (its picks, 3.3) and its layout (8.4); whose look its visitors have (8.6). Readable by its owner only (section 3, point 10) |
 | `--cache-dir` | `VISIT_CACHE_DIR` | `landscapes/` in the data directory | where it keeps friends' landscapes (8.10), each by its office's key and hash, at most 256 MiB (the oldest go first), and the plots it keeps to draw while their offices are away |
 | `--auth-token-file` | `AUTH_TOKEN_FILE` | none: no sign-in API | the sign-in API's service token (../auth/SPEC.md 3): given, `visit` serves the API |
 | `--auth-port`, `--auth-listen`, `--auth-idle`, `--auth-max-age` | `AUTH_PORT`, `AUTH_LISTEN`, `AUTH_IDLE`, `AUTH_MAX_AGE` | 7403, `127.0.0.1`, `7d`, `30d` | the sign-in API's (../auth/SPEC.md 8) |
@@ -381,7 +383,7 @@ The visit-client answers `ready` (or closes: 4401 bad token, 4400 bad `proto`):
 ```json
 {"type": "ready", "version": "0.7.0", "office": {"id": "o1a2b3c4", "name": "Magic Room"},
  "online": true, "away": false, "status": "available", "max_visitors": 3,
- "key": "7f3a…", "door": "open", "guests": [{"key": "c41e…", "name": "Ada"}],
+ "key": "7f3a…", "door": "open", "picks": [{"key": "c41e…", "name": "Ada"}],
  "layout": [{"key": "c41e…", "x": 22, "z": 4, "turn": 0}], "seen": [],
  "visits": [{"id": "v…", "channel": 1, "role": "host", "peer": {"id": "o…", "name": "Ada", "sim": {…}, "key": "c41e…"}, "guest": true}]}
 ```
@@ -399,20 +401,20 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `rename` | `name` | ask the lobby for another name; taken (`name_taken`) or invalid, the office keeps its own |
 | `leave_lobby` | — | take the office out of the lobby, and keep it out (away, 4.2): nobody sees it or can knock; its visits end |
 | `join_lobby` | — | back into the lobby after `leave_lobby`: a new session |
-| `door` | `open` (bool) | open the door (guests come in without knocking, and its worlds' members see its plot) or close it (everyone knocks). Kept in the state file. (3.0's `public` is gone: a public world, 6.6) |
+| `door` | `open` (bool) | open the door (its guests, its worlds' members, come in without knocking and may put its room in their worlds) or close it (everyone knocks; their watches of its plot end). Kept in the state file; `picks` back. (3.0's `public` is gone: a public world, 6.6) |
 | `about` | `about` {`text` (≤ 200), `tags` (≤ 5, each 1–20 lower-case letters, digits and `-`)} \| null | this office's line in the lobby's list of who is here (6.6), and on its public page; null: none. Kept in the state file, told to the lobby (and in each new `hello`). `about` back |
 | `group_create`, `group_join`, `group_leave`, `group_remove`, `group_unban`, `group_set`, `group_owner`, `group_delete`, `groups` | as 6.2's | worlds (6.6), passed to the lobby (the user's: ../../engine/SPEC.md 3.3); what comes back, as 5.3 has it |
 | `browser_code`, `browser_allow`, `browsers`, `browser_revoke` | as 6.2's | linked browsers (3.1, 6.11), passed to the lobby (the user's); `browser_pending`, `browser_confirm` (3.2) and `browsers` back |
 | `admin` | as 6.2's | the lobby's operators' (6.7) |
 | `lobby_pass` | `req`, `qr`? (bool) | a web pass for the lobby's page (3.1, 6.11), the person's to ask: `lobby_pass` back with `req`, `url` (the lobby's page, the pass in its fragment), `expires`, and with `qr`, `qr` (that URL as a QR code: an SVG); `offline` when not in the lobby, `no_lobby` without one |
-| `guest_add` | `key`, `name`? (≤ 24) | a guest: an office's key, as the lobby lists it (6.3) or a visit's peer has it (5.3), and the name it is known by; again for a key already there renames it. At most 256 (`too_many_guests`); not this office's own key |
-| `guest_remove` | `key` | no longer a guest; its watches of this plot end |
-| `world` | `on` (bool) | on: this office watches every guest online whose lobby entry says `world` (8.4), by itself, and keeps doing so (a declined or refused watch is tried again after 20 s); off: its watches end. No page for a minute: off |
+| `pick` | `key`, `name`? (≤ 24) | 3.3, the user's: put that office's room in this office's world (8.4): an office's key, as the lobby lists it (6.3) or a visit's peer has it (5.3), and the name it is known by; again for a key already there renames it. At most 8 (`too_many`: take one out first); not this office's own key. Kept in the state file; `picks` back. (Before 3.3: `guest_add` and `guest_remove`, a guest list: gone) |
+| `unpick` | `key` | out of this office's world: its watch of that plot ends, where it was placed is forgotten (`layout`), and its kept plot let go (`plot_forgotten`) |
+| `world` | `on` (bool) | on: this office watches the plots its user picked, of those online whose lobby entry says `world` and whose visit-clients let it (it is their guest, their door open) (8.4), by itself, and keeps doing so (a declined or refused watch is tried again after 20 s); off: its watches end. No page for a minute: off |
 | `enter` | `channel` (a watch's), `pose` {`x`, `y`, `z`, `yaw`, `air`} (in the watched room's terms; `air`: how far above its floor, flying, 8.2) | step into the room watched (8.4): out of any other room first (a visit there ends); refused by its host when full (`enter_refused`) |
 | `exit` | `channel` | step out of it again: the watch goes on |
 | `place` / `unplace` | `key`, `x`, `z` (within 100 km), `turn` (0–3) / `key` | put a friend's plot in this office's world: its middle there, turned so many quarter turns (8.4); kept in the state file. At most 256 |
 | `seen` | `key`, `at` {`dx`, `dz` (m, within 100 km), `turn` (0–3), `size` ([w, d] m: this plot's)} \| null | where this office's world has that office's plot (8.4): its middle `dx`, `dz` metres from this plot's middle, turned `turn` quarter turns left; null, not in it. Told to that office over any link with it, and again over each new one (kept in memory, not in the state file). At most 256 |
-| `plot_keep` | `key`, `name`, `plot` {`center`, `size`}, `unit` | a guest's plot in this office's world, to keep while its office is away (8.10): drawn from its last landscape. At most 64 |
+| `plot_keep` | `key`, `name`, `plot` {`center`, `size`}, `unit` | a picked plot in this office's world, to keep while its office is away (8.10): drawn from its last landscape. At most 64 |
 | `plot_load` | `key` | that kept plot's landscape, please: sent as `landscape` on channel 0 (`not_found` if none is kept) |
 | `plot_forget` | `key` | let that kept plot and its landscape go |
 | `link_where` | `channel`, `where` (`"world"` \| `"corner"`) | where the page put a link (8.5): kept, and said again in `visit_started` to a page that reloads |
@@ -438,6 +440,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `unhold` | `id` | a whisper kept for someone away (`held`), taken back before it went |
 | `voice_join` | `key` \| null | into a room voice (8.7): a linked office's room's (its key; `no_link` if none, `banned` if it keeps this office's user out of its voice), this office's own (its own key), or none (null). One at a time |
 | `voice_kick` | `key` | one out of this office's room's voice, now (8.7): they may join again |
+| `ignore` / `unignore` / `ignore_clear` | `key`, `npc`? (a room's figure's id), `name`? (≤ 24) / `key`, `npc`? / — | 3.3, the user's: whom they ignore in chat (8.9): a person by their office's key (not this office's own), or one of a room's figures by that room's key and its id. At most 50 (`too_many`). Kept in the state file; `ignored` back |
 | `ban` | `key`, `name`?, `voice`, `chat` (bools) | keep that office's user out of this office's room's voice, its chat, both, or neither (8.9). Kept in its database (8.12) until lifted (both false); the other office told |
 | `knock` | `to` (office id), `message`? (≤ 280), `link`? (true: a link, 8.5) | ask to visit an office, or to link with it (refused `not_hosting` before `host`) |
 | `answer` | `knock`, `accept` (bool), `message`? | let a knocker in, or not |
@@ -454,7 +457,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | type | fields | when |
 |---|---|---|
 | `ready` | 5.1 | after `hello` |
-| `guests` | `door` (`"open"` \| `"closed"`), `guests`: [{`key`, `name`}] | after `door`, `guest_add` or `guest_remove` |
+| `picks` | `door` (`"open"` \| `"closed"`), `picks`: [{`key`, `name`}] | 3.3: after `door`, `pick` or `unpick` (before 3.3: `guests`) |
 | `signed_in` | `signed_in` (bool) | someone signed in on this workroom, or nobody any more (3, point 13): in the lobby only while someone is. `ready` has `signed_in` |
 | `about` | `about` \| null | after `about`. `ready` has `about` |
 | `group` | `name`, `about`, `open`, `locked`, `owner` (a key), `members` [{`key`, `name`, `since`}], `bans`? [keys] (its owner's only) | one of this office's worlds, whole (6.6): after joining the lobby, and as it changes. `ready` has `groups` [the same] |
@@ -465,7 +468,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `seen` | `key`, `name`, `at` (as the page message `seen`'s, their plot's `size`) \| null | where a friend's world has this office's plot (8.4), as they said; null: not in it, or their last link gone. `ready` has every one known: `seen`: [{`key`, `name`, `at`}] |
 | `landscape` | `channel`, `key`, `json` | an office's landscape (8.10), as JSON: the room's on that visit's `channel` (kept here, or asked for and sent once), or a kept plot's (channel 0). Also to a page that comes back, for each visit it is on. `ready` has the kept plots: `kept`: [{`key`, `name`, `plot`, `unit`}] |
 | `landscapes` | `channel` | this visitor reads landscapes (8.10): its whole room goes without its landscape (also `landscapes` in `visit_started`). Host side |
-| `plot_forgotten` | `key` | a kept plot let go: its host ended this office's visit on purpose (`kicked`: its door shut, a guest no longer), declined its watch, or this office took it off its guests |
+| `plot_forgotten` | `key` | a kept plot let go: its host ended this office's visit on purpose (`kicked`: its door shut, a guest no longer), declined its watch, or this office took it out of its world (`unpick`) |
 | `avatars` | `default`, `by`: [{`key`, `use`}] | whose look visitors have here (also in `ready`), after `avatars` or `avatar_use` |
 | `avatar` | `channel`, `avatar` {`unit`, `json`} | a visitor's avatar, which this page asked for (host side, 8.6): unpacked and checked as a scene edit is |
 | `possessions` | `channel`, `list` | what a visitor owns (host side, 8.11), as its visit-client said it, checked again; also in `visit_started` (`possessions`), for a page that reloads |
@@ -487,6 +490,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `voice_members` | `members` [{`key`, `name`}] | who is in this office's own room's voice (8.7), its own user first if they are. `ready` has `voice_members` |
 | `user` | `key`, `name` | the name a linked office's user goes by (8.9), as they said (`user`), or their office's again. `ready` has `users` [{`key`, `name`}] |
 | `bans` | `bans` [{`key`, `name`, `voice`, `chat`}] | whom this office's user keeps out of their room's voice or chat (8.9), as it changes. `ready` has `bans` |
+| `ignored` | `ignored` [{`key`, `npc`?, `name`}] | 3.3: whom this office's user ignores in chat (8.9), as it changes. `ready` has `ignored` |
 | `banned` | `key`, `name`, `voice`, `chat` | a room that keeps this office's user out of its voice or chat (8.9), or no longer (both false). `ready` has `banned_by` |
 | `enter` / `exit` | `channel`, `pose`? {`x`, `y`, `z`, `yaw`, `air`} (for `enter`) | a watcher stepped into this room, there (host side: spawn it, as a visitor), or out of it; no `pose`: a link going there, spawned where newcomers go |
 | `enter_refused` | `channel`, `reason` (`"full"`, or `"moved"`: a visit to a room began, and this office stepped out) | stepping into a watched room was refused, or undone: outside it |
@@ -666,8 +670,8 @@ visit-client's built-in defaults.
   either side withdrew its link meanwhile, `reason: "not_ready"` (and the door an `error`, `not_ready`).
 - A visit counts toward the host's `max_visitors` from the moment it is agreed until it ends.
 - **A guest at an open door.** The host's visit-client answers a knock itself, `accept: true`, when its door
-  is open, its page hosts its scene, and the knock's `from.key` is on its guest list (to watch: or a co-member of
-  one of its worlds, 6.6); its page is not asked.
+  is open, its page hosts its scene, and the knock's `from.key` is a guest's (3.3: a co-member of one of its worlds,
+  6.6), to watch or to visit; its page is not asked.
   When the lobby then sends `visit`, the visitor's `peer_link.endpoint` must be that key, or the host ends the
   visit (`kicked`) before any link is made (section 3, point 9). To the lobby this is an answer like any other.
 - **Watches** (8.4): a knock with `watch: true`. Its `knock_sent`, `answered`, `visit` and errors say so
@@ -706,11 +710,11 @@ groups).
   it to its oldest member; the last member leaving ends it. A key is in at most 20 worlds; a world has at most
   `--world-size` members (50). A world made before 3.1 that took requests is **closed** (neither public nor locked)
   until its owner makes it public or gives it a password.
-- **What a world is for.** Its members may watch each other's plots (8.4) as guests may: each member's visit-client
-  watches its co-members' plots, online and ready, and lets theirs in through its open door (section 3, point 14).
-  Someone in several worlds places anyone of any of them round their own room, together: two members of one world
-  may see different maps, each with their other worlds too. A link (8.5) still reaches anyone outside one's worlds,
-  and a knock walks anyone into a room whose user lets them in.
+- **What a world is for** (3.3). Its members are each other's guests: through each one's open door, the others walk
+  in without asking and may put that room in their worlds (8.4) (section 3, point 14). A world makes a community
+  possible; it puts nobody's room on anyone's map by itself: each member picks whose rooms sit round theirs (at most
+  8, from any of their worlds), and two members of one world may see different maps. A link (8.5) still reaches
+  anyone outside one's worlds, and a knock walks anyone into a room whose user lets them in.
 - **Its chat.** Each world has one (`group_say`, `group_chat`): to its members in the lobby, the sayer too, in one
   order. Nothing of it is kept by the lobby.
 - **The list of who is here.** Every office in the lobby is in its `lobby` snapshot; one may add a line and a few
@@ -1050,7 +1054,7 @@ among the 5 a second. A user page (engine/SPEC.md 7) sends one with `world.point
 
 **Interactions** (Visit 0.9) are what a point may do, by type, and only what the host takes. A host lists them
 (`v.interactions`): each type its own entry, `cosmetic` or not, with a `label`, who may (`"everyone"`, its
-`"guests"`, or, Visit 2.1.1, `"owner"`: its own user alone, at home), how far (`reach`, in its units), whether the
+`"guests"` (3.3: those in a world with it), or, Visit 2.1.1, `"owner"`: its own user alone, at home), how far (`reach`, in its units), whether the
 wheel runs it too (`wheel: true`, Visit 2.1.1) and what it does (`run`). It marks what may be clicked with the
 type, `userData.visitPoint = "<type>"` (on an object, or a group it is part of). On a point the library casts the
 ray itself, from the visitor's eyes: the first thing it meets that is not a visitor's body (nor hidden), then the
@@ -1074,10 +1078,11 @@ takes points only through this list, whose default is no.
 An office's world is its own room with its friends' plots round it, drawn by its own page (`v.world`, section
 9). Nobody shares a map: each office has its own layout, and walking between plots may look different to each.
 
-- **Who is in it.** With the world on, a visit-client watches its guests' plots, and its worlds' members (6.6,
-  3.0.0): those online whose lobby entry says `world`, whose own visit-clients let it (it is their guest, or in a
-  world with them, their door open). Those placed in its layout first, then guests, then the rest of its worlds:
-  at most 8. A watch is a visit with
+- **Who is in it** (3.3). With the world on, a visit-client watches the plots its user picked (`pick`; at most 8,
+  in the order picked): of those online whose lobby entry says `world`, those whose own visit-clients let it (it is
+  their guest, in a world with them, their door open). Nobody's plot is in it by itself: being in a world with
+  someone makes their room one to pick. (Before 3.3, a guest's plot and every world member's were watched by
+  themselves.) A link put in the world (8.5) is a plot there too, picked or not. A watch is a visit with
   nothing from the watcher: the host sends it the scene and its deltas (version 2) and does not spawn it.
 - **Plots.** A host says its plot (`plot`, `unit`: 8.1); one that does not is taken to be what its scene covers
   (at most 200 units a side). An office's own plot sits at home, in its own room's coordinates.
@@ -1114,13 +1119,13 @@ Linking (Visit 0.8) is how two offices meet: instead of walking straight into a 
 sees it in a corner first, and chooses.
 
 - **Asking.** `knock` with `link: true` (`v.link`), to an office whose lobby entry says `links`; the door's page
-  is asked as for any knock (`knock` with `link`), and may make the knocker a guest as it says yes. A guest
-  through the open door is let in without asking. To an office on an older Visit, a link is a knock: let in, the
+  is asked as for any knock (`knock` with `link`). A guest (in a world with the door) through the open door is
+  let in without asking. To an office on an older Visit, a link is a knock: let in, the
   knocker walks into its room, as before.
 - **A link** is a watch (8.4) that the door let in itself: the host sends it the scene and deltas (version 2) and
   does not spawn it; the host's page lists it in `watchers` with `link: true`, and may end it (`end`, as a kick).
-  Unlike a guest's watch, it is not ended by the door shutting, by the guest list, or by the knocker's world going
-  off: it lasts until either side ends it, or one leaves the lobby.
+  Unlike a guest's watch, it is not ended by the door shutting, by the two no longer sharing a world, or by the
+  knocker's world going off: it lasts until either side ends it, or one leaves the lobby.
 - **The corner.** The knocker's page draws a link's room in its stage's small corner, with the host's own
   three.js (as a visit is drawn), from outside: from where the host's `preview` says ({x, y, z, yaw, pitch}, in
   its terms), or from above its plot, going round once a minute. Its input goes nowhere.
@@ -1314,7 +1319,7 @@ when their office is linked with this one, else by their office's (the lobby kno
   there) and they are read
   (`read`), as are those of a conversation the box answers into.
 - **Left for someone away** (0.22.0). A whisper to someone not in the lobby (by their key: someone the user has
-  whispered with, or a guest; `/w <name>` finds them too, "Tell <name> (away)") is kept by the sayer's own
+  whispered with, or a guest (in a world with them); `/w <name>` finds them too, "Tell <name> (away)") is kept by the sayer's own
   visit-client, in its database, and passed on through the lobby, as any whisper, once they and it are both in it
   (`held`, `held_sent`). The lobby still keeps nothing. Text only: pictures and voice messages go over a link, with
   someone linked. The chat window shows ⏳ and how many with the 📬; its list has them, each to take back (✕).
@@ -1327,6 +1332,14 @@ when their office is linked with this one, else by their office's (the lobby kno
   out of its voice. Out of its chat: their lines are not said in it (in the room or into it), and they get none of
   its lines. Their own visit-client is told (`banned`), so it refuses those lines, and joining that voice, itself.
   Calls are apart: they ring, the owner answers or not.
+- **Ignoring** (3.3, as WoW's ignore list). A user ignores whom they will, for themselves alone: a person by their
+  office's key, or one of a room's figures by that room's key and its id (`npc`), so one room's guide is not
+  another's. Their lines never reach the user's page from then on, whatever their scope (said, a room's chat, the
+  lobby, a world, a whisper): their visit-client drops them before its page or its database has them, so no bubble,
+  no mailbox, no mention; and the lines kept from before are left out of `chat_log` and `history` while ignored.
+  Nothing tells them. At most 50, kept in the state file (`ignore`, `unignore`, `ignore_clear`; `ignored`). The chat
+  window gives a name a click (Whisper, Ignore or Unignore) and takes `/ignore name`, `/unignore name` and `/ignore`
+  (whom); the panel lists them, each to let go, and Clear. Voice is not ignored: a room's bans are for that.
 - **Kept** (0.20). A visit-client keeps every line its user has had, theirs too, in its database (8.12), and gives
   the last 100 to a page that connects (`chat_log`): a reload, or a restart, keeps the chat, with the lines that came
   while it reloaded. Older lines: the chat window's log, scrolled to its top (`history`). They come as `chat` events marked `old` (no sound, no bubble), before the
@@ -1351,12 +1364,12 @@ object makes it and everything under it landscape (the marker itself stays on th
   keeps each office's latest on disk (`--cache-dir`), by that office's key and the hash, and gives it to its page
   (`landscape`), which puts each object under its parent in the room. A visitor on an older Visit gets the room
   whole, its landscape in it, and again whenever what is static changes.
-- **Kept while away.** A guest's plot in a world (8.4) is kept with where it was (`plot_keep`): while its office is
+- **Kept while away.** A picked plot in a world (8.4) is kept with where it was (`plot_keep`): while its office is
   away (offline, its link lost) the world draws its last landscape there, named "offline", lit softly if it has
   no lights of its own, and its user walks into it as at home, against its walls (they are walked into, not
   through) since no host is there to walk them. It goes live again when its office comes back. It is let go when
   its office says so: it ends the watch itself (`kicked`: its door shut, a guest no longer), declines one, or this
-  office takes it off its guests.
+  office takes it out of its world (`unpick`).
 
 ### 8.11 Possessions: mounts
 
@@ -1448,7 +1461,8 @@ v.viewFocused  // in a room you visit (or went to by a link), and the view takes
 v.office       // { id, name } while online
 v.key          // this office's key: its lasting identity (the same every run, with a state file)
 v.door         // "open" (your guests link and come in without asking) | "closed" (everyone asks)
-v.guests       // [{ key, name }]: who walks in through the open door
+v.guests       // [{ key, name }]: your guests (3.3): everyone in a world with you, who walks in through the open door
+v.picks        // [{ key, name }]: whose rooms your world shows round yours (3.3; at most v.maxPicks, 8)
 v.status       // "available" | "busy"
 v.maxVisitors  // number
 v.offices      // [{ id, name, status, sim, maxVisitors, visitors, visiting, ready, key, links, whisper, about }], you
@@ -1462,7 +1476,7 @@ v.browsers     // browsers linked to you (6.11, 3.1): [{ key, agent, pictures, c
 v.layout       // [{ key, x, z, turn }]: where you have put friends' plots (8.4)
 v.seen         // [{ key, name, at: { dx, dz, turn, size } }]: where friends' worlds have your room (8.4): metres from
                //   their plot's middle (north -z), quarter turns left, and their plot's size
-v.watchers     // [{ id, visitor, inside, link }]: who sees your room from outside it (your guests' worlds; links, 8.5)
+v.watchers     // [{ id, visitor, inside, link }]: who sees your room from outside it (worlds that picked it; links, 8.5)
 v.knocks       // knocks on your door: [{ id, from: { id, name, sim, key }, message, until (ms epoch), link }]
 v.knocking     // your knocks still waiting: [{ id, to, link }]
 v.visiting     // the room in your stage: { id, host: { id, name, sim }, paused, link, inside } or null (a link's: in
@@ -1483,7 +1497,7 @@ v.link(officeId, message)   // ask to link (8.5): let in, their room in your sta
 v.stepIn(id); v.stepOut(id) // a link (by visit id; the corner's by default): go into its room, and back to your own
 v.toWorld(id)      // a link's room as a plot in your world (v.world first), while the link lasts
 v.unlink(id)       // end a link
-v.watching(officeId)        // whether a plot of theirs is in your world (a guest's, or a link put there)
+v.watching(officeId)        // whether a plot of theirs is in your world (picked, or a link put there)
 v.avatar(object, { unit })  // your own body, for rooms that show their visitors' own looks (8.6, MODELS.md); null: none
                             //   "model" event: { what, problems, notes }, as it is checked; "body": how the room you are in
                             //   draws you, { channel, key, name, look, eyes, problem }
@@ -1525,7 +1539,7 @@ v.say(text, to)             // a line (8.9): true if said. No to: everyone who c
                             //   everyone in the lobby
 v.whisperTargets            // whom say(text, { whisper }) can reach: those in the lobby who take whispers: [{ id, key, name }]
 v.awayTargets               // whom say(text, { whisper: key, name }) leaves a whisper for (8.9, 0.22.0): not in the lobby now,
-                            //   those you whispered with and your guests: [{ key, name }]; text only
+                            //   those you whispered with and your guests (your worlds' members): [{ key, name }]; text only
 v.held; v.unhold(id)        // those whispers, still kept by your visit-client: [{ id, key, name, text, at }] ("held" event);
                             //   one taken back. "held_sent": one passed on, now they are in the lobby
 v.unseen; v.read(conversation)   // the mailbox (8.9): { count, conversations: [{ conversation, count }], lines } ("unseen"
@@ -1551,7 +1565,8 @@ v.leaveLobby()     // away: out of the lobby, nobody sees you or can knock, your
 v.joinLobby()      //   with VISIT_STATE_FILE); and back
 v.setDoor(open)    // open or close your door (kept, with VISIT_STATE_FILE); shut, nobody watches your plot
 v.setAbout(text, tags)   // your line in the lobby's list of who is here (and its public page); null: none (3.0.0)
-// Worlds (6.6; the protocol's groups): members watch each other's plots through open doors, as guests do; each has a
+// Worlds (6.6; the protocol's groups): members are each other's guests (3.3: in without asking through open doors, and
+// each may pick the others' rooms for their own world); each has a
 // chat (say(text, { group })). Public, or with a password. "group" as one of yours changes, "group_left" ({ group,
 // reason: left, removed, banned, deleted }), "groups" (the list). (3.0's setPublic, answerGroup, setGroupOp: gone.)
 v.createGroup(name, { about, password }); v.joinGroup(name, password); v.leaveGroup(name); v.findGroups()
@@ -1566,8 +1581,13 @@ v.linkBrowser(code)     // a Promise of the browser waiting with the code it sho
 v.allowBrowser(code)    // 3.2: a Promise of the confirmation it must show ({ code, key, confirm, url, qr, until }; v.browserConfirm):
                         //   show the QR code (as an image) and the digits; linked once it does ("browsers" says so)
 v.listBrowsers(); v.unlinkBrowser(key)   // v.browsers, asked; one unlinked
-v.addGuest(key, name); v.removeGuest(key); v.isGuest(key)   // a key from v.offices, or (proved by the link) a visit's
-                   //   peer.key; "visit_started" says guest: true for one let in through the open door
+v.ignore(key, { npc, name }); v.unignore(key, { npc }); v.clearIgnored()   // 3.3: whom your user ignores in chat (8.9): a
+                   //   person by their key, a room's figure by that room's key and its id; at most v.maxIgnored (50)
+v.ignored; v.isIgnored(key, npc)   // [{ key, npc, name }]; "ignored" as it changes
+v.pick(key, name); v.unpick(key); v.isPicked(key)   // 3.3: a room in your world, or out of it: a key from v.offices,
+                   //   or (proved by the link) a visit's peer.key; at most v.maxPicks (8: "too_many" past it)
+v.isGuest(key)     // whether that key is in a world with you; "visit_started" says guest: true for one let in through the
+                   //   open door. (addGuest and removeGuest: gone in 3.3)
 
 // hosting: register once after connect (and again after each page load). Until then this office is not in the
 // lobby to be visited, and cannot knock: every room takes part with its scene.
@@ -1603,7 +1623,7 @@ const me = world.frame(dt, { x, y, z, yaw, pitch, air, facing }, { forward, stra
                    //   is (flying), so a plot it steps into has it that high (8.2); up: as a visitor's input; facing: the
                    //   way your user faces (radians, as yaw), for their mount at home (8.11; else yaw)
 world.render(camera);
-world.plots        // [{ key, name, at: { x, z, turn }, rect: [x0, z0, x1, z1], inside, offline }] (offline: a guest's plot
+world.plots        // [{ key, name, at: { x, z, turn }, rect: [x0, z0, x1, z1], inside, offline }] (offline: a picked plot
                    //   kept while its office is away, 8.10)
 world.inside; world.point(target, { wheel }); world.leave(); world.release()   // wheel: notches, a wheel point (8.3)
 v.place(key, { x, z, turn }); v.unplace(key)   // yours alone: each friend in it is told where it is, nothing more
@@ -1634,8 +1654,9 @@ Visit.panel(element, v)                          // an optional ready-made lobby
                                                  //   older office) with a message; linked: where you two stand (in your room, you
                                                  //   are in their room, linked), Leave / Back to my room, and opened: where each
                                                  //   sees the other, Go there, Put in my world, Show, their look in your room (their
-                                                 //   model / our model), Kick, Unlink (every link between you, and no longer a
-                                                 //   guest); links asked of you (Link, Not now, ★ always: a guest from now on);
+                                                 //   model / our model), Kick, Unlink (every link between you, and out of your
+                                                 //   world); 🗺 + / 🗺 ✓ by someone in a world with you: their room in your
+                                                 //   world, or out (3.3); links asked of you (Link, Not now);
                                                  //   visitors look like (default: their model); your world (Map); voice (🎙, who is near); calls (Pick up,
                                                  //   speaker / handset, Hang up), 📞 call (those linked with phones); the chat window (8.9);
                                                  //   notes a while (where a friend's world put your room, 8.4, once it
@@ -1727,7 +1748,7 @@ codes 4400 bad `hello`, 4401 bad or missing token, 4409 replaced by a newer page
 **`error` codes the page can get** (from the visit-client, or passed through from the lobby): those of
 section 6.4 (`not_found`, `self_knock`, `not_available`, `full`, `not_ready`, `already_visiting`,
 `knock_pending`, `rate_limited`), `message_too_long`, `name_invalid`, `name_taken` (on `rename`; the
-office keeps its name), `too_many_guests` (256 at most), `no_phone` (ringing a room with no phone), `no_call`
+office keeps its name), `no_phone` (ringing a room with no phone), `no_call`
 (`speaker` with no call on), `not_supported`, `too_many`, `already_watching` (knocks to watch, which a page never sees), `not_yours` (answering a knock that is not yours), `not_hosting` (knocking before
 the page hosts its scene, 4.2), `no_such_visit` (`end`, `keyframe` or `scene_resync` for a visit you are not
 in), `offline` (an action while the lobby is down), `away` (an action

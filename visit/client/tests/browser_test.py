@@ -505,17 +505,25 @@ async def run(a, b, url):
         check("A clicks Go online: online again", await a.until("v.state === 'online' && v.state"), "online")
         check("and B sees A again, ready to visit", await b.until("v.offices.some(o => o.name === 'A' && o.ready)"), True)
 
-        print("\nguests, from the panel")
-        star = "document.querySelector('.visit-panel button.star[data-name=B]')"
-        check("A's panel has a star by B, not lit", await a.until("%s && %s.textContent" % (star, star)), "☆")
-        await a.js("%s.click()" % star)
-        check("A clicks it: B is A's guest, by B's key", await a.until("v.guests.length === 1 && v.guests[0].key === v.offices.find(o => o.name === 'B').key && v.guests[0].name"), "B")
-        check("and the star is lit", await a.until("%s.textContent === '★'" % star), True)
+        print("\nguests (3.3: your worlds' members) and your world's picks, from the panel")
+        pk = "document.querySelector('.visit-panel button.wpick[data-name=B]')"
+        check("B in no world with A: no 🗺 by B in A's panel", await a.js("!%s" % pk), True)
+        await a.js("v.createGroup('Yard', { open: true })")
+        await a.until("v.groups.some(g => g.name === 'Yard')")
+        await b.js("v.joinGroup('Yard')")
+        check("B joins A's world: each is the other's guest (by the other's key)", (await a.until("v.isGuest(v.offices.find(o => o.name === 'B').key) && v.guests.map(g => g.name).join()"),
+              await b.until("v.isGuest(v.offices.find(o => o.name === 'A').key)")), ("B", True))
+        check("A's panel has 🗺 + by B: not in A's world", await a.until("%s && %s.textContent" % (pk, pk)), "🗺 +")
+        await a.js("%s.click()" % pk)
+        check("A clicks it: B's room picked for A's world, by B's key", await a.until("v.picks.length === 1 && v.picks[0].key === v.offices.find(o => o.name === 'B').key && v.picks[0].name"), "B")
+        check("and it says so", await a.until("%s.textContent === '🗺 ✓'" % pk), True)
+        await a.js("%s.click()" % pk)
+        check("clicked again: out of A's world", await a.until("v.picks.length === 0 && %s.textContent === '🗺 +'" % pk), True)
         await a.js("window.knocksSeen = 0; v.on('knock', () => window.knocksSeen++)")
         await b.js("v.knock(v.offices.find(o => o.name === 'A').id)")
         check("B knocks: in A's room at once, the door being open", await b.until("v.visiting && v.visiting.host.name"), "A")
         check("A's panel never asked: B walked in (one row for B: in your room)", (await a.until(
-            "v.visitors.length === 1 && document.querySelector('.visit-panel').textContent.includes('B · in your room') && document.querySelectorAll('.visit-panel button.star[data-name=B]').length === 1"),
+            "v.visitors.length === 1 && document.querySelector('.visit-panel').textContent.includes('B · in your room') && document.querySelectorAll('.visit-panel button.wpick[data-name=B]').length === 1"),
                                                      await a.js("window.knocksSeen")), (True, 0))
         await b.js("v.leave()")
         await a.until("v.visitors.length === 0")
@@ -524,8 +532,8 @@ async def run(a, b, url):
         await b.js("v.knock(v.offices.find(o => o.name === 'A').id)")
         check("then B knocks, and A's panel asks", await a.until("!!document.querySelector('.visit-panel .knock')"), True)
         await a.js("document.querySelector('.visit-panel .knock button[data-v=out]').click()")
-        await a.js("v.setDoor(true); v.removeGuest(v.guests[0].key)")
-        check("door open again, B no guest", await a.until("v.door === 'open' && v.guests.length === 0"), True)
+        await a.js("v.setDoor(true)")
+        check("door open again", await a.until("v.door === 'open'"), True)
 
         print("\nthe lobby in a browser, from the panel (3.1): a QR code for a phone; a browser's code typed, allowed, unlinked")
         await a.js("document.querySelector('.visit-panel button[data-v=qr]').click()")
@@ -573,11 +581,13 @@ async def run(a, b, url):
         await b.goto(world + "&three=160")
         up = "window.v && window.room && room.world && v.state === 'online' && v.offices.filter(o => o.ready).length === 2"
         check("both rooms open as worlds", (bool(await a.until(up, 30)), bool(await b.until(up, 30))), (True, True))
-        await a.js("v.addGuest(v.offices.find(o => o.name === 'B').key, 'B')")
-        await b.js("v.addGuest(v.offices.find(o => o.name === 'A').key, 'A')")
+        await asyncio.sleep(1)
+        check("in a world together, nothing picked: neither's world has the other's plot", (await a.js("room.world.plots.filter(p => !p.home).length"), await b.js("room.world.plots.filter(p => !p.home).length")), (0, 0))
+        await a.js("v.pick(v.offices.find(o => o.name === 'B').key, 'B')")
+        await b.js("v.pick(v.offices.find(o => o.name === 'A').key, 'A')")
         inworld = "room.world.plots.length === 1 && room.world.plots[0]"
         pa_, pb_ = await a.until(inworld, 20), await b.until(inworld, 20)
-        check("guests both ways: each sees the other's plot, in its world", (pa_ and pa_["name"], pb_ and pb_["name"]), ("B", "A"))
+        check("picked both ways: each sees the other's plot, in its world", (pa_ and pa_["name"], pb_ and pb_["name"]), ("B", "A"))
         r = pa_["rect"]
         check("placed by itself round A's own, not on it", (round(r[2] - r[0], 3), round(r[3] - r[1], 3), not (r[0] < 10 and r[2] > 0 and r[1] < 8 and r[3] > 0)), (10, 8, True))
         check("A (r128) draws B's (r160) scene with A's own three.js: B's spinner there", await a.until(
@@ -766,19 +776,20 @@ async def run(a, b, url):
         await a.js("v.unplace(%s)" % json.dumps(kb))
         await b.js("v.unplace(%s)" % json.dumps(ka))
         await a.until("v.layout.length === 0")
-        await a.js("v.removeGuest(v.guests[0].key)")
-        await b.js("v.removeGuest(v.guests[0].key)")
+        await a.js("v.unpick(v.picks[0].key)")
+        await b.js("v.unpick(v.picks[0].key)")
+        await b.js("v.leaveGroup('Yard')")   # (not A's guest now: its links and visits ask)
+        await a.until("v.guests.length === 0")
 
         print("\nlinks: their room in a corner, then gone to, or put in your world")
         btn = "(id => document.querySelector(`.visit-panel button[data-v=knock][data-o=\"${id}\"]`))(v.offices.find(o => o.name === 'B').id)"
-        await a.until("!!%s && !%s.disabled" % (btn, btn), 30)   # (A's watch of B, as B's guest, over first)
+        await a.until("!!%s && !%s.disabled" % (btn, btn), 30)   # (A's watch of B, its pick, over first)
         check("A's panel offers B a link (B takes them)", await a.js(btn + ".textContent"), "Link")
         await a.js(btn + ".click()")
         await a.js("(f => { f.querySelector('input').value = 'look?'; f.querySelector('button.go').click(); })(document.querySelector('.visit-panel form'))")
         check("B's panel: A wants to link, with its message", await b.until("(k => k && k.textContent.includes('wants to link') && k.textContent.includes('look?'))(document.querySelector('.visit-panel .knock'))"), True)
-        await b.js("(c => { c.checked = true; c.dispatchEvent(new Event('change', { bubbles: true })); })(document.querySelector('.visit-panel .knock input[data-v=always]'))")
+        check("no ★ always on the knock (3.3: a guest is whoever shares a world)", await b.js("!document.querySelector('.visit-panel .knock input')"), True)
         await b.js("document.querySelector('.visit-panel .knock button[data-v=in]').click()")
-        check("B links, ★ always ticked: A is B's guest from now on", await b.until("v.guests.some(g => g.name === 'A')"), True)
         check("A: B's room in the stage's corner, not in it", await a.until(
             "v.links.length === 1 && v.links[0].where === 'corner' && !v.links[0].inside && !document.querySelector('.visit-stage').hidden && document.querySelector('.visit-stage').classList.contains('small')"), True)
         check("drawn with B's own three.js (r160), from above, going round", await a.until(
@@ -801,7 +812,9 @@ async def run(a, b, url):
         await a.js("document.querySelector('.visit-stage button[data-s=small]').click()")
         check("Back to my room: B's room in the corner again, B's visitor gone, the link on", (await a.until(
             "!v.visiting.inside && document.querySelector('.visit-stage').classList.contains('small') && !v.viewFocused"), await b.until("v.visitors.length === 0 && v.watchers.length === 1")), (True, True))
-        await a.js("v.knock(v.offices.find(o => o.name === 'B').id)")   # an ordinary visit (A is B's guest now: in at once)
+        await a.js("v.knock(v.offices.find(o => o.name === 'B').id)")   # an ordinary visit (B's panel asks: B lets A in)
+        await b.until("!!document.querySelector('.visit-panel .knock button[data-v=in]')")
+        await b.js("document.querySelector('.visit-panel .knock button[data-v=in]').click()")
         check("a visit to B meanwhile: it has the stage, full-window; the link waits aside", await a.until(
             "v.visiting && !v.visiting.link && v.links[0].where === 'aside' && document.querySelector('.visit-stage').classList.contains('big')"), True)
         await a.js("v.leave()")
@@ -820,8 +833,6 @@ async def run(a, b, url):
         check("A opens B's row: B's room in A's world", await a.until("(r => !!r && r.querySelector('.muted').textContent)(document.querySelector('.visit-panel .sub'))"), "their room is in your world")
         await a.js("document.querySelector('.visit-panel .sub button[data-v=cut]').click()")
         check("A unlinks from its panel: gone for both", (await a.until("v.links.length === 0 && room.world.plots.length === 0"), await b.until("v.watchers.length === 0")), (True, True))
-        await b.js("v.removeGuest(v.guests[0].key)")
-        await b.until("v.guests.length === 0")
 
         print("\navatars: a visitor as itself, when the room it visits says so")
         await b.js("v.knock(v.offices.find(o => o.name === 'A').id, 'as myself?')")
@@ -1029,6 +1040,25 @@ async def run(a, b, url):
         await enter(b)
         check("/1: a line to the lobby: A has it, and B (from the lobby)", (await a.until(f"(t => t.startsWith('[Lobby]') && t)({cw}.querySelector('.log').lastChild.textContent)"), await b.until(
             f"(t => t.startsWith('[Lobby]') && t)({cw}.querySelector('.log').lastChild.textContent)")), ("[Lobby] [B]: hello lobby", "[Lobby] [B]: hello lobby"))
+        # 3.3, ignoring (as WoW's): a click on a name in the log, Ignore; their lines go, and come no more; the panel's list.
+        kb_ = await b.js("v.key")
+        await a.js(f"{cw}.querySelector('.log').lastChild.querySelector('.who.act').click()")
+        check("A clicks B's name in its log: a menu, B's name, Whisper and Ignore", await a.until(
+            f"(m => !m.hidden && [m.querySelector('.hd').textContent, [...m.querySelectorAll('button')].map(b => b.textContent)])({cw}.querySelector('.namemenu'))"), ["B", ["Whisper", "Ignore"]])
+        await a.js(f"{cw}.querySelector('.namemenu button[data-m=ig]').click()")
+        check("Ignore: B ignored, by B's key; B's lines out of A's log", await a.until(
+            f"v.isIgnored({json.dumps(kb_)}) && v.ignored[0].name === 'B' && ![...{cw}.querySelectorAll('.log .line[data-k]')].some(d => d.dataset.k === {json.dumps(kb_)})"), True)
+        await asyncio.sleep(5)   # (B's lines: at most 5 every 10 s)
+        await enter(b)
+        await b.call("Input.insertText", text="/1 not for A")
+        await enter(b)
+        await b.until(f"{cw}.querySelector('.log').lastChild.textContent.includes('not for A')")
+        await asyncio.sleep(1)
+        check("B's next line in the lobby never reaches A", await a.js("v.chatLog.some(l => l.text === 'not for A')"), False)
+        check("A's panel: ignored, 1 of 50", await a.until("(r => r && r.textContent)(document.querySelector('.visit-panel button[data-v=ig_clear]') && document.querySelector('.visit-panel button[data-v=ig_clear]').parentElement)"),
+              "ignored · 1 of 50ShowClear")
+        await a.js("window.confirm = () => true; document.querySelector('.visit-panel button[data-v=ig_clear]').click()")
+        check("Clear: A ignores nobody", await a.until("v.ignored.length === 0 && !document.querySelector('.visit-panel button[data-v=ig_clear]')"), True)
         await enter(b)
         await b.call("Input.insertText", text="half a thought")
         await b.key("Escape", "Escape", 27, True)
@@ -1314,9 +1344,10 @@ async def run(a, b, url):
               await hc.until("window.spins.length > %d && spins[spins.length - 1]" % n0, 10), {"type": "spin", "owner": True, "wheel": 3})
         await hc.js("room.frozen = false; v.interactions({ spin: { cosmetic: true, label: 'spin it', run: e => { e.object.rotation.y += 1; "
                     "window.spins.push({ who: e.visitor.name, type: e.type, owner: !!e.visitor.owner }); } } })")
-        await a.js("v.addGuest(v.offices.find(o => o.name === 'C').key, 'C')")
-        await b.js("v.addGuest(v.offices.find(o => o.name === 'A').key, 'A')")
-        check("guests both ways: A's plot in the person's world, beside home", (await b.until("(p => p && p.name)(room.world.plots.find(p => !p.home))", 20)), "A")
+        await b.js("v.joinGroup('Yard')")   # (A's world: A and C each other's guests)
+        await b.until("v.groups.some(g => g.name === 'Yard')")
+        await b.js("v.pick(v.offices.find(o => o.name === 'A').key, 'A')")
+        check("in a world with A, A picked: A's plot in the person's world, beside home", (await b.until("(p => p && p.name)(room.world.plots.find(p => !p.home))", 20)), "A")
         key_a = await b.js("v.offices.find(o => o.name === 'A').key")
         await b.js("v.place(%s, { x: -5.5, z: 4, turn: 0 })" % json.dumps(key_a))   # A's room flush against C's west wall, doorway to doorway
         check("placed flush west of home", await b.until("(p => !!p && JSON.stringify(p.rect.map(x => Math.round(x) || 0)) === '[-10,0,0,8]')(room.world.plots.find(p => !p.home))", 10), True)

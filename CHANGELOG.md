@@ -10,6 +10,35 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v3.3.0 — 2026-11-01 — worlds are who may come in; you pick whose rooms are round yours; ignore people and figures in chat
+
+- **A world's members are each other's guests** ([visit/SPEC.md](visit/SPEC.md) 3, points 9 and 14; 6.6). While your
+  door is open, anyone in a world with you walks into your room without asking, and may put it in their world;
+  closed, everyone knocks. The ★ guest list is gone (`guest_add`, `guest_remove`, `v.addGuest`, `v.removeGuest`, the
+  panel's ☆ and "★ always"): `v.guests` is now whoever shares a world with you, and `v.isGuest(key)` says so.
+- **Nobody's room is in your world by itself** (8.4). Before, every guest's and world member's plot came round yours
+  on its own, up to 8. Now you pick them: **🗺 +** by someone in a world with you (their row in the panel, or the
+  world's member list) puts their room round yours, **🗺 ✓** takes it out; at most 8, so each person keeps their own
+  machine's load. `v.pick(key, name)`, `v.unpick(key)`, `v.picks`, `v.isPicked(key)`, `v.maxPicks`; `pick`,
+  `unpick` and `picks` on the page's socket (`picks` replaces `guests`, with the door). Unpicked, its watch ends and
+  where you had placed it is forgotten. Your state file keeps your picks; one from before 3.3 picks the plots you had
+  placed (Map), and lets the guest list go.
+- **Ignore someone in chat, as in WoW** (8.9). Click a name in the chat window: **Whisper**, **Ignore** (or
+  **Unignore**); or `/ignore name`, `/unignore name`, `/ignore` alone to list them. A person is ignored by their
+  office's key; one of a room's figures (`say_as`) by that room's key and its id, so muting one room's guide mutes no
+  other's. Their lines never reach you from then on, in any scope (say, a room's chat, the lobby, a world, whispers),
+  nor their bubbles, nor your mailbox; they are not kept, and their lines from before are left out of your history
+  while you ignore them. Nothing tells them. At most 50. The panel lists them (**Show**, **Unignore** each, **Clear**),
+  and a person's opened row has **Ignore**. `v.ignore(key, { npc, name })`, `v.unignore(key, { npc })`,
+  `v.clearIgnored()`, `v.ignored`, `v.isIgnored(key, npc)`, `"ignored"`; `ignore`, `unignore`, `ignore_clear` and
+  `ignored` on the page's socket. Voice is not ignored (your room's bans still keep someone out of its voice).
+- The lobby is 3.2.3's (nothing of it changed): no new deploy.
+
+**What an integration does:** a page that called `v.addGuest` or `v.removeGuest`, or showed `v.guests` as a list you
+edit, uses worlds and `v.pick` instead (the panel does both); a page of its own that sends `guest_add` gets
+`bad_message`. A page with its own chat window may give names a click for `v.ignore`. Nothing else: Visit's panel and
+chat window have it all.
+
 ## v3.2.3 — 2026-11-01 — a friend's plot out of view left out of the frame, its shadows on a beat; a browser unlinks itself with its room off
 
 - **Your world draws only what you can see** (kfatehi, #43, from #42; [visit/SPEC.md](visit/SPEC.md) 8.4,

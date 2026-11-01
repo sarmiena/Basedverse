@@ -113,22 +113,22 @@ with `ref: "frame"` said at most once a second. A page without a role may send t
 
 | the host sends (5.2) | the user sends (5.2) | either |
 |---|---|---|
-| `host`; its scene, edits and landscape as binary frames (5.4, bits 0, 1, 5); `pose` (its state for a visitor) | `input`, `point`, `keyframe`, `scene_resync` (for the rooms the person is in: home included, 4) | `max_visitors`, `door`, `guest_add`, `guest_remove` |
+| `host`; its scene, edits and landscape as binary frames (5.4, bits 0, 1, 5); `pose` (its state for a visitor) | `input`, `point`, `keyframe`, `scene_resync` (for the rooms the person is in: home included, 4) | `max_visitors`, `door` |
 | `avatar_want`, `possession_want` (asking visitors for their models) | the avatar and possessions (5.4, bits 2, 6), `avatar_clear`, `possessions` | `avatars`, `avatar_use` |
 | `voice_where` with `me`, `phone`, `visitors` (where the room has everyone in it, its owner among them) | `voice_where` with `world` (where the person's world has friends) | `ban`, `voice_kick` |
 | `phone` (the room has one, or no longer); `say_as` (a line one of the room's own figures says: a receptionist, a guide; visit/SPEC.md 8.9) | the microphone (5.4, bit 3), `voice_join`, `call`, `speaker` | `end` (a visit ended by either: a kick, or leaving); `bye` (the page going, kept by the browser) |
 | | `user` (the name), `say`, `attention`, `read`, `unhold`, `media_get`, pictures and voice messages (5.4, bit 7), `preview`, `history`, `shared` | `status`, `rename` |
-| | `world`, `enter`, `exit`, `place`, `unplace`, `seen`, `plot_keep`, `plot_load`, `plot_forget`, `link_where` | |
+| | `world`, `enter`, `exit`, `pick`, `unpick` (3.3), `place`, `unplace`, `seen`, `plot_keep`, `plot_load`, `plot_forget`, `link_where` | |
 | | `knock`, `answer`, `leave_lobby`, `join_lobby` | |
 
-Knocks on the door are the person's to answer, as today: the panel shows them in the client page. Guests through
-the open door are let in by visit-client without asking anyone, as today (visit/SPEC.md 3, point 9).
+Knocks on the door are the person's to answer, as today: the panel shows them in the client page. Guests (3.3: anyone in a world
+with the office) through the open door are let in by visit-client without asking anyone (visit/SPEC.md 3, point 9).
 
 ### 3.4 Who receives what
 
 | the host receives (5.3) | the user receives (5.3) | both |
 |---|---|---|
-| `input`, `point` from everyone in its room, the owner included; `keyframe`, `scene_resync`, `shared_adds`, `landscapes` | its own visits, links and watches as today: `visit_started` / `visit_ended` (with `home: true` for the owner's visit, 4), `host_paused` / `host_resumed`, `link_stats`, `scene`, `scene_lost`, `landscape`, `enter_refused`, `body`, `avatar_none`; binary deltas, voice and media (5.4) | `ready`, `online` / `offline`, `lobby`, `guests`, `avatars`, `bans`, `error` |
+| `input`, `point` from everyone in its room, the owner included; `keyframe`, `scene_resync`, `shared_adds`, `landscapes` | its own visits, links and watches as today: `visit_started` / `visit_ended` (with `home: true` for the owner's visit, 4), `host_paused` / `host_resumed`, `link_stats`, `scene`, `scene_lost`, `landscape`, `enter_refused`, `body`, `avatar_none`; binary deltas, voice and media (5.4) | `ready`, `online` / `offline`, `lobby`, `picks`, `avatars`, `bans`, `error` |
 | `enter` / `exit` (a watcher stepping in or out: spawn it) | `chat`, `chat_log`, `unseen`, `held`, `held_sent`, `media_ready`, `media_none`, `preview`, `history`, `shared`, `user` | the room's visits: `visit_started` / `visit_ended` for visitors, watchers and links of this room (the host to serve them; the user to show them: the panel's Kick, Unlink), with `owner: true` for the owner's visit (4) |
 | `avatar`, `possessions`, `possession` (what visitors brought) | `voice_near`, `room_voice`, `voice_members`, `banned`, `call`, `phone`, `seen`, `layout`, `plot_forgotten`, `knock`, `knock_sent`, `knock_cancelled`, `answered` | |
 
