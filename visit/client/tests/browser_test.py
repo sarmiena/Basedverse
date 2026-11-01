@@ -796,10 +796,10 @@ async def run(a, b, url):
             "(w => !!(w.scene && w.scene.T.REVISION === '160' && w.count > 10 && w.scene.camera.position.y > 3))(v._viewer)"), True)
         check("B's panel: A is linked, seeing B's room, not in it", await b.until(
             "v.watchers.length === 1 && v.watchers[0].link && v.visitors.length === 0 && document.querySelector('.visit-panel').textContent.includes('A · linked')"), True)
-        await b.js("document.querySelector('.visit-panel button.who').click()")
+        await b.js("document.querySelector('.visit-panel button.who[data-v=more]').click()")
         check("B opens A's row: A sees B's room; A's look in B's room, their model by default; Kick, no; Unlink", await b.until(
             "(r => !!r && [r.querySelector('.muted').textContent, [...r.querySelectorAll('button')].map(b => b.textContent + (b.classList.contains('on2') ? '*' : '')).join()])(document.querySelector('.visit-panel .sub'))"),
-            ["they see your room", "their model*,our model,ban voice,ban chat,Unlink"])
+            ["they see your room", "their model*,our model,ban voice,ban chat,Ignore,Unlink"])
         await a.shot("a_link_corner.png")
         await a.js("document.querySelector('.visit-stage').click()")
         check("a click on the corner: go there, put it in my world, unlink", await a.js(
@@ -829,7 +829,7 @@ async def run(a, b, url):
         check("A's page reloads: the link comes back in A's world, not the corner", await a.until(
             "window.v && window.room && room.world && v.links.length === 1 && v.links[0].where === 'world' && room.world.plots.some(p => p.name === 'B') && document.querySelector('.visit-stage').hidden", 30), True)
         await a.shot("a_link_world.png")
-        await a.js("document.querySelector('.visit-panel button.who').click()")
+        await a.js("document.querySelector('.visit-panel button.who[data-v=more]').click()")
         check("A opens B's row: B's room in A's world", await a.until("(r => !!r && r.querySelector('.muted').textContent)(document.querySelector('.visit-panel .sub'))"), "their room is in your world")
         await a.js("document.querySelector('.visit-panel .sub button[data-v=cut]').click()")
         check("A unlinks from its panel: gone for both", (await a.until("v.links.length === 0 && room.world.plots.length === 0"), await b.until("v.watchers.length === 0")), (True, True))
@@ -850,7 +850,7 @@ async def run(a, b, url):
             await a.until("Math.abs(v.visitors[0].eyes - 1.5) < 0.01 && v.visitors[0].look"),
             await b.until("(bd => !!bd && bd.look === 'theirs' && Math.abs(bd.eyes - 1.5) < 0.01 && Math.abs(v._viewer.scene.pose.y - 1.5) < 0.05)(v._bodies.get(v._viewer.channel))")), ("theirs", True))
         await a.shot("a_avatar.png")
-        await a.js("document.querySelector('.visit-panel button.who').click()")
+        await a.js("document.querySelector('.visit-panel button.who[data-v=more]').click()")
         await a.js("document.querySelector('.visit-panel .sub button[data-v=look][data-use=mine]').click()")
         check("A opens B's row, our model: B set apart, one of A's own (a box)", await a.until(
             "v.avatarUse(v.visitors[0].visitor.key) === 'mine' && v.avatars.by.length === 1 && v.visitors[0].look === 'mine' && !!room.scene.getObjectByName('body:B')"), True)
@@ -1121,7 +1121,7 @@ async def run(a, b, url):
         voice = f"{cw}.querySelector('.voice').textContent.replace(/🔊 /g, '')"   # who is in it, not who is speaking (the fake tones)
         check("A joins it: both lines say who is in it", (await a.until(f"(t => t.startsWith('🎧 B') && t.includes('B · you'))({voice})"),
               await b.until(f"{voice}.includes('you · A')")), (True, True))
-        await b.js("document.querySelector('.visit-panel .sub') || document.querySelector('.visit-panel button.who').click()")
+        await b.js("document.querySelector('.visit-panel .sub') || document.querySelector('.visit-panel button.who[data-v=more]').click()")
         check("B opens A's row: ban voice, ban chat, Kick from voice", await b.until(
             "(s => !!s && [...s.querySelectorAll('button')].map(b => b.textContent).filter(t => /ban|voice/.test(t)).join())(document.querySelector('.visit-panel .sub'))"), "ban voice,ban chat,Kick from voice")
         await b.js("document.querySelector('.visit-panel .sub button[data-v=ban][data-what=chat]').click()")
