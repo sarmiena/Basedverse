@@ -138,6 +138,7 @@ feature in a workroom's code. If the changelog has something newer than the tabl
 | sign-in (accounts, sessions, API keys, `visit`'s token for a session), inside `visit` from 2.0 | 0.21, 2.0 | auth/INTEGRATING.md | `AUTH_TOKEN_FILE`, `/v1/check` in the server's middleware, `GET /login`, `/v1/visit`, `visit auth` |
 | no lobby: the office keeps to itself, its sign-in and engine running | 2.0 | step 2 (`VISIT_LOBBY` blank) | no `VISIT_LOBBY` in the `.env` |
 | the lobby in Rust (`basedverse-lobby/4`): in it only while signed in; world groups (members' rooms in each other's worlds, a group's chat `/g`); a room's line in the lobby's list, a door open to anyone; basedverse's at `wss://basedverse.app/` | 3.0 | step 7, step 9 | the sign-in on (`AUTH_TOKEN_FILE`); `VISIT_LOBBY`; the panel, or `visit.groups`, `visit.createGroup(`, `visit.joinGroup(`, `visit.say(text, { group`, `visit.setAbout(`, `visit.setPublic(` |
+| the lobby's page as your workroom (a web pass: its chat, rooms, groups in a browser tab) | 3.1 | vanilla (the panel's 🌐 Lobby) | `visit.openLobby(` from a click, or the panel |
 
 ## List
 

@@ -247,6 +247,8 @@ const GROUPS_SETTLE: Duration = Duration::from_secs(3);
 const WORLD_ASK: Duration = Duration::from_secs(10);
 
 pub struct Core {
+    /// The lobby's address (VISIT_LOBBY), for a web pass to its page (3.1).
+    lobby_url: Option<String>,
     lobby: mpsc::UnboundedSender<LobbyOut>,
     me: mpsc::UnboundedSender<Ev>,
     relays: Option<Relays>,
@@ -365,10 +367,11 @@ pub struct Core {
 }
 
 impl Core {
-    pub fn new(lobby: mpsc::UnboundedSender<LobbyOut>, me: mpsc::UnboundedSender<Ev>, relays: Option<Relays>, max_visitors: u8, idle_exit: u64,
+    pub fn new(lobby_url: Option<String>, lobby: mpsc::UnboundedSender<LobbyOut>, me: mpsc::UnboundedSender<Ev>, relays: Option<Relays>, max_visitors: u8, idle_exit: u64,
                saved: Saved, fresh: bool, state_file: Option<PathBuf>, lands: Lands, db: mpsc::UnboundedSender<DbCmd>, loaded: Loaded) -> Core {
         let key = saved.key.public().to_string();
         let core = Core {
+            lobby_url,
             lobby,
             me,
             relays,
@@ -872,6 +875,24 @@ impl Core {
                 self.save_state();
                 let _ = self.lobby.send(LobbyOut::Msg(ToLobby::About { about: about.clone() }));   // now, or with the next hello
                 self.to_page(json!({ "type": "about", "about": about, "public": self.saved.public }));
+            }
+            // A web pass (3.1, SPEC 6.11): the lobby's page, opened in a browser, speaks for this office while it is in the
+            // lobby. Signed with its key, for its lobby, good once within PASS_TTL: asked by its signed-in user's page.
+            "lobby_pass" => {
+                let req = m.get("req").cloned().unwrap_or(Value::Null);
+                let Some(url) = self.lobby_url.clone() else {
+                    return self.page_error("no_lobby", "this workroom has no lobby (VISIT_LOBBY)", Some("lobby_pass"));
+                };
+                if !self.online {
+                    return self.page_error("offline", "this workroom is not in the lobby now", Some("lobby_pass"));
+                }
+                let host = lobby_proto::authority(&url);
+                let expires = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) + lobby_proto::PASS_TTL;
+                let nonce = auth::secret::hex(&auth::secret::random(16));
+                let signature = auth::secret::hex(&self.saved.key.sign(lobby_proto::pass_message(&host, &self.key, expires, &nonce).as_bytes()).to_bytes());
+                let scheme = if url.starts_with("wss://") { "https" } else { "http" };
+                let page = format!("{scheme}://{host}/#pass={}.{expires}.{nonce}.{signature}", self.key);
+                self.to_page(json!({ "type": "lobby_pass", "req": req, "url": page, "expires": expires }));
             }
             // World groups and the lobby's operators (../../LOBBY.md): the lobby decides, and says.
             "group_create" | "group_join" | "group_leave" | "group_answer" | "group_remove" | "group_set" | "group_op" | "group_delete" | "groups" | "admin" => {
@@ -3293,7 +3314,7 @@ fn page_for(v: &Value) -> PageRole {
         "chat" | "chat_log" | "unseen" | "held" | "held_sent" | "media_none" | "preview" | "history" | "shared"
         | "voice_near" | "room_voice" | "voice_members" | "user" | "banned" | "seen" | "layout" | "landscape"
         | "plot_forgotten" | "knock" | "knock_sent" | "knock_cancelled" | "answered" | "link_stats" | "scene"
-        | "scene_lost" | "host_paused" | "host_resumed" | "enter_refused" | "body" | "call" | "phone" => PageRole::User,
+        | "scene_lost" | "host_paused" | "host_resumed" | "enter_refused" | "body" | "call" | "phone" | "lobby_pass" => PageRole::User,
         _ => PageRole::Both,
     }
 }
@@ -3305,7 +3326,8 @@ fn role_may(role: PageRole, t: &str) -> bool {
     const USER: &[&str] = &["input", "point", "keyframe", "scene_resync", "avatar_clear", "possessions", "user", "say", "attention", "read",
         "unhold", "media_get", "preview", "history", "shared", "voice_join", "call", "speaker", "world", "enter", "exit", "place", "unplace",
         "seen", "plot_keep", "plot_load", "plot_forget", "link_where", "knock", "answer", "leave_lobby", "join_lobby", "status", "rename",
-        "group_create", "group_join", "group_leave", "group_answer", "group_remove", "group_set", "group_op", "group_delete", "groups", "admin"];
+        "group_create", "group_join", "group_leave", "group_answer", "group_remove", "group_set", "group_op", "group_delete", "groups", "admin",
+        "lobby_pass"];
     match role {
         PageRole::Both => true,
         PageRole::Host => !USER.contains(&t),

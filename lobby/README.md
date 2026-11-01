@@ -2,7 +2,9 @@
 
 `lobby` is one program: who is online, knocks between rooms, visits and links, **world groups** (whose members put
 each other's rooms round their own), the lobby's chat and whispers, a list of rooms, its own **relay** for links
-that cannot go direct, and a read-only **page** for anyone with a browser. Workrooms join it with Visit
+that cannot go direct, and its **page**: read only for anyone with a browser, and, opened from a workroom's room
+(its Visit panel's 🌐 Lobby), that workroom's own lobby, Battle.net style: its chat, who is here, the rooms, its
+groups, knocking. Workrooms join it with Visit
 (`VISIT_LOBBY`), and only while someone is signed in on them. What rooms show each other never passes through it.
 [../LOBBY.md](../LOBBY.md) says why it is as it is; [../visit/SPEC.md](../visit/SPEC.md) section 6 is its protocol,
 `basedverse-lobby/4`.

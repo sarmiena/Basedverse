@@ -754,6 +754,22 @@ async def main():
         await a.until(lambda m: m["type"] == "guests")
         check("A's state file keeps the door's public", json.load(open(state))["public"], False)
 
+        print("\nthe lobby's page as a workroom (3.1): a web pass from A's page, a browser speaking for A")
+        await a.drain()
+        await a.send(type="lobby_pass", req=7)
+        lp = await a.until(lambda m: m["type"] == "lobby_pass")
+        pm = re.match(r"^http://(127\.0\.0\.1:\d+)/#pass=([0-9a-f]{64})\.(\d+)\.([0-9a-f]{32})\.([0-9a-f]{128})$", lp["url"])
+        check("A's page asks for a web pass: the lobby's page, the pass in its fragment, by A's key", (bool(pm), pm and pm.group(2), lp["req"]), (True, ka, 7))
+        w = await connect(url)
+        await w.send(json.dumps({"type": "hello", "proto": "basedverse-lobby/4",
+                                 "web": {"key": pm.group(2), "expires": int(pm.group(3)), "nonce": pm.group(4), "signature": pm.group(5)}}))
+        wel = json.loads(await asyncio.wait_for(w.recv(), 5))
+        check("the lobby takes it: a browser as A", (wel["type"], wel["id"], wel["name"]), ("web_welcome", ids["A"], "A"))
+        await w.send(json.dumps({"type": "chat", "text": "from A's browser"}))
+        x = await a.until(lambda m: m["type"] == "chat" and m.get("scope") == "lobby")
+        check("its line comes to A's page as A's own, in the lobby's order", (x["text"], x["id"]), ("from A's browser", ids["A"]))
+        await w.close()
+
         print("\navatars: asked for by a host, sent by the visitor's visit-client")
         await a.drain()
         await b.drain()

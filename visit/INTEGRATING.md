@@ -40,7 +40,8 @@ the world. Your page never opens any connection to another machine itself.
 Every room that takes Visit's defaults looks and works the same for the people visiting it, and that is the point:
 take them unless your user asks for something else. The defaults are Visit's own ready-made pieces:
 
-- **the panel** (`Visit.panel`): one row a person (in the lobby, or linked with you: in your room, linked; open it
+- **the panel** (`Visit.panel`): 🌐 Lobby (the lobby's page in a tab, as your workroom: its chat, who is here, the
+  rooms, your groups, knocking; your door stays in your room), one row a person (in the lobby, or linked with you: in your room, linked; open it
   for Go there, their look in your room, Kick, Unlink; a room that lists itself with its line, and Walk in at a door
   open to anyone), your world groups (who of each is online, requests to answer, Leave; **Find** the lobby's groups,
   **New** a group of your own), your room's line in the lobby's list, knocks, your door (open to guests, open to

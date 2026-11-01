@@ -13,7 +13,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "3.0.1", PROTO = "basedverse-visit-local/2";
+  const VERSION = "3.1.0", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -984,7 +984,7 @@
           break;
         }
         case "media_none": { const w = this._mediaWait.get(m.id); this._mediaWait.delete(m.id); this._media.delete(m.id); if (w) w(null); break; }
-        case "preview": case "history": case "shared": { const a = this._asks.get(m.req); if (a) { this._asks.delete(m.req); a.resolve(m); } break; }
+        case "preview": case "history": case "shared": case "lobby_pass": { const a = this._asks.get(m.req); if (a) { this._asks.delete(m.req); a.resolve(m); } break; }
         case "bans": this.bans = bansFrom(m.bans); this._changed(); break;
         case "user": if (typeof m.name === "string" && m.name) this._users.set(String(m.key), m.name); else this._users.delete(String(m.key)); this._changed(); break;
         case "banned": {   // a room that keeps your user out of its voice or its chat (8.9), or no longer
@@ -1384,6 +1384,27 @@
     deleteGroup(name) { this._as("user", "deleteGroup"); this._send({ type: "group_delete", group: String(name) }); }
     // The lobby's groups: v.groupList, and "groups", once it answers.
     findGroups() { this._send({ type: "groups" }); }
+    // The lobby's page, as yours (3.1, SPEC 6.11): a web pass your visit-client signs with your office's key, for its
+    // lobby, good once and for 10 minutes: its URL (the lobby's page, the pass in its fragment). Opened in a browser, that
+    // page speaks for your office while it is in the lobby: chat, whispers, groups, the list of rooms, knocking (the
+    // visit itself opens here, in your room). Never your door, nor letting anyone in. Rejects when not in the lobby.
+    lobbyPass() {
+      this._as("user", "lobbyPass");
+      return new Promise((resolve, reject) => {
+        const no = e => { if (e && e.ref === "lobby_pass") { this.off("error", no); reject(new Error(e.message || e.code)); } };
+        this.on("error", no);
+        this._ask("lobby_pass", {}).then(m => { this.off("error", no); resolve(String(m.url)); }, e => { this.off("error", no); reject(e); });
+      });
+    }
+    // The lobby's page in a new tab, as yours (lobbyPass). Call it from a click: the tab opens at once, and goes to the
+    // page once the pass is signed (a browser opens tabs only for a click).
+    openLobby() {
+      const w = typeof window !== "undefined" ? window.open("about:blank", "_blank") : null;
+      return this.lobbyPass().then(url => {
+        if (w) { w.opener = null; w.location.href = url; } else location.assign(url);
+        return url;
+      }, e => { if (w) w.close(); throw e; });
+    }
     // The groups you are in that `key` is in too (their names).
     groupsWith(key) { return key ? this.groups.filter(g => g.members.some(m => m.key === key)).map(g => g.name) : []; }
     // Whether you run a group (its owner, an op, or one of the lobby's operators).
@@ -4255,7 +4276,7 @@
       if (root.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;   // never under a typing hand
       const me = v.office, rows = [];
       root.classList.toggle("folded", folded); element.classList.toggle("visit-folded", folded);
-      rows.push(`<div class="row hd"><button class="caret" data-v="fold" title="${folded ? "open the panel" : "fold the panel: its first line, and what asks you (a knock, a call)"} · Visit ${VERSION}">${folded ? "▸" : "▾"}</button><span class="dot ${v.state === "online" ? esc(v.status) : ""}"></span><span class="grow">Visit${me ? " · " + esc(me.name) : ""}</span><span class="muted">${esc(v.state)}</span><button data-v="perf" class="${v._perf ? "go" : ""}" title="how this page is doing: frames, stalls, and what Visit does (on or off)">⏱</button>${v.state === "online" ? `<button data-v="away" title="leave the lobby: nobody sees you or can link until you come back">Go offline</button>` : ""}</div>`);
+      rows.push(`<div class="row hd"><button class="caret" data-v="fold" title="${folded ? "open the panel" : "fold the panel: its first line, and what asks you (a knock, a call)"} · Visit ${VERSION}">${folded ? "▸" : "▾"}</button><span class="dot ${v.state === "online" ? esc(v.status) : ""}"></span><span class="grow">Visit${me ? " · " + esc(me.name) : ""}</span><span class="muted">${esc(v.state)}</span><button data-v="perf" class="${v._perf ? "go" : ""}" title="how this page is doing: frames, stalls, and what Visit does (on or off)">⏱</button>${v.state === "online" ? `<button data-v="lobby" title="the lobby in a browser tab, as you: its chat, groups and rooms (your door stays here)">🌐 Lobby</button>` : ""}${v.state === "online" ? `<button data-v="away" title="leave the lobby: nobody sees you or can link until you come back">Go offline</button>` : ""}</div>`);
       if (folded) {
         for (const k of v.knocks) rows.push(`<div class="row knock"><b>${esc(k.from.name)}</b> ${k.link ? "wants to link" : "is knocking"}${k.message ? `: “${esc(k.message)}”` : ""}
           <div class="btns"><button class="go" data-v="in" data-k="${esc(k.id)}">${k.link ? "Link" : "Let in"}</button><button data-v="out" data-k="${esc(k.id)}">Not now</button>
@@ -4425,6 +4446,7 @@
       if (act === "fold") { folded = !folded; try { localStorage.setItem("visit:panel", folded ? "folded" : "open"); } catch (x) { /* not kept */ } draw(); }
       else if (act === "knock") { composing = composing === b.dataset.o ? null : b.dataset.o; draw(); }
       else if (act === "walk") v.knock(b.dataset.o);   // a public door: let in at once
+      else if (act === "lobby") v.openLobby().catch(x => note(`The lobby's page: ${x.message || x}`));
       else if (act === "describe") { describing = !describing; draw(); }
       else if (act === "unlist") { v.setAbout(null); describing = false; draw(); }
       else if (act === "find") { finding = !finding; if (finding) v.findGroups(); draw(); }

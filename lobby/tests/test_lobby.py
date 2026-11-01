@@ -670,6 +670,83 @@ async def t_v4_takeover_and_resume(L):
     check("the old secret is spent too", secret != w["resume"], True)
 
 
+def web_pass(sk, key, host, expires=None, nonce=None):
+    import secrets as _s, time as _t
+    expires = expires or int(_t.time()) + 300
+    nonce = nonce or _s.token_hex(16)
+    sig = sk.sign(("%s pass\n%s\n%s\n%d\n%s" % (P4, host, key, expires, nonce)).encode()).hex()
+    return {"key": key, "expires": expires, "nonce": nonce, "signature": sig}
+
+
+async def web(lob, **hello):
+    c = Client(await connect(lob.url))
+    await c.send(type="hello", proto=P4, **hello)
+    while True:
+        m = json.loads(await asyncio.wait_for(c.ws.recv(), 2))
+        if m["type"] in ("web_welcome", "error"):
+            return c, m
+
+
+async def t_web(L):
+    """3.1: a browser with a web pass its office made speaks for the office: its chat, whispers, groups, knocks; never its
+    door nor answering. A pass is good once, within its time, for this lobby; a reload comes back by its resume secret."""
+    host = "127.0.0.1:%d" % L.port
+    a, b = await join(L, "Web A", proto=P4), await join(L, "Web B", proto=P4)
+    p = web_pass(a.sk, a.key, host)
+    w, wel = await web(L, web=p)
+    check("a pass: a browser in, as its office", (wel["type"], wel["id"], wel["name"], wel["key"], len(wel["resume"])), ("web_welcome", a.id, "Web A", a.key, 32))
+    lob = await w.expect("lobby")
+    check("and it has the lobby, both offices", sorted(o["name"] for o in lob["offices"]), ["Web A", "Web B"])
+    w2, e = await web(L, web=p)
+    check("the same pass again: refused, closed", (e.get("code"), await closed_code(w2)), ("bad_proof", 4401))
+    _, e = await web(L, web=web_pass(a.sk, a.key, host, expires=1))
+    check("an expired one: refused", e.get("code"), "bad_proof")
+    _, e = await web(L, web=web_pass(a.sk, a.key, "elsewhere.example"))
+    check("one for another lobby: refused", e.get("code"), "bad_proof")
+    other, okey = keypair()
+    _, e = await web(L, web=web_pass(other, okey, host))
+    check("one from a workroom not in the lobby: refused", e.get("code"), "not_in_lobby")
+    await a.quiet(); await b.quiet(); await w.quiet()
+    await w.send(type="chat", text="hello from the web")
+    la, lb, lw = await a.expect("lobby_chat"), await b.expect("lobby_chat"), await w.expect("lobby_chat")
+    check("the browser says a line in the lobby: as its office, to everyone (its office too)", (lb["from"]["id"], lb["text"], la["text"], lw["text"]), (a.id, "hello from the web", "hello from the web", "hello from the web"))
+    await w.send(type="whisper", to=b.id, text="psst")
+    wb = await b.expect("whisper")
+    check("a whisper from the browser: from its office", (wb["from"]["id"], wb["text"]), (a.id, "psst"))
+    await b.send(type="whisper", to=a.id, text="back")
+    check("one to its office: the browser has it too", ((await a.expect("whisper"))["text"], (await w.expect("whisper"))["text"]), ("back", "back"))
+    await w.send(type="knock", to=b.id, message="from the web")
+    ks, kb = await a.expect("knock_sent"), await b.expect("knock")
+    check("a knock from the browser: its office knocks (its visit-client sees knock_sent), the door asked", (ks["to"], kb["from"]["id"], kb["message"]), (b.id, a.id, "from the web"))
+    check("and the browser sees it go", (await w.expect("knock_sent"))["to"], b.id)
+    await b.send(type="knock", to=a.id)
+    k = await a.expect("knock")
+    check("a knock on its office: the browser is told too", (await w.expect("knock"))["id"], k["id"])
+    for t, extra in (("answer", {"knock": k["id"], "accept": True}), ("door", {"public": True}), ("link", {"endpoint": None, "addr": None}), ("status", {"status": "busy"})):
+        await w.send(type=t, **extra)
+        e = await w.expect("error", skip=("lobby", "knock_sent", "knock", "answered"))
+        check("from the browser, never %s: not_from_web" % t, e["code"], "not_from_web")
+    await w.send(type="groups")
+    gl = await w.expect("groups", skip=("lobby", "knock_cancelled", "answered", "knock_sent", "knock"))
+    check("the group list, asked from the browser, to the browser", isinstance(gl["groups"], list), True)
+    await w.send(type="group_create", group="Webbers", open=True)
+    g1, g2 = await a.expect("group", skip=("lobby", "knock_cancelled", "answered")), await w.expect("group", skip=("lobby", "knock_cancelled", "answered", "knock_sent", "knock"))
+    check("a group made from the browser: the office's, both told", (g1["name"], g1["owner"], g2["name"]), ("Webbers", a.key, "Webbers"))
+    await w.send(type="chat", text="")
+    check("its refusals go to the browser alone", ((await w.expect("error", skip=("lobby", "group", "knock_cancelled", "answered")))["code"], [m["type"] for m in await a.quiet() if m["type"] == "error"]), ("bad_message", []))
+    await w.close()
+    await asyncio.sleep(0.2)
+    w3, wel3 = await web(L, web_resume=wel["resume"])
+    check("a reload: back by its resume secret, a new one", (wel3["type"], wel3["id"], wel3["resume"] != wel["resume"]), ("web_welcome", a.id, True))
+    _, e = await web(L, web_resume=wel["resume"])
+    check("the old secret is spent", e.get("code"), "bad_proof")
+    await w3.quiet()
+    await a.send(type="bye")
+    e = await w3.expect("error", skip=("lobby", "group"))
+    check("its office leaves: the browser is told, and closed", (e["code"], await closed_code(w3)), ("office_gone", 4410))
+    await b.send(type="bye")
+
+
 async def t_flood(L):
     """A connection that sends faster than 20 messages a second (in bursts of 60) is closed; its session held."""
     a = await join(L, "Flood", proto=P4)
@@ -831,7 +908,7 @@ async def main():
     S = await Lobby("--v3", "--resume", "1").start()
     T = await Lobby("--v3", "--knock-ttl", "1").start()
     tests = [(t, L) for t in (t_hello, t_hello_rules, t_knock_refusals, t_visit, t_end_and_full, t_resume, t_resume_replays_visits, t_rename,
-                               t_link_withdrawn, t_keys, t_watch, t_link, t_chat, t_whisper, t_v4_hello, t_v4_takeover_and_resume, t_flood, t_v4_directory,
+                               t_link_withdrawn, t_keys, t_watch, t_link, t_chat, t_whisper, t_v4_hello, t_v4_takeover_and_resume, t_web, t_flood, t_v4_directory,
                                t_v4_groups)]
     tests += [(t_resume_window_and_bye, S), (t_knock_timeout_and_health, T)]
     try:

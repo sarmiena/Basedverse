@@ -40,6 +40,8 @@ enum Phase {
     /// Version 4: the challenge sent, the proof awaited.
     Proving { hello: Value, key: String, nonce: String, tries: usize },
     In(String),
+    /// 3.1: a browser speaking for this office (a web pass).
+    Web(String),
 }
 
 fn parse(raw: &str, conn: &Conn) -> Option<Value> {
@@ -52,6 +54,16 @@ fn parse(raw: &str, conn: &Conn) -> Option<Value> {
         return None;
     }
     Some(m)
+}
+
+/// Whether `signature` (128 hex) is `key`'s, over `message`.
+fn signed(key: &str, message: &str, signature: &str) -> bool {
+    let Ok(pk) = iroh_base::PublicKey::from_str(key) else { return false };
+    if signature.len() != 128 {
+        return false;
+    }
+    let Some(bytes) = (0..64).map(|i| u8::from_str_radix(signature.get(2 * i..2 * i + 2)?, 16).ok()).collect::<Option<Vec<u8>>>() else { return false };
+    pk.verify(message.as_bytes(), &iroh_base::Signature::from_bytes(&bytes.try_into().expect("64 bytes"))).is_ok()
 }
 
 /// Whether `signature` (128 hex) is `key`'s, over what a hello to this lobby signs, for any of `hosts`.
@@ -118,8 +130,12 @@ pub async fn run(server: Arc<Server>, socket: WebSocket, ip: IpAddr, host: Strin
                 let kind = m["type"].as_str().unwrap_or("").to_string();
                 phase = match std::mem::replace(&mut phase, Phase::Hello { tries: 0 }) {
                     Phase::In(oid) => {
-                        let _ = core.0.send(Ev::Msg { conn: conn.id, office: oid.clone(), m });
+                        let _ = core.0.send(Ev::Msg { conn: conn.id, office: oid.clone(), m, web: false });
                         Phase::In(oid)
+                    }
+                    Phase::Web(oid) => {
+                        let _ = core.0.send(Ev::Msg { conn: conn.id, office: oid.clone(), m, web: true });
+                        Phase::Web(oid)
                     }
                     Phase::Hello { tries } => {
                         let p = m.get("proto").and_then(Value::as_str);
@@ -130,6 +146,23 @@ pub async fn run(server: Arc<Server>, socket: WebSocket, ip: IpAddr, host: Strin
                             conn.send(&FromLobby::error("proto_unsupported", "this lobby takes version 4 only by the names it is told (lobby --hosts)", Some("hello")));
                             close = Some((1008, "no --hosts"));
                             break;
+                        } else if p == Some(proto::PROTO4) && (m.get("web").is_some() || m.get("web_resume").is_some()) {
+                            // 3.1: a browser, with the web pass an office made (signed over this lobby's name), or back.
+                            let pass = m.get("web").and_then(|w| serde_json::from_value::<proto::WebPass>(w.clone()).ok());
+                            let resume = m.get("web_resume").and_then(Value::as_str).map(str::to_string);
+                            let good = pass.as_ref().map(|p| proto::key_ok(&p.key) && p.nonce.len() == 32 && p.nonce.bytes().all(|c| c.is_ascii_hexdigit())
+                                && hosts.iter().any(|h| signed(&p.key, &proto::pass_message(h, &p.key, p.expires, &p.nonce), &p.signature)));
+                            if good == Some(false) {
+                                conn.send(&FromLobby::error("bad_proof", "this pass is not this lobby's, or not its workroom's: open the lobby from your Visit panel again", Some("hello")));
+                                close = Some((4401, "bad pass"));
+                                break;
+                            }
+                            let (reply, rx) = oneshot::channel();
+                            let _ = core.0.send(Ev::WebHello { conn: conn.clone(), pass: pass.map(|p| (p.key, p.expires, p.nonce)), resume, reply });
+                            match rx.await.ok().flatten() {
+                                Some(oid) => { deadline = None; Phase::Web(oid) }
+                                None => { break }   // refused, and closed by the core
+                            }
                         } else if p == Some(proto::PROTO4) {
                             match m.get("key").and_then(Value::as_str).filter(|k| proto::key_ok(k) && iroh_base::PublicKey::from_str(k).is_ok()) {
                                 Some(k) => {
@@ -193,9 +226,11 @@ pub async fn run(server: Arc<Server>, socket: WebSocket, ip: IpAddr, host: Strin
     }
     // What the core said before it asked for the close goes out first (an error, a last view).
     let flush = async {
-        while let Ok(Out::Text(t)) = rx.try_recv() {
-            if sink.send(Message::Text(t)).await.is_err() {
-                return;
+        let mut close = close;
+        while let Ok(o) = rx.try_recv() {
+            match o {
+                Out::Text(t) => if sink.send(Message::Text(t)).await.is_err() { return },
+                Out::Close(code, why) => { close = close.or(Some((code, why))); break }   // the core's own: said too
             }
         }
         if let Some((code, why)) = close {
@@ -204,8 +239,10 @@ pub async fn run(server: Arc<Server>, socket: WebSocket, ip: IpAddr, host: Strin
         let _ = sink.close().await;
     };
     let _ = tokio::time::timeout(SEND_WAIT, flush).await;
-    if let Phase::In(oid) = phase {
-        let _ = core.0.send(Ev::Closed { conn: conn.id, office: oid });
+    match phase {
+        Phase::In(oid) => { let _ = core.0.send(Ev::Closed { conn: conn.id, office: oid, web: false }); }
+        Phase::Web(oid) => { let _ = core.0.send(Ev::Closed { conn: conn.id, office: oid, web: true }); }
+        _ => {}
     }
     server.left(ip);
 }

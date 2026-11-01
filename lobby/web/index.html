@@ -1,125 +1,651 @@
 <!doctype html>
+<!--
+  The lobby's page (../../LOBBY.md, ../../visit/SPEC.md 6.9 and 6.11), served at / by `lobby`. One page, nothing from
+  elsewhere: the world behind it is basedverse's (the sign-in page's, ../../auth/web/login.html), drawn on a canvas.
+
+  Two ways to have it:
+  - read only, by anyone: the lobby's groups, the rooms that list themselves, how many are in it (/api/lobby);
+  - as a workroom, opened from its room's Visit panel (🌐 Lobby): a web pass in this page's address (#pass=…), signed
+    by the workroom's own visit-client with its office's key. Then it is that workroom's in the lobby, while the
+    workroom is in it: its chat (the lobby's, its groups', whispers), who is here, the rooms, its groups, knocking
+    (the visit itself happens in its room). Never its door, nor letting anyone in: those stay in its room.
+  The world behind it and the logo are the sign-in page's, copied (keep them alike).
+-->
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lobby</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='5' width='12' height='9' rx='1' fill='%23c9a227'/%3E%3Cpath d='M1 6 8 1l7 5' stroke='%23c9a227' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark">
+<title>Lobby · Basedverse</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='3' y='6' width='10' height='8' fill='%2308a8ff'/%3E%3Cpath d='M2 7 8 2l6 5' stroke='%23a3e048' stroke-width='2' fill='none'/%3E%3Crect x='7' y='10' width='2' height='4' fill='%23ffd93d'/%3E%3C/svg%3E">
 <style>
-  /* The lobby's public page (LOBBY.md 2, rule 10): read only. What it shows comes from /api/lobby: the rooms that
-     describe themselves, the world groups, how many are online. Nothing here is anyone's key, nor where anyone is. */
-  :root {
-    --bg: #0b0d12; --panel: #12161f; --line: #232a37; --text: #e7e2d6; --muted: #9a9384; --gold: #d4af37; --gold-dim: #8a7428;
-    --green: #6fd38a; --blue: #8fb4ff; --font: ui-serif, Georgia, "Times New Roman", serif; --ui: system-ui, -apple-system, "Segoe UI", sans-serif;
-  }
-  @media (prefers-color-scheme: light) {
-    :root:not([data-theme="dark"]) { --bg: #f4f1ea; --panel: #fffdf8; --line: #ddd5c4; --text: #2a2620; --muted: #6f6758; --gold: #8a6d12; --gold-dim: #b49a52; --green: #1f7a3c; --blue: #2d5bb8; }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 var(--ui); }
-  main { max-width: 980px; margin: 0 auto; padding: 32px 16px 64px; }
-  header { border-bottom: 1px solid var(--line); padding-bottom: 20px; margin-bottom: 24px; }
-  h1 { font: 600 clamp(28px, 5vw, 40px)/1.15 var(--font); color: var(--gold); margin: 0 0 6px; letter-spacing: .01em; }
-  .motd { color: var(--text); margin: 6px 0 0; font-style: italic; }
-  .count { color: var(--muted); font-size: 14px; margin-top: 10px; }
-  .count b { color: var(--green); font-weight: 600; }
-  .join { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 14px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; font-size: 14px; }
-  .join code { font: 14px ui-monospace, Consolas, monospace; color: var(--gold); background: none; overflow-wrap: anywhere; }
-  .join button { font: inherit; font-size: 13px; color: var(--text); background: none; border: 1px solid var(--gold-dim); border-radius: 5px; padding: 2px 10px; cursor: pointer; }
-  .join a { color: var(--blue); }
-  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-  @media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
-  h2 { font: 600 20px/1.3 var(--font); color: var(--gold); margin: 0 0 4px; }
-  .sub { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
-  .list { display: flex; flex-direction: column; gap: 8px; }
-  .item { padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--gold-dim); border-radius: 6px; }
-  .item .top { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
-  .item .name { font-weight: 600; }
-  .item .meta { margin-left: auto; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
-  .item .about { color: var(--text); opacity: .85; font-size: 14px; margin-top: 2px; overflow-wrap: anywhere; }
-  .tag { font-size: 12px; color: var(--blue); margin-right: 6px; }
-  .badge { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; border: 1px solid currentColor; border-radius: 4px; padding: 0 5px; }
-  .badge.open { color: var(--green); }
-  .badge.ask { color: var(--muted); }
-  .empty { color: var(--muted); font-size: 14px; padding: 10px 0; }
-  footer { margin-top: 40px; color: var(--muted); font-size: 13px; }
-  footer a { color: var(--muted); }
+:root {
+  --ink: #e6edf3; --dim: #9fb3c8; --night: #0b1324; --panel: #101b31; --panel2: #0c1528; --edge: #e6edf3; --shade: #050912;
+  --blue: #08a8ff; --green: #a3e048; --gold: #ffd93d; --red: #ff6b6b; --pink: #ff80ff; --line: #22314d;
+  --px: 3px;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--night); color: var(--ink); font: 600 14px/1.45 var(--mono); overflow: hidden; }
+#world { position: fixed; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; image-rendering: crisp-edges; }
+main { position: relative; height: 100%; display: flex; flex-direction: column; gap: 10px; padding: 12px; max-width: 1280px; margin: 0 auto; }
+
+/* A frame of whole pixels, as the sign-in page's. */
+.panel {
+  background: rgba(16, 27, 49, .92);
+  box-shadow:
+    0 calc(-1 * var(--px)) 0 0 var(--edge), 0 var(--px) 0 0 var(--edge), calc(-1 * var(--px)) 0 0 0 var(--edge), var(--px) 0 0 0 var(--edge),
+    0 calc(-2 * var(--px)) 0 0 var(--shade), 0 calc(2 * var(--px)) 0 0 var(--shade), calc(-2 * var(--px)) 0 0 0 var(--shade), calc(2 * var(--px)) 0 0 0 var(--shade),
+    calc(3 * var(--px)) calc(4 * var(--px)) 0 0 rgba(0, 0, 0, .45);
+}
+header.top { display: flex; align-items: center; gap: 16px; padding: 10px 14px; }
+header.top .logo { width: 150px; flex: none; filter: drop-shadow(0 0 12px rgba(8, 168, 255, .35)); }
+header.top .logo svg { display: block; width: 100%; height: auto; }
+header.top .what { flex: 1; min-width: 0; }
+header.top h1 { margin: 0; font-size: 18px; letter-spacing: .12em; text-transform: uppercase; color: var(--gold); text-shadow: 0 2px 0 var(--shade); }
+header.top .motd { margin: 2px 0 0; color: var(--dim); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+header.top .who { text-align: right; flex: none; font-size: 12px; color: var(--dim); }
+header.top .who b { color: var(--green); font-size: 16px; }
+header.top .who .as { color: var(--ink); }
+
+.screen { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 14px; }
+@media (max-width: 860px) {
+  body { overflow: auto; }
+  main { height: auto; min-height: 100%; }
+  header.top .logo { width: 90px; }
+  .screen { grid-template-columns: minmax(0, 1fr); }
+  header.top .who { font-size: 11px; }
+  .chat { min-height: 60vh; }
+}
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 8px 0; border-bottom: 2px solid var(--line); }
+.tabs button { font: 700 12px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--dim); background: var(--panel2); border: 0; padding: 6px 10px; cursor: pointer; box-shadow: inset 0 -2px 0 var(--line); }
+.tabs button.on { color: var(--shade); background: var(--gold); box-shadow: none; }
+.tabs button .n { margin-left: 6px; color: var(--red); }
+.tabs button.on .n { color: #6a1010; }
+
+.chat { display: flex; flex-direction: column; min-height: 0; }
+.log { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; text-shadow: 0 1px 0 var(--shade); overflow-wrap: anywhere; }
+.line { padding-left: 1.5em; text-indent: -1.5em; margin: 2px 0; }
+.line .t { color: #6f84a3; font-size: 11px; margin-right: .5em; }
+.line .ch { margin-right: .4em; }
+.line.lobby .ch, .line.lobby .tx { color: #ffc864; }
+.line.group .ch, .line.group .tx { color: var(--green); }
+.line.whisper .tx, .line.whisper .ch { color: var(--pink); }
+.line.note { color: var(--gold); font-style: italic; }
+.line.note.bad { color: var(--red); }
+.say { display: flex; gap: 8px; padding: 10px; border-top: 2px solid var(--line); }
+.say .to { flex: none; align-self: center; color: var(--dim); font-size: 12px; max-width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+input, select { font: 600 14px var(--mono); color: var(--ink); background: var(--shade); border: 0; outline: 0; padding: 8px 10px; box-shadow: 0 0 0 2px #2a3a57; min-width: 0; }
+input:focus { box-shadow: 0 0 0 2px var(--green), 0 0 10px rgba(163, 224, 72, .3); }
+.say input { flex: 1; }
+.btn { font: 800 12px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: #06210f; background: linear-gradient(#c4f06a 0 50%, var(--green) 50% 100%); border: 0; padding: 7px 12px; cursor: pointer; box-shadow: 0 var(--px) 0 0 #4f7d1c, 0 0 0 2px var(--shade); }
+.btn:active { transform: translateY(var(--px)); box-shadow: 0 0 0 0 #4f7d1c, 0 0 0 2px var(--shade); }
+.btn.blue { color: #021a2c; background: linear-gradient(#5cc8ff 0 50%, var(--blue) 50% 100%); box-shadow: 0 var(--px) 0 0 #075a8a, 0 0 0 2px var(--shade); }
+.btn.dim { color: var(--ink); background: #22314d; box-shadow: 0 var(--px) 0 0 #121c30, 0 0 0 2px var(--shade); }
+.btn:disabled { opacity: .45; cursor: default; }
+
+.side { display: flex; flex-direction: column; min-height: 0; }
+.pane { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; }
+.pane[hidden] { display: none; }
+.item { padding: 8px 10px; margin-bottom: 6px; background: var(--panel2); box-shadow: inset 3px 0 0 var(--line); cursor: default; }
+.item.pick { cursor: pointer; }
+.item.pick:hover, .item.open { box-shadow: inset 3px 0 0 var(--blue); }
+.item .top { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.item .name { font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.item .meta { margin-left: auto; color: var(--dim); font-size: 11px; white-space: nowrap; }
+.item .about { color: var(--dim); font-weight: 500; font-size: 12px; margin-top: 2px; }
+.item .tag { color: var(--blue); margin-right: 6px; font-size: 11px; }
+.item .acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.dot { width: 8px; height: 8px; flex: none; background: var(--green); display: inline-block; }
+.dot.busy { background: var(--red); }
+.badge { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; padding: 0 5px; color: var(--shade); background: var(--green); }
+.badge.ask { background: var(--dim); }
+.badge.you { background: var(--gold); }
+.badge.kin { background: var(--blue); }
+.empty { color: var(--dim); font-weight: 500; padding: 6px 2px; }
+.hint { color: var(--dim); font-weight: 500; font-size: 12px; margin: 0 0 10px; }
+.form { display: grid; gap: 8px; padding: 10px; margin-bottom: 10px; background: var(--panel2); }
+.form label { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 12px; }
+.req { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
+.members { color: var(--dim); font-size: 12px; margin-top: 4px; font-weight: 500; }
+.members .on { color: var(--ink); }
+
+/* Read only: how to take part. */
+.join { margin: auto; max-width: 520px; padding: 22px; text-align: center; }
+.join h2 { margin: 0 0 10px; color: var(--gold); font-size: 15px; letter-spacing: .14em; text-transform: uppercase; }
+.join h2::before, .join h2::after { content: "◆"; color: var(--blue); margin: 0 .7em; font-size: 10px; vertical-align: 2px; }
+.join p { margin: 8px 0; color: var(--dim); font-weight: 500; }
+.join code { color: var(--gold); background: var(--shade); padding: 2px 6px; overflow-wrap: anywhere; }
+.join .row { display: flex; gap: 10px; justify-content: center; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+.join a { color: var(--blue); }
+footer { color: #6f84a3; font-size: 11px; text-align: center; font-weight: 500; }
 </style>
 </head>
 <body>
+<canvas id="world" aria-hidden="true"></canvas>
 <main>
-  <header>
-    <h1 id="title">A basedverse lobby</h1>
-    <p class="motd" id="motd" hidden></p>
-    <div class="count" id="count">…</div>
-    <div class="join">
-      <span>Join with Visit: put this in your workroom's <code>.env</code></span>
-      <code id="url"></code>
-      <button type="button" id="copy">Copy</button>
-      <a href="https://github.com/sarmiena/Basedverse/releases/latest" rel="noopener">get Visit</a>
-    </div>
+  <header class="top panel">
+    <div class="logo"><svg role="img" aria-label="Basedverse" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 602 366" shape-rendering="crispEdges"><path fill="#0681e3" d="M48 96h64v8h-64z"/><path fill="#08a8ff" d="M48 96h64v2h-64z"/><path fill="#0985db" d="M32 104h96v8h-96z"/><path fill="#0cadff" d="M32 104h16v2h-16zM112 104h16v2h-16z"/><path fill="#0c89d4" d="M24 112h112v8h-112z"/><path fill="#10b2ff" d="M24 112h8v2h-8zM128 112h8v2h-8z"/><path fill="#0f8dcd" d="M16 120h128v8h-128z"/><path fill="#14b7ff" d="M16 120h8v2h-8zM136 120h8v2h-8z"/><path fill="#084e71" d="M56 128h48v4h-48z"/><path fill="#1291c5" d="M16 128h40v8h-40zM104 128h40v8h-40z"/><path fill="#0a506c" d="M40 136h16v4h-16zM104 136h16v4h-16z"/><path fill="#1694be" d="M16 136h24v8h-24zM120 136h24v8h-24z"/><path fill="#0c5169" d="M32 144h8v4h-8zM120 144h8v4h-8z"/><path fill="#1998b7" d="M16 144h16v8h-16zM128 144h16v8h-16z"/><path fill="#1c9caf" d="M16 152h24v8h-24zM120 152h24v8h-24z"/><path fill="#24cbe4" d="M32 152h8v2h-8zM120 152h8v2h-8z"/><path fill="#11585c" d="M16 168h8v4h-8zM136 168h8v4h-8z"/><path fill="#1fa0a8" d="M16 160h24v8h-24zM120 160h24v8h-24z"/><path fill="#25a19c" d="M24 168h24v8h-24zM112 168h24v8h-24z"/><path fill="#30d1cb" d="M40 168h8v2h-8zM112 168h8v2h-8z"/><path fill="#18594f" d="M24 184h8v4h-8zM128 184h8v4h-8z"/><path fill="#2ba290" d="M24 176h32v8h-32zM104 176h32v8h-32z"/><path fill="#38d3bb" d="M48 176h8v2h-8zM104 176h8v2h-8z"/><path fill="#1b5a49" d="M32 192h8v4h-8zM120 192h8v4h-8z"/><path fill="#31a384" d="M32 184h32v8h-32zM96 184h32v8h-32z"/><path fill="#40d4ac" d="M56 184h8v2h-8zM96 184h8v2h-8z"/><path fill="#1e5a42" d="M40 200h8v4h-8zM112 200h8v4h-8z"/><path fill="#37a478" d="M40 192h32v8h-32zM88 192h32v8h-32z"/><path fill="#48d59c" d="M64 192h8v2h-8zM88 192h8v2h-8z"/><path fill="#225b3b" d="M48 208h8v4h-8zM104 208h8v4h-8z"/><path fill="#3da56c" d="M48 200h32v8h-32zM104 200h8v8h-8z"/><path fill="#2c774e" d="M80 200h24v8h-24z"/><path fill="#399b65" d="M80 200h8v2h-8z"/><path fill="#4fd68c" d="M72 200h8v2h-8z"/><path fill="#307845" d="M96 208h8v8h-8z"/><path fill="#42a660" d="M56 208h40v8h-40z"/><path fill="#48a754" d="M64 216h40v8h-40z"/><path fill="#34783c" d="M56 216h8v8h-8z"/><path fill="#4ea848" d="M48 224h8v8h-8zM80 224h32v8h-32z"/><path fill="#65da5e" d="M48 224h8v2h-8zM104 224h8v2h-8z"/><path fill="#2b5c28" d="M80 232h8v4h-8z"/><path fill="#1f431d" d="M72 232h8v4h-8z"/><path fill="#387934" d="M56 224h24v8h-24z"/><path fill="#57ad48" d="M40 232h32v8h-32zM88 232h32v8h-32z"/><path fill="#71e15e" d="M40 232h8v2h-8zM112 232h8v2h-8z"/><path fill="#305f28" d="M56 240h16v4h-16zM88 240h16v4h-16z"/><path fill="#61b24b" d="M32 240h24v8h-24zM104 240h24v8h-24z"/><path fill="#7ee762" d="M32 240h8v2h-8zM120 240h8v2h-8z"/><path fill="#6ab84e" d="M24 248h32v8h-32zM104 248h32v8h-32z"/><path fill="#8aef65" d="M24 248h8v2h-8zM128 248h8v2h-8z"/><path fill="#3a652b" d="M48 256h8v4h-8zM104 256h8v4h-8z"/><path fill="#74bd50" d="M24 256h24v8h-24zM112 256h24v8h-24z"/><path fill="#40682c" d="M40 264h8v4h-8zM112 264h8v4h-8z"/><path fill="#7dc253" d="M16 264h24v8h-24zM120 264h24v8h-24z"/><path fill="#a2fc6c" d="M16 264h8v2h-8zM136 264h8v2h-8z"/><path fill="#456b2e" d="M32 272h8v4h-8zM120 272h8v4h-8z"/><path fill="#86c856" d="M8 272h24v8h-24zM128 272h24v8h-24z"/><path fill="#aeff70" d="M8 272h8v2h-8zM144 272h8v2h-8z"/><path fill="#90cd59" d="M8 280h24v8h-24zM128 280h24v8h-24z"/><path fill="#99d35b" d="M8 288h24v8h-24zM128 288h24v8h-24z"/><path fill="#547432" d="M24 296h8v4h-8zM128 296h8v4h-8z"/><path fill="#9cd45c" d="M8 296h16v8h-16zM136 296h16v8h-16zM8 304h24v8h-24zM128 304h24v8h-24zM8 312h24v8h-24zM128 312h24v8h-24zM8 320h144v8h-144zM16 328h128v8h-128zM16 336h128v8h-128zM32 344h96v8h-96z"/><path fill="#cbff78" d="M24 304h8v2h-8zM128 304h8v2h-8zM32 320h96v2h-96z"/><path fill="#567533" d="M8 328h8v4h-8zM144 328h8v4h-8zM16 344h16v4h-16zM128 344h16v4h-16zM32 352h96v4h-96z"/><path fill="#2b3036" d="M70 26h20v5h-20zM65 31h15v5h-15zM85 31h10v5h-10zM60 36h40v5h-40zM70 46h5v5h-5zM85 46h5v5h-5z"/><path fill="#8f959c" d="M80 31h5v5h-5zM65 91h10v5h-10zM85 91h10v5h-10z"/><path fill="#c9b48e" d="M65 41h30v5h-30zM65 46h5v5h-5zM75 46h10v5h-10zM90 46h5v5h-5zM65 51h30v5h-30zM60 71h5v5h-5zM95 71h5v5h-5z"/><path fill="#2f5a9a" d="M60 56h5v5h-5zM95 56h5v5h-5zM60 61h5v5h-5zM95 61h5v5h-5zM60 66h5v5h-5zM95 66h5v5h-5z"/><path fill="#3f6fb5" d="M65 56h30v5h-30zM65 61h30v5h-30zM65 66h30v5h-30zM65 71h30v5h-30z"/><path fill="#4a3326" d="M65 76h30v5h-30zM65 81h10v5h-10zM85 81h10v5h-10zM65 86h10v5h-10zM85 86h10v5h-10z"/><path fill="#e6edf3" d="M174 303h28v7h-28zM370 303h7v7h-7zM174 310h7v7h-7zM202 310h7v7h-7zM370 310h7v7h-7zM174 317h7v7h-7zM202 317h7v7h-7zM223 317h21v7h-21zM265 317h28v7h-28zM307 317h21v7h-21zM349 317h28v7h-28zM174 324h28v7h-28zM244 324h7v7h-7zM258 324h7v7h-7zM300 324h7v7h-7zM328 324h7v7h-7zM342 324h7v7h-7zM370 324h7v7h-7zM174 331h7v7h-7zM202 331h7v7h-7zM223 331h28v7h-28zM265 331h21v7h-21zM300 331h35v7h-35zM342 331h7v7h-7zM370 331h7v7h-7zM174 338h7v7h-7zM202 338h7v7h-7zM216 338h7v7h-7zM244 338h7v7h-7zM286 338h7v7h-7zM300 338h7v7h-7zM342 338h7v7h-7zM370 338h7v7h-7zM174 345h28v7h-28zM223 345h28v7h-28zM258 345h28v7h-28zM307 345h21v7h-21zM349 345h28v7h-28z"/><path fill="#9da7b3" d="M384 317h7v7h-7zM412 317h7v7h-7zM433 317h21v7h-21zM468 317h7v7h-7zM482 317h14v7h-14zM517 317h28v7h-28zM559 317h21v7h-21zM384 324h7v7h-7zM412 324h7v7h-7zM426 324h7v7h-7zM454 324h7v7h-7zM468 324h14v7h-14zM496 324h7v7h-7zM510 324h7v7h-7zM552 324h7v7h-7zM580 324h7v7h-7zM384 331h7v7h-7zM412 331h7v7h-7zM426 331h35v7h-35zM468 331h7v7h-7zM517 331h21v7h-21zM552 331h35v7h-35zM391 338h7v7h-7zM405 338h7v7h-7zM426 338h7v7h-7zM468 338h7v7h-7zM538 338h7v7h-7zM552 338h7v7h-7zM398 345h7v7h-7zM433 345h21v7h-21zM468 345h7v7h-7zM510 345h28v7h-28zM559 345h21v7h-21z"/></svg></div>
+    <div class="what"><h1 id="title">Basedverse</h1><p class="motd" id="motd"></p></div>
+    <div class="who"><div><b id="count">…</b> in the lobby</div><div id="as">read only</div></div>
   </header>
-  <div class="cols">
-    <section>
-      <h2>World groups</h2>
-      <p class="sub">Their members put each other's rooms round their own, as neighbours on a map. Open ones take anyone; the rest ask their ops.</p>
-      <div class="list" id="groups"></div>
+  <div class="screen">
+    <section class="chat panel">
+      <nav class="tabs" id="ctabs"></nav>
+      <div class="log" id="log" aria-live="polite"></div>
+      <div class="join" id="join">
+        <h2>Join the lobby</h2>
+        <p>Chat, groups and walking into rooms take a workroom, signed in: open this page from your room, with the <b>🌐 Lobby</b> button in its Visit panel. Your workroom is who you are here.</p>
+        <p>No workroom in this lobby yet? In its <code>.env</code>: <code id="url"></code></p>
+        <div class="row"><button class="btn dim" id="copy" type="button">Copy</button><a href="https://github.com/sarmiena/Basedverse/releases/latest" rel="noopener">get Visit</a></div>
+      </div>
+      <form class="say" id="say" hidden><span class="to" id="to"></span><input id="text" maxlength="200" autocomplete="off" placeholder="say something (/w name, /r, /g group)"><button class="btn" type="submit">Say</button></form>
     </section>
-    <section>
-      <h2>Rooms</h2>
-      <p class="sub">Rooms that list themselves. Open to anyone: walk in from Visit. The rest: knock.</p>
-      <div class="list" id="rooms"></div>
-    </section>
+    <aside class="side panel">
+      <nav class="tabs" id="stabs"><button data-p="people" class="on">Here</button><button data-p="rooms">Rooms</button><button data-p="groups">Groups</button></nav>
+      <div class="pane" id="people"></div>
+      <div class="pane" id="rooms" hidden></div>
+      <div class="pane" id="groups" hidden></div>
+    </aside>
   </div>
-  <footer>Read only: taking part takes Visit, signed in on your own workroom. <span id="ver"></span></footer>
+  <footer id="foot">Basedverse lobby</footer>
 </main>
 <script>
-  "use strict";
+"use strict";
+// ---------- the lobby ----------
+(() => {
   const $ = id => document.getElementById(id);
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const btn = (label, cls, fn, title) => { const b = el("button", "btn " + (cls || ""), label); b.type = "button"; if (title) b.title = title; b.addEventListener("click", fn); return b; };
   const lobbyUrl = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/";
   $("url").textContent = "VISIT_LOBBY=" + lobbyUrl;
-  $("copy").addEventListener("click", () => {
-    navigator.clipboard.writeText("VISIT_LOBBY=" + lobbyUrl).then(() => { $("copy").textContent = "Copied"; setTimeout(() => { $("copy").textContent = "Copy"; }, 1500); }, () => {});
-  });
-  // Text only, made into elements: nothing anyone typed becomes markup.
-  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
-  function item(name, meta, about, extra) {
-    const d = el("div", "item"), top = el("div", "top");
-    top.append(el("span", "name", name), ...extra, el("span", "meta", meta));
-    d.append(top);
-    if (about) d.append(about);
+  $("copy").addEventListener("click", () => navigator.clipboard.writeText("VISIT_LOBBY=" + lobbyUrl).then(() => { $("copy").textContent = "Copied"; setTimeout(() => { $("copy").textContent = "Copy"; }, 1500); }, () => {}));
+  // The colour of someone's name, by their key (Visit's chat window does the same, so a name looks alike in both).
+  const COLORS = ["#ff6b6b", "#ff9f43", "#d4a373", "#ffd93d", "#a3e048", "#2ee6a6", "#3dd5f3"];
+  const colorOf = k => { let h = 2166136261; for (const c of String(k)) h = Math.imul(h ^ c.codePointAt(0), 16777619); return COLORS[(h >>> 0) % COLORS.length]; };
+
+  const S = {
+    ws: null, me: null, offices: [], groups: new Map(), list: [], admin: false,
+    tab: "lobby", lines: [], unread: new Map(), lastWhisper: null, open: new Set(), making: false, retries: 0, pub: null,
+  };
+  const myKey = () => S.me && S.me.key;
+  const kin = key => [...S.groups.values()].some(g => g.members.some(m => m.key === key));
+  const nameOf = id => (S.offices.find(o => o.id === id) || {}).name || "";
+
+  // ---------- chat ----------
+  const TABS = () => [["lobby", "Lobby"], ...[...S.groups.values()].map(g => ["g:" + g.name.toLowerCase(), "⚑ " + g.name]), ["whispers", "Whispers"]];
+  function drawTabs() {
+    const nav = $("ctabs");
+    nav.replaceChildren(...(S.me ? TABS() : [["lobby", "Lobby"]]).map(([k, label]) => {
+      const b = el("button", k === S.tab ? "on" : "", label);
+      const n = S.unread.get(k);
+      if (n && k !== S.tab) b.append(el("span", "n", String(n)));
+      b.addEventListener("click", () => { S.tab = k; S.unread.delete(k); drawTabs(); drawLog(); $("text").focus(); });
+      return b;
+    }));
+    const t = S.tab;
+    $("to").textContent = t === "lobby" ? "to the lobby" : t === "whispers" ? (S.lastWhisper ? "to " + S.lastWhisper.name : "/w name") : "to ⚑ " + (S.groups.get(t.slice(2)) || {}).name;
+  }
+  function lineEl(l) {
+    const d = el("div", "line " + l.kind + (l.bad ? " bad" : ""));
+    d.append(el("span", "t", new Date(l.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })));
+    if (l.kind === "note") { d.append(document.createTextNode(l.text)); return d; }
+    if (l.kind === "group") d.append(el("span", "ch", "[" + l.group + "]"));
+    if (l.kind === "lobby") d.append(el("span", "ch", "[Lobby]"));
+    if (l.kind === "whisper") d.append(el("span", "ch", l.mine ? "To" : ""));
+    const who = el("span", "", "[" + l.name + "]"); who.style.color = colorOf(l.key || l.name);
+    d.append(who, el("span", "tx", (l.kind === "whisper" && !l.mine ? " whispers: " : ": ") + l.text));
     return d;
   }
-  function draw(x) {
-    const l = x.lobby || {};
-    document.title = x.title || "Lobby";
-    $("title").textContent = x.title || "A basedverse lobby";
-    $("motd").hidden = !x.motd; $("motd").textContent = x.motd || "";
-    const n = l.online || 0;
-    $("count").replaceChildren(el("b", null, String(n)), document.createTextNode(n === 1 ? " workroom in the lobby" : " workrooms in the lobby"));
-    $("ver").textContent = x.version ? "lobby " + x.version : "";
-    const groups = (l.groups || []).slice().sort((a, b) => b.online - a.online || b.members - a.members || a.name.localeCompare(b.name));
-    $("groups").replaceChildren(...(groups.length ? groups.map(g => item(g.name, `${g.online}/${g.members} online`, g.about ? el("div", "about", g.about) : null,
-      [el("span", "badge " + (g.open ? "open" : "ask"), g.open ? "open" : "by asking")])) : [el("div", "empty", "No groups yet: make one from Visit's panel.")]));
-    const rooms = (l.rooms || []).filter(r => r.ready).sort((a, b) => (b.public - a.public) || a.name.localeCompare(b.name));
-    $("rooms").replaceChildren(...(rooms.length ? rooms.map(r => {
-      const about = el("div", "about", (r.about && r.about.text) || "");
-      for (const t of (r.about && r.about.tags) || []) about.append(" ", el("span", "tag", "#" + t));
-      const extra = [];
-      if (r.public) extra.push(el("span", "badge open", "open to anyone"));
-      if (r.status === "busy") extra.push(el("span", "badge ask", "busy"));
-      return item(r.name, `${r.visitors}/${r.max_visitors} inside`, about, extra);
-    }) : [el("div", "empty", "No rooms list themselves yet.")]));
+  const visible = l => l.kind === "note" || (S.tab === "lobby" && l.kind === "lobby") || (S.tab === "whispers" && l.kind === "whisper")
+    || (S.tab.startsWith("g:") && l.kind === "group" && "g:" + l.group.toLowerCase() === S.tab);
+  function drawLog() {
+    const log = $("log"), end = log.scrollTop + log.clientHeight >= log.scrollHeight - 6;
+    log.replaceChildren(...S.lines.filter(visible).map(lineEl));
+    if (end || true) log.scrollTop = log.scrollHeight;
   }
-  async function refresh() {
+  function add(l) {
+    l.at = l.at || Date.now();
+    S.lines.push(l);
+    if (S.lines.length > 400) S.lines.shift();
+    const k = l.kind === "lobby" ? "lobby" : l.kind === "group" ? "g:" + l.group.toLowerCase() : l.kind === "whisper" ? "whispers" : null;
+    if (k && k !== S.tab && !l.mine) { S.unread.set(k, (S.unread.get(k) || 0) + 1); drawTabs(); }
+    if (visible(l)) { const log = $("log"), end = log.scrollTop + log.clientHeight >= log.scrollHeight - 6; log.append(lineEl(l)); if (end) log.scrollTop = log.scrollHeight; }
+  }
+  const note = (text, bad) => add({ kind: "note", text, bad });
+  const send = m => { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify(m)); };
+
+  $("say").addEventListener("submit", e => {
+    e.preventDefault();
+    let t = $("text").value.trim();
+    if (!t) return;
+    let m;
+    if ((m = /^\/(?:w|t|whisper|tell)\s+(.+)$/i.exec(t))) {   // /w name text: the longest name of someone here it starts with
+      const rest = m[1], o = S.offices.filter(o => o.id !== S.me.id && rest.toLowerCase().startsWith(o.name.toLowerCase() + " ")).sort((a, b) => b.name.length - a.name.length)[0];
+      if (!o) return note("Nobody here by that name (/w name text)", true);
+      return whisper(o, rest.slice(o.name.length + 1).trim());
+    }
+    if ((m = /^\/r\s+(.+)$/i.exec(t))) { if (!S.lastWhisper) return note("Nobody has whispered with you yet", true); return whisper(S.lastWhisper, m[1]); }
+    if ((m = /^\/g\s+(.+)$/i.exec(t))) {
+      const rest = m[1], g = [...S.groups.values()].filter(g => rest.toLowerCase().startsWith(g.name.toLowerCase() + " ")).sort((a, b) => b.name.length - a.name.length)[0];
+      if (!g) return note("You are in no group by that name", true);
+      S.tab = "g:" + g.name.toLowerCase(); drawTabs(); drawLog();
+      t = rest.slice(g.name.length + 1).trim();
+      if (!t) { $("text").value = ""; return; }
+    } else if (/^\/(1|l|lobby)\s+/i.test(t)) { S.tab = "lobby"; drawTabs(); drawLog(); t = t.replace(/^\/\S+\s+/, ""); }
+    else if (t.startsWith("/")) return note("/w name text · /r text · /g group text · /1 text", true);
+    if (S.tab === "lobby") send({ type: "chat", text: t });
+    else if (S.tab.startsWith("g:")) send({ type: "group_say", group: (S.groups.get(S.tab.slice(2)) || {}).name, text: t });
+    else if (S.lastWhisper) return whisper(S.lastWhisper, t);
+    else return note("Whom to? /w name text", true);
+    $("text").value = "";
+  });
+  function whisper(o, text) {
+    if (!text) return;
+    send({ type: "whisper", to: o.id, text });
+    S.lastWhisper = { id: o.id, name: o.name, key: o.key };
+    add({ kind: "whisper", mine: true, name: o.name, key: o.key, text });
+    $("text").value = "";
+    drawTabs();
+  }
+
+  // ---------- the side ----------
+  const side = name => {
+    document.querySelectorAll("#stabs button").forEach(x => x.classList.toggle("on", x.dataset.p === name));
+    for (const p of ["people", "rooms", "groups"]) $(p).hidden = p !== name;
+    if (name === "groups" && S.me) send({ type: "groups" });
+  };
+  document.querySelectorAll("#stabs button").forEach(b => b.addEventListener("click", () => side(b.dataset.p)));
+  { const first = new URLSearchParams(location.search).get("side"); if (["people", "rooms", "groups"].includes(first)) side(first); }   // ?side=rooms: a link to the list
+  function knockActs(o) {
+    const acts = el("div", "acts");
+    if (!S.me || o.id === S.me.id) return acts;
+    const why = !o.ready ? "not ready" : o.status !== "available" ? o.status : "";
+    const go = (link, label, cls, title) => { const b = btn(label, cls, () => { send({ type: "knock", to: o.id, link }); }, title); if (why) { b.disabled = true; b.title = why; } return b; };
+    if (o.public) acts.append(go(false, "Walk in", "", "their door is open to anyone: you walk in, in your room's page"));
+    else acts.append(go(false, "Knock", "", "they are asked; let in, you walk into their room, in your room's page"));
+    if (o.links) acts.append(go(true, "Link", "blue", "see their room in your room's corner, once they say yes"));
+    acts.append(btn("Whisper", "dim", () => { S.tab = "whispers"; S.lastWhisper = { id: o.id, name: o.name, key: o.key }; drawTabs(); drawLog(); $("text").focus(); }));
+    return acts;
+  }
+  function officeItem(o) {
+    const d = el("div", "item pick" + (S.open.has(o.id) ? " open" : "")), top = el("div", "top");
+    const dot = el("span", "dot" + (o.status === "busy" ? " busy" : ""));
+    const name = el("span", "name", o.name); name.style.color = colorOf(o.key || o.name);
+    top.append(dot, name);
+    if (S.me && o.id === S.me.id) top.append(el("span", "badge you", "you"));
+    else if (o.key && kin(o.key)) top.append(el("span", "badge kin", "⚑ group"));
+    if (o.public) top.append(el("span", "badge", "open"));
+    top.append(el("span", "meta", `${o.visitors}/${o.max_visitors} in · ${(o.sim && o.sim.name) || ""}`));
+    d.append(top);
+    if (o.about && o.about.text) { const a = el("div", "about", o.about.text); for (const t of o.about.tags || []) a.append(" ", el("span", "tag", "#" + t)); d.append(a); }
+    if (S.open.has(o.id)) d.append(knockActs(o));
+    d.addEventListener("click", e => { if (e.target.closest("button")) return; if (!S.open.delete(o.id)) S.open.add(o.id); drawSide(); });
+    return d;
+  }
+  function drawPeople() {
+    const p = $("people");
+    if (!S.me) {
+      p.replaceChildren(el("p", "hint", "Who is here shows to workrooms in the lobby. Open this page from your room (🌐 Lobby) to see them."));
+      return;
+    }
+    const others = S.offices.filter(o => o.id !== S.me.id).sort((a, b) => (kin(b.key) - kin(a.key)) || a.name.localeCompare(b.name));
+    const me = S.offices.find(o => o.id === S.me.id);
+    p.replaceChildren(...(me ? [officeItem(me)] : []), ...others.map(officeItem), ...(others.length ? [] : [el("p", "empty", "Nobody else is here yet.")]));
+  }
+  function drawRooms() {
+    const r = $("rooms"), rooms = S.me ? S.offices.filter(o => o.about) : ((S.pub && S.pub.rooms) || []).map(x => Object.assign({ id: "", status: x.status, ready: x.ready }, x));
+    const list = rooms.filter(o => o.ready !== false).sort((a, b) => (b.public - a.public) || a.name.localeCompare(b.name));
+    r.replaceChildren(el("p", "hint", "Rooms that list themselves (your own: List it, in your room's Visit panel). Open to anyone: walk in. The rest: knock."),
+      ...(list.length ? list.map(o => S.me ? officeItem(o) : (() => { const d = officeItem(o); d.classList.remove("pick"); return d; })()) : [el("p", "empty", "No rooms list themselves yet.")]));
+  }
+  function groupItem(g) {
+    const mine = S.me && S.groups.get(g.name.toLowerCase()), d = el("div", "item"), top = el("div", "top");
+    top.append(el("span", "name", "⚑ " + g.name), el("span", "badge " + (g.open ? "" : "ask"), g.open ? "open" : "asking"));
+    const online = mine ? mine.members.filter(m => S.offices.some(o => o.key === m.key)).length : g.online;
+    const size = mine ? mine.members.length : g.members;
+    top.append(el("span", "meta", `${online}/${size} here`));
+    d.append(top);
+    if (g.about) d.append(el("div", "about", g.about));
+    if (mine) {
+      const op = S.admin || mine.owner === myKey() || mine.ops.includes(myKey());
+      const ms = el("div", "members");
+      mine.members.forEach((m, i) => {
+        const here = S.offices.some(o => o.key === m.key), s = el("span", here ? "on" : "", (here ? "● " : "○ ") + (m.key === myKey() ? "you" : m.name) + (m.key === mine.owner ? " ♛" : mine.ops.includes(m.key) ? " ⚔" : ""));
+        ms.append(s); if (i < mine.members.length - 1) ms.append(document.createTextNode(" · "));
+      });
+      d.append(ms);
+      if (op) for (const r of mine.pending || []) {
+        const q = el("div", "req"); q.append(el("span", "", r.name + " asks to join"), btn("Let in", "", () => send({ type: "group_answer", group: g.name, key: r.key, accept: true })), btn("No", "dim", () => send({ type: "group_answer", group: g.name, key: r.key, accept: false })));
+        d.append(q);
+      }
+      const acts = el("div", "acts");
+      acts.append(btn("Chat", "blue", () => { S.tab = "g:" + g.name.toLowerCase(); S.unread.delete(S.tab); drawTabs(); drawLog(); $("text").focus(); }));
+      if (op) acts.append(btn(mine.open ? "Make it by asking" : "Open it", "dim", () => send({ type: "group_set", group: g.name, open: !mine.open })));
+      acts.append(btn("Leave", "dim", () => send({ type: "group_leave", group: g.name })));
+      if (mine.owner === myKey() || S.admin) acts.append(btn("End it", "dim", () => { if (confirm(`End ${g.name} for everyone in it?`)) send({ type: "group_delete", group: g.name }); }));
+      d.append(acts);
+    } else if (S.me) {
+      const acts = el("div", "acts");
+      acts.append(btn(g.open ? "Join" : "Ask to join", g.open ? "" : "dim", () => { send({ type: "group_join", group: g.name }); setTimeout(() => send({ type: "groups" }), 400); }));
+      d.append(acts);
+    }
+    return d;
+  }
+  function drawGroups() {
+    const pane = $("groups"), kids = [];
+    kids.push(el("p", "hint", "World groups: their members put each other's rooms round their own, as neighbours on a map, and each has a chat."));
+    if (S.me) {
+      if (S.making) {
+        const f = el("form", "form"), n = el("input"), a = el("input"), lab = el("label"), cb = el("input");
+        n.placeholder = "its name"; n.maxLength = 24; a.placeholder = "what it is"; a.maxLength = 200; cb.type = "checkbox";
+        lab.append(cb, document.createTextNode("open: anyone joins, unasked"));
+        const row = el("div", "acts"); row.append(btn("Make it", "", () => f.requestSubmit()), btn("Never mind", "dim", () => { S.making = false; drawGroups(); }));
+        f.append(n, a, lab, row);
+        f.addEventListener("submit", e => { e.preventDefault(); if (!n.value.trim()) return; send({ type: "group_create", group: n.value.trim(), about: a.value.trim(), open: cb.checked }); S.making = false; drawGroups(); });
+        kids.push(f);
+        setTimeout(() => n.focus(), 0);
+      } else {
+        const acts = el("div", "acts"); acts.style.margin = "0 0 10px";
+        acts.append(btn("New group", "", () => { S.making = true; drawGroups(); }), btn("Refresh", "dim", () => send({ type: "groups" })));
+        kids.push(acts);
+      }
+      const mine = [...S.groups.values()];
+      if (mine.length) kids.push(el("p", "hint", "Yours"), ...mine.map(groupItem));
+      const others = S.list.filter(g => !S.groups.has(g.name.toLowerCase()));
+      kids.push(el("p", "hint", mine.length ? "Others" : "In this lobby"), ...(others.length ? others.map(groupItem) : [el("p", "empty", "No other groups yet.")]));
+    } else {
+      const list = (S.pub && S.pub.groups) || [];
+      kids.push(...(list.length ? list.map(groupItem) : [el("p", "empty", "No groups yet.")]));
+    }
+    if (pane.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;   // never under a typing hand
+    pane.replaceChildren(...kids);
+  }
+  function drawSide() { drawPeople(); drawRooms(); drawGroups(); }
+  function drawTop(title, motd, count) {
+    $("title").textContent = title || "Basedverse"; document.title = (title || "Lobby") + " · Basedverse";
+    $("motd").textContent = motd || "";
+    $("count").textContent = String(count);
+  }
+
+  // ---------- as a workroom: the web pass ----------
+  function connect(hello) {
+    const ws = S.ws = new WebSocket(lobbyUrl);
+    ws.onopen = () => ws.send(JSON.stringify(Object.assign({ type: "hello", proto: "basedverse-lobby/4" }, hello)));
+    ws.onmessage = e => { let m; try { m = JSON.parse(e.data); } catch (x) { return; } on(m); };
+    ws.onclose = e => {
+      if (ws !== S.ws) return;
+      const was = S.me;
+      if (e.code === 4401 || e.code === 4410 || e.code === 4403) { readOnly(); return; }   // no pass, or its workroom left
+      let secret = null; try { secret = sessionStorage.getItem("lobby:resume"); } catch (x) { /* none kept */ }
+      if (was && secret && S.retries++ < 20) { note("Connection lost: coming back…", true); setTimeout(() => connect({ web_resume: secret }), Math.min(15000, 1000 * S.retries)); }
+      else readOnly();
+    };
+  }
+  function on(m) {
+    switch (m.type) {
+      case "web_welcome":
+        S.me = { id: m.id, name: m.name, key: m.key }; S.admin = m.admin === true; S.retries = 0;
+        try { sessionStorage.setItem("lobby:resume", m.resume); } catch (x) { /* not kept: a reload asks your room again */ }
+        $("join").hidden = true; $("log").hidden = false; $("say").hidden = false;
+        $("as").replaceChildren(document.createTextNode("as "), el("span", "as", m.name));
+        $("foot").textContent = `as ${m.name}, from its room: your door, and letting people in, stay there`;
+        drawTop(m.title, m.motd, "…");
+        if (!S.lines.some(l => l.kind === "note" && l.welcome)) add({ kind: "note", welcome: true, text: `In ${m.title || "the lobby"} as ${m.name}${m.motd ? `: ${m.motd}` : ""}` });
+        send({ type: "groups" });
+        drawTabs(); drawLog();
+        break;
+      case "lobby": S.offices = m.offices || []; $("count").textContent = String(S.offices.length); drawSide(); break;
+      case "lobby_chat": add({ kind: "lobby", name: m.from.name, key: m.from.key, text: m.text, mine: S.me && m.from.id === S.me.id }); break;
+      case "whisper": S.lastWhisper = { id: m.from.id, name: m.from.name, key: m.from.key }; add({ kind: "whisper", name: m.from.name, key: m.from.key, text: m.text }); drawTabs(); break;
+      case "group_chat": add({ kind: "group", group: m.group, name: m.from.name, key: m.from.key, text: m.text, mine: S.me && m.from.id === S.me.id }); break;
+      case "group": S.groups.set(m.name.toLowerCase(), m); drawTabs(); drawSide(); break;
+      case "group_left":
+        S.groups.delete(String(m.group).toLowerCase());
+        if (S.tab === "g:" + String(m.group).toLowerCase()) S.tab = "lobby";
+        note(m.reason === "removed" ? `Taken out of ${m.group}` : m.reason === "deleted" ? `${m.group} has ended` : `You left ${m.group}`);
+        drawTabs(); drawLog(); drawSide(); send({ type: "groups" }); break;
+      case "group_request": note(`${m.from.name} asks to join ${m.group}: Groups, Let in`); break;
+      case "group_answered": note(m.accept == null ? `Asked to join ${m.group}: its ops will answer` : m.accept ? `You are in ${m.group} now` : `Not let into ${m.group}`); break;
+      case "groups": S.list = m.groups || []; drawGroups(); break;
+      case "knock": note(`${m.from.name} ${m.link ? "wants to link" : m.watch ? "" : "is knocking"}${m.message ? `: “${m.message}”` : ""}: answer in your room`); break;
+      case "knock_sent": if (!m.watch) note(`Knocking on ${nameOf(m.to) || "them"}…`); break;
+      case "answered": if (!m.watch) note(m.accept ? `${m.link ? "Linked" : "In"}: your room's page has it` : `Not let in${m.reason && m.reason !== "declined" ? ` (${m.reason})` : ""}`, !m.accept); break;
+      case "error": note(m.message || m.code, true); break;
+    }
+  }
+  // ---------- read only ----------
+  let pubTimer = null;
+  async function pub() {
     try {
       const r = await fetch("/api/lobby", { cache: "no-store" });
-      if (r.ok) draw(await r.json());
-    } catch (e) { $("count").textContent = "the lobby is not answering"; }
+      if (!r.ok) return;
+      const x = await r.json();
+      S.pub = x.lobby || {};
+      if (!S.me) $("foot").textContent = `Basedverse lobby ${x.version || ""} · read only: taking part takes Visit, signed in on your own workroom`;
+      if (!S.me) { drawTop(x.title, x.motd, S.pub.online || 0); drawSide(); }
+    } catch (e) { if (!S.me) $("count").textContent = "?"; }
   }
-  refresh();
-  setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 10000);
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refresh(); });
+  function readOnly() {
+    S.me = null; S.ws = null; S.offices = []; S.groups.clear();
+    $("join").hidden = false; $("log").hidden = true; $("say").hidden = true; $("as").textContent = "read only";
+    drawTabs(); drawSide(); pub();
+    if (!pubTimer) pubTimer = setInterval(() => { if (!S.me && document.visibilityState === "visible") pub(); }, 10000);
+  }
+
+  // A pass in the address (#pass=key.expires.nonce.signature): used once, then gone from the address (and history).
+  const hash = /^#pass=([0-9a-f]{64})\.(\d{1,12})\.([0-9a-f]{32})\.([0-9a-f]{128})$/.exec(location.hash);
+  let secret = null; try { secret = sessionStorage.getItem("lobby:resume"); } catch (x) { /* none kept */ }
+  if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+  readOnly();
+  if (hash) connect({ web: { key: hash[1], expires: Number(hash[2]), nonce: hash[3], signature: hash[4] } });
+  else if (secret) connect({ web_resume: secret });
+})();
+
+// ---------- the world behind it ----------
+// Drawn at a few hundred pixels across and scaled up by a whole number, as the logo's pixels are. Layers further off
+// move slower as the view drifts east: the sky, its moon and the figure-eight portal hold still; an aurora in the
+// logo's blue and green; far mountains, floating islands with a workroom on each, hills, the ground; fireflies; and
+// someone walking. The same every visit (a seeded random).
+(() => {
+  const canvas = document.getElementById("world"), g = canvas.getContext("2d");
+  const still = matchMedia("(prefers-reduced-motion: reduce)");
+  const LOOP = 1024;   // the world's width before it repeats, in its pixels
+  const TAU = Math.PI * 2;
+  let W = 320, H = 180, scale = 4, layers = null, stars = [], flies = [], pointer = 0;
+
+  const seeded = seed => () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
+  // A height that repeats every LOOP: a few waves whose periods divide it.
+  const ridge = (rand, waves) => { const w = waves.map(([k, a]) => [k, a, rand() * TAU]); return x => w.reduce((s, [k, a, p]) => s + a * Math.sin(TAU * k * x / LOOP + p), 0); };
+  const px = (c, x, y, w = 1, h = 1) => { c.fillRect(Math.round(x), Math.round(y), w, h); };
+  const shade = (c, color) => { c.fillStyle = color; };
+
+  function size() {
+    const sw = innerWidth, sh = innerHeight;
+    scale = Math.max(2, Math.floor(Math.min(sw / 320, sh / 180)));
+    W = Math.ceil(sw / scale); H = Math.ceil(sh / scale);
+    canvas.width = W; canvas.height = H;
+    canvas.style.width = W * scale + "px"; canvas.style.height = H * scale + "px";
+    build();
+  }
+
+  // ----- what is drawn once a size: the sky, and each moving layer as a strip LOOP wide -----
+  function build() {
+    const rand = seeded(20261028), horizon = Math.round(H * 0.66);
+    const wide = () => { const c = document.createElement("canvas"); c.width = LOOP; c.height = H; return c; };
+
+    // The sky: bands from night to the horizon's teal, each edge dithered.
+    const sky = document.createElement("canvas"); sky.width = W; sky.height = H;
+    const s = sky.getContext("2d"), BANDS = ["#060a18", "#081024", "#0b1730", "#0e1e3c", "#112848", "#143253", "#183e5c", "#1d4b63", "#235a69"];
+    const band = horizon / BANDS.length;
+    BANDS.forEach((c, i) => {
+      shade(s, c); s.fillRect(0, Math.floor(i * band), W, H);
+      if (i) for (let x = 0; x < W; x += 2) px(s, x + (i & 1), Math.floor(i * band) - 1);   // the checkerboard step
+    });
+    // The moon, with its craters and a dithered glow.
+    const mx = Math.round(W * 0.84), my = Math.round(H * 0.16), r = 9;
+    for (let y = -r * 2; y <= r * 2; y++) for (let x = -r * 2; x <= r * 2; x++) {
+      const d = Math.hypot(x, y);
+      if (d > r && d < r * 1.9 && (x + y) % 2 === 0 && rand() < 0.5 * (1 - (d - r) / (r * 0.9))) { shade(s, "rgba(200,220,255,.18)"); px(s, mx + x, my + y); }
+    }
+    for (let y = -r; y <= r; y++) for (let x = -r; x <= r; x++) if (x * x + y * y <= r * r) {
+      shade(s, x * x + y * y > (r - 1.5) ** 2 ? "#c9d6e8" : x + y > 4 ? "#d9e3f0" : "#f1f5fb"); px(s, mx + x, my + y);
+    }
+    shade(s, "#bfcbe0"); [[-3, -2, 2], [3, 2, 2], [-1, 4, 1], [4, -4, 1]].forEach(([x, y, w]) => px(s, mx + x, my + y, w, w));
+
+    // Stars: most still, some twinkling (drawn each frame).
+    stars = [];
+    for (let i = 0; i < Math.round(W * H / 380); i++) {
+      const x = Math.floor(rand() * W), y = Math.floor(rand() * horizon * 0.92), b = rand();
+      if (Math.hypot(x - mx, y - my) < r * 2.2) continue;
+      if (b < 0.25) stars.push({ x, y, p: rand() * TAU, v: 0.6 + rand() * 1.6 });
+      else { shade(s, b < 0.7 ? "#3d4f78" : b < 0.92 ? "#8fa3cc" : "#e6edf3"); px(s, x, y); }
+    }
+
+    // Far mountains: jagged, a lighter ridge where the moon catches them.
+    const far = wide(), f = far.getContext("2d"), fh = ridge(rand, [[3, 9], [7, 5], [13, 3], [29, 2], [61, 1.2]]);
+    for (let x = 0; x < LOOP; x++) {
+      const top = Math.round(horizon - H * 0.12 + fh(x));
+      shade(f, "#0c1a30"); f.fillRect(x, top, 1, H - top);
+      shade(f, "#1b3150"); px(f, x, top); if (fh(x + 1) < fh(x)) px(f, x, top + 1);
+    }
+
+    // Floating islands, each with a workroom on it (lit windows, a door, a light on the roof): drawn each frame
+    // from these, as they bob.
+    const isles = [];
+    for (let i = 0; i < 5; i++) {
+      const w = 22 + Math.floor(rand() * 18), depth = 9 + Math.floor(rand() * 7), c = document.createElement("canvas");
+      c.width = w + 4; c.height = depth + 16;
+      const k = c.getContext("2d"), base = 14, room = { w: 8 + Math.floor(rand() * 6), h: 6 + Math.floor(rand() * 3) };
+      for (let row = 0; row < depth; row++) {   // the rock, narrowing as it goes down
+        const half = Math.max(1, Math.round((w / 2) * Math.pow(1 - row / depth, 0.75) + (rand() - 0.5) * 2));
+        shade(k, row < 2 ? "#2e8a47" : row < depth * 0.5 ? "#3a2c4e" : "#271d38"); k.fillRect(2 + w / 2 - half, base + row, half * 2, 1);
+      }
+      shade(k, "#48b864"); for (let x = 2; x < w + 2; x += 1 + Math.floor(rand() * 3)) px(k, x, base - 1);   // grass
+      shade(k, "#1f6a36"); for (let j = 0; j < 4; j++) px(k, 4 + rand() * (w - 6), base + 2, 1, 1 + Math.floor(rand() * 3));   // roots
+      const rx = 2 + Math.floor((w - room.w) / 2), ry = base - room.h;
+      shade(k, "#26304a"); k.fillRect(rx, ry, room.w, room.h);
+      shade(k, "#7a3344"); for (let j = 0; j < 3; j++) k.fillRect(rx - 1 + j, ry - 1 - j, room.w + 2 - j * 2, 1);   // its roof
+      shade(k, "#120f1a"); k.fillRect(rx + 1, base - 3, 2, 3);   // its door
+      isles.push({ img: c, x: (i + rand() * 0.6) * LOOP / 5, y: 0.26 + rand() * 0.16, wins: [[rx + 4, ry + 1], [rx + room.w - 3, ry + 1], [rx + 4, ry + 3]].filter(([x]) => x < rx + room.w - 1), roof: [rx + Math.floor(room.w / 2), ry - 4], p: rand() * TAU });
+    }
+
+    // Hills: rounder, with pines.
+    const hills = wide(), h = hills.getContext("2d"), hh = ridge(rand, [[2, 6], [5, 4], [11, 2], [23, 1]]);
+    for (let x = 0; x < LOOP; x++) {
+      const top = Math.round(horizon + H * 0.04 + hh(x));
+      shade(h, "#0d2626"); h.fillRect(x, top, 1, H - top);
+      shade(h, "#1c4a42"); px(h, x, top);
+    }
+    for (let i = 0; i < 70; i++) {
+      const x = Math.floor(rand() * LOOP), top = Math.round(horizon + H * 0.04 + hh(x)), t = 5 + Math.floor(rand() * 6);
+      shade(h, "#0a1e1e"); for (let j = 0; j < t; j++) h.fillRect(x - Math.floor(j / 2), top - t + j, 1 + Math.floor(j / 2) * 2, 1);
+    }
+
+    // The ground: grass, a path, flowers.
+    const ground = wide(), d = ground.getContext("2d"), top = Math.round(H * 0.86), gh = ridge(rand, [[4, 1.2], [9, 0.8]]);
+    for (let x = 0; x < LOOP; x++) {
+      const y = Math.round(top + gh(x));
+      shade(d, "#0a1f14"); d.fillRect(x, y, 1, H - y);
+      shade(d, "#1f5d3a"); px(d, x, y); if (rand() < 0.35) px(d, x, y - 1);
+      shade(d, "#2b2219"); d.fillRect(x, y + 4, 1, 2);   // the path
+      shade(d, "#3a2e22"); if (rand() < 0.3) px(d, x, y + 4);
+    }
+    for (let i = 0; i < 60; i++) { const x = Math.floor(rand() * LOOP); shade(d, ["#ff6b6b", "#ffd93d", "#8fd3ff", "#e6a0ff"][i % 4]); px(d, x, Math.round(top + gh(x)) + 1 + Math.floor(rand() * 2)); }
+
+    flies = Array.from({ length: Math.round(W / 12) }, () => ({ x: rand() * LOOP, y: horizon + rand() * (H - horizon) * 0.8, p: rand() * TAU, v: 0.5 + rand() }));
+    layers = { sky, far, isles, hills, ground, horizon, top: Math.round(H * 0.86), gh };
+  }
+
+  // ----- each frame -----
+  // Someone walking (the logo's own), in two steps: a hat, a face, a blue shirt, brown trousers.
+  const WALKER = [
+    "..KKK..", ".KKkKK.", "KKKKKKK", ".SSSSS.", ".SeSeS.", ".SSSSS.", ".BBBBB.", "SBBBBBS", ".BBBBB.",
+  ], LEGS = [[".PP.PP.", ".PP.PP.", ".FF.FF."], ["..PPP..", ".PP.PP.", "FF...FF"]];
+  const COLORS = { K: "#1b1f2a", k: "#9aa4b8", S: "#f2c9a0", e: "#1b1f2a", B: "#2f6fd0", P: "#6b4226", F: "#14161c" };
+
+  function aurora(t) {
+    g.globalCompositeOperation = "lighter";
+    for (const [base, amp, speed, k] of [[0.2, 0.06, 0.25, 0], [0.3, 0.05, 0.18, 1]]) {
+      for (let x = 0; x < W; x++) {
+        const y = H * base + H * amp * Math.sin(x * 0.021 + t * speed + k * 2) + H * 0.025 * Math.sin(x * 0.057 - t * speed * 1.7);
+        const glow = Math.max(0, Math.sin(x * 0.013 + t * 0.35 + k * 3) * 0.5 + 0.5 * Math.sin(x * 0.031 - t * 0.2));
+        if (glow < 0.08) continue;
+        const len = Math.round(6 + 10 * glow), a = Math.round(glow * 4) / 4;   // stepped, as pixels are
+        const mix = x / W, col = k ? `rgba(${Math.round(8 + 155 * mix)},${Math.round(168 + 56 * mix)},${Math.round(255 - 183 * mix)},` : `rgba(${Math.round(163 - 120 * mix)},${Math.round(224 - 40 * mix)},${Math.round(72 + 160 * mix)},`;
+        g.fillStyle = col + (0.10 * a) + ")"; g.fillRect(x, Math.round(y) - len, 1, len);
+        g.fillStyle = col + (0.22 * a) + ")"; g.fillRect(x, Math.round(y) - Math.round(len / 3), 1, Math.round(len / 3));
+      }
+    }
+    g.globalCompositeOperation = "source-over";
+  }
+  // The portal: the logo's figure eight, blue above and green below, its light breathing.
+  function portal(t) {
+    const cx = Math.round(W * 0.14), cy = Math.round(H * 0.3), r = 6, pulse = 0.5 + 0.5 * Math.sin(t * 1.4);
+    g.globalCompositeOperation = "lighter";
+    for (let y = -r * 4; y <= r * 4; y++) for (let x = -r * 2; x <= r * 2; x++) if ((x + y) % 2 === 0) {
+      const d = Math.min(Math.abs(Math.hypot(x, y + r) - r), Math.abs(Math.hypot(x, y - r) - r));
+      if (d > 1 && d < 4 + pulse * 2) { g.fillStyle = `rgba(${y < 0 ? "8,168,255" : "163,224,72"},${0.16 * (1 - d / 6)})`; px(g, cx + x, cy + y); }
+    }
+    g.globalCompositeOperation = "source-over";
+    for (let y = -r * 2 - 1; y <= r * 2 + 1; y++) for (let x = -r - 1; x <= r + 1; x++) {
+      const d = Math.min(Math.abs(Math.hypot(x, y + r) - r), Math.abs(Math.hypot(x, y - r) - r));
+      if (d < 0.9) { const m = (y + r * 2) / (r * 4); g.fillStyle = `rgb(${Math.round(8 + 155 * m)},${Math.round(168 + 56 * m)},${Math.round(255 - 183 * m)})`; px(g, cx + x, cy + y); }
+    }
+  }
+  const strip = (img, off) => { const o = ((Math.round(off) % LOOP) + LOOP) % LOOP; g.drawImage(img, -o, 0); if (LOOP - o < W) g.drawImage(img, LOOP - o, 0); };
+
+  function draw(t) {
+    if (!layers) return;
+    const cam = t * 9, lean = pointer * 6;   // the view drifts east; the pointer leans it a little
+    g.drawImage(layers.sky, 0, 0);
+    for (const s of stars) if (Math.sin(t * s.v + s.p) > -0.2) { g.fillStyle = Math.sin(t * s.v + s.p) > 0.7 ? "#ffffff" : "#8fa3cc"; px(g, s.x, s.y); }
+    const shoot = (t % 11) / 11;   // now and then, a shooting star
+    if (shoot < 0.08) { const k = shoot / 0.08, sx = W * (0.35 + 0.4 * k), sy = H * (0.06 + 0.12 * k); for (let j = 0; j < 7; j++) { g.fillStyle = `rgba(255,255,255,${1 - j / 7})`; px(g, sx - j * 2, sy - j); } }
+    aurora(t);
+    portal(t);
+    strip(layers.far, cam * 0.12 + lean * 0.2);
+    for (const i of layers.isles) {   // floating, bobbing
+      const x = ((((i.x - cam * 0.22 - lean * 0.4) % LOOP) + LOOP) % LOOP), y = Math.round(H * i.y + 2 * Math.sin(t * 0.7 + i.p));
+      for (const xx of [x, x - LOOP]) {
+        if (xx < -i.img.width || xx > W) continue;
+        g.drawImage(i.img, Math.round(xx), y);
+        i.wins.forEach(([wx, wy], n) => { g.fillStyle = Math.sin(t * 0.9 + i.p + n * 2.1) > -0.6 ? "#ffd93d" : "#5a4a1a"; px(g, xx + wx, y + wy, 2, 1); });
+        g.fillStyle = Math.sin(t * 3 + i.p) > 0 ? "#ff6b6b" : "#5a1f28"; px(g, xx + i.roof[0], y + i.roof[1]);
+      }
+    }
+    g.fillStyle = "rgba(35,90,105,.22)"; g.fillRect(0, layers.horizon - 2, W, 6);   // mist where the land meets the sky
+    strip(layers.hills, cam * 0.45 + lean * 0.6);
+    g.globalCompositeOperation = "lighter";
+    for (const f of flies) {
+      const x = ((((f.x + 6 * Math.sin(t * 0.5 * f.v + f.p) - cam * 0.7) % LOOP) + LOOP) % LOOP), y = f.y + 3 * Math.sin(t * 0.8 * f.v + f.p * 2);
+      const on = Math.sin(t * 2 * f.v + f.p) > 0.2;
+      if (x > W || !on) continue;
+      g.fillStyle = "rgba(200,255,90,.18)"; g.fillRect(Math.round(x) - 1, Math.round(y) - 1, 3, 3);
+      g.fillStyle = "#e8ff9a"; px(g, x, y);
+    }
+    g.globalCompositeOperation = "source-over";
+    strip(layers.ground, cam + lean);
+    // Whoever walks: where they stand on the ground, a step every quarter second.
+    const wx = Math.round(W * 0.12), step = Math.floor(t * 4) % 2, gy = Math.round(layers.top + layers.gh(((wx + cam + lean) % LOOP + LOOP) % LOOP));
+    const rows = WALKER.concat(LEGS[step]), y0 = gy + 4 - rows.length - step;   // on the path, up a pixel mid-stride
+    rows.forEach((row, ry) => { for (let rx = 0; rx < row.length; rx++) { const c = COLORS[row[rx]]; if (c) { g.fillStyle = c; px(g, wx + rx, y0 + ry); } } });
+  }
+
+  let last = 0, t0 = performance.now();
+  function frame(now) {
+    if (now - last >= 33) { last = now; draw((now - t0) / 1000); }   // 30 frames a second is plenty for pixels
+    if (!still.matches) requestAnimationFrame(frame);
+  }
+  addEventListener("resize", () => { size(); if (still.matches) draw(14); });
+  addEventListener("pointermove", e => { pointer = e.clientX / innerWidth - 0.5; });
+  still.addEventListener("change", () => { if (!still.matches) requestAnimationFrame(frame); else draw(14); });
+  size();
+  if (still.matches) draw(14); else requestAnimationFrame(frame);
+})();
 </script>
 </body>
 </html>

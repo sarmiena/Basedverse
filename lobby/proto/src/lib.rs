@@ -123,6 +123,26 @@ pub fn proof_message(host: &str, nonce: &str, key: &str) -> String {
     format!("{PROTO4} hello\n{host}\n{nonce}\n{key}")
 }
 
+/// What a web pass signs (3.1, ../../../visit/SPEC.md 6.11): the lobby it is for (`authority`), the office's key, until
+/// when (seconds since 1970), and a nonce of its own. Made by an office's visit-client at its signed-in user's asking;
+/// a browser that has it may speak for that office in that lobby, once, within its time.
+pub fn pass_message(host: &str, key: &str, expires: u64, nonce: &str) -> String {
+    format!("{PROTO4} pass\n{host}\n{key}\n{expires}\n{nonce}")
+}
+
+/// A web pass, as a browser hands it to the lobby (`hello` with `web`).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct WebPass {
+    pub key: String,
+    pub expires: u64,
+    pub nonce: String,
+    /// 128 hex: `pass_message` signed with the key's secret half.
+    pub signature: String,
+}
+
+/// How long a web pass is good for, at most, in seconds.
+pub const PASS_TTL: u64 = 600;
+
 /// A flag that is true only when it is `true` (anything else, or none, is false), as the lobby has always read them.
 fn truthy<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     Ok(Value::deserialize(d)? == Value::Bool(true))
@@ -446,6 +466,21 @@ pub enum FromLobby {
     VisitEnded { id: String, reason: String },
     LobbyChat { from: Sayer, text: String },
     Whisper { from: Sayer, text: String },
+    /// 3.1: to a browser let in by a web pass (or its `resume`): whose it speaks for, and how to come back after a reload.
+    WebWelcome {
+        proto: String,
+        id: String,
+        name: String,
+        key: String,
+        resume: String,
+        limits: Limits,
+        #[serde(skip_serializing_if = "is_false", default)]
+        admin: bool,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        title: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        motd: Option<String>,
+    },
     /// Version 4: one of this office's groups, whole: on welcome, and whenever it changes. `pending` for its ops.
     Group {
         name: String,

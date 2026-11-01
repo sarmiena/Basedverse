@@ -13,6 +13,9 @@ use std::{
 
 use axum::extract::ws::Utf8Bytes;
 use lobby_proto::{self as proto, About, Ban, FromLobby, Knocker, Knocking, Limits, LinkTo, Office, Peer, Sayer, Sim, ToLobby};
+
+/// Browsers an office may have in its lobby at once, by web passes (3.1).
+const WEB_SESSIONS: usize = 4;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
@@ -75,9 +78,12 @@ pub enum Ev {
     /// an error said on `conn` (the connection may try again).
     Hello { conn: Conn, proto: Proto, hello: Value, key: Option<String>, reply: oneshot::Sender<Option<String>> },
     /// A message from an office's connection, after its hello.
-    Msg { conn: u64, office: String, m: Value },
+    Msg { conn: u64, office: String, m: Value, web: bool },
     /// A connection closed: its office (if this is still its connection) is held for the resume window.
-    Closed { conn: u64, office: String },
+    Closed { conn: u64, office: String, web: bool },
+    /// 3.1: a browser with a web pass (its signature checked already: `pass` is its key, until when, its nonce), or
+    /// coming back with its `resume`. The reply is the office it speaks for, or none after an error said on `conn`.
+    WebHello { conn: Conn, pass: Option<(String, u64, String)>, resume: Option<String>, reply: oneshot::Sender<Option<String>> },
     KnockExpired(String),
     HoldExpired(String, u64),
     /// For /health: the offices in the lobby, every version.
@@ -144,6 +150,8 @@ struct Session {
     /// Counts holds: a hold's expiry that finds another number was cancelled.
     held: u64,
     holding: bool,
+    /// 3.1: browsers speaking for this office, by web passes (the public page, connected).
+    web: Vec<Conn>,
 }
 
 struct Knock {
@@ -182,6 +190,11 @@ pub struct Core {
     bans: crate::groups::Bans,
     groups: Groups,
     lie: Option<String>,
+    /// The connection whose message is being handled, when a browser's: its refusals are said to it.
+    replying: Option<Conn>,
+    /// Browsers' resume secrets (office id), and web passes used (nonce, until when): each once.
+    web_resumes: HashMap<String, String>,
+    passes: HashMap<String, u64>,
 }
 
 /// `n` random bytes, as lower-case hex.
@@ -210,7 +223,7 @@ impl Core {
         (limits3.resume, limits4.resume) = (cfg.resume, cfg.resume);
         Core {
             cfg, limits3, limits4, me, offices: HashMap::new(), by_name: HashMap::new(), by_key: HashMap::new(), resumes: HashMap::new(),
-            knocks: HashMap::new(), knock_order: Vec::new(), visits: HashMap::new(), visit_order: Vec::new(), bans, groups, lie: None,
+            knocks: HashMap::new(), knock_order: Vec::new(), visits: HashMap::new(), visit_order: Vec::new(), bans, groups, lie: None, replying: None, web_resumes: HashMap::new(), passes: HashMap::new(),
         }
     }
 
@@ -221,8 +234,18 @@ impl Core {
                     let id = self.hello(conn, proto, hello, key);
                     let _ = reply.send(id);
                 }
-                Ev::Msg { conn, office, m } => self.msg(conn, &office, m),
-                Ev::Closed { conn, office } => self.closed(conn, &office),
+                Ev::Msg { conn, office, m, web: false } => self.msg(conn, &office, m),
+                Ev::Msg { conn, office, m, web: true } => self.web_msg(conn, &office, m),
+                Ev::Closed { conn, office, web: false } => self.closed(conn, &office),
+                Ev::Closed { conn, office, web: true } => {
+                    if let Some(o) = self.offices.get_mut(&office) {
+                        o.web.retain(|c| c.id != conn);
+                    }
+                }
+                Ev::WebHello { conn, pass, resume, reply } => {
+                    let id = self.web_hello(conn, pass, resume);
+                    let _ = reply.send(id);
+                }
                 Ev::KnockExpired(kid) => self.knock_expired(&kid),
                 Ev::HoldExpired(oid, n) => {
                     if self.offices.get(&oid).is_some_and(|o| o.holding && o.held == n) {
@@ -275,14 +298,40 @@ impl Core {
     }
 
     // ---------- sending ----------
+    /// To an office: its own connection, and (3.1) the browsers speaking for it, what a browser is told (`for_web`).
     fn tell(&self, oid: &str, m: &FromLobby) {
-        if let Some(c) = self.offices.get(oid).and_then(|o| o.conn.as_ref()) {
+        let Some(o) = self.offices.get(oid) else { return };
+        if let Some(c) = &o.conn {
             c.send(m);
+        }
+        if !o.web.is_empty() && for_web(m) {
+            let text: Utf8Bytes = m.text().into();
+            for c in &o.web {
+                c.send_text(&text);
+            }
         }
     }
 
+    /// The connections that hear an office's lines: its own, and its browsers'.
+    fn hearers<'a>(&'a self, o: &'a Session) -> impl Iterator<Item = &'a Conn> {
+        o.conn.iter().chain(o.web.iter())
+    }
+
+    /// A refusal, to whoever asked: the browser whose message this is, else the office's own connection.
     fn error(&self, oid: &str, code: &str, text: impl Into<String>, reference: Option<&str>) {
-        self.tell(oid, &FromLobby::error(code, text, reference));
+        self.answer(oid, &FromLobby::error(code, text, reference));
+    }
+
+    /// An answer (the group list, the bans, a refusal), to whoever asked alone.
+    fn answer(&self, oid: &str, e: &FromLobby) {
+        match &self.replying {
+            Some(c) => c.send(e),
+            None => {
+                if let Some(c) = self.offices.get(oid).and_then(|o| o.conn.as_ref()) {
+                    c.send(e);
+                }
+            }
+        }
     }
 
     fn view(&self, p: Proto) -> FromLobby {
@@ -302,7 +351,7 @@ impl Core {
     /// Everyone hears the lobby as it is now, each version its own.
     fn announce(&self) {
         for p in [Proto::V3, Proto::V4] {
-            let conns: Vec<&Conn> = self.offices.values().filter(|o| o.proto == p).filter_map(|o| o.conn.as_ref()).collect();
+            let conns: Vec<&Conn> = self.offices.values().filter(|o| o.proto == p).flat_map(|o| self.hearers(o)).collect();
             if conns.is_empty() {
                 continue;
             }
@@ -414,7 +463,7 @@ impl Core {
             max_visitors, resume: String::new(), link: None, key: key.clone(), world: flag("world"), links: flag("links"), chat: flag("chat"),
             whisper: flag("whisper"), about, public: p == Proto::V4 && m.get("public") == Some(&Value::Bool(true)), admin,
             said: VecDeque::new(), visiting: None, hosting: HashSet::new(), watching: HashSet::new(), watched: HashSet::new(),
-            knocked: VecDeque::new(), knocked_watch: VecDeque::new(), made: VecDeque::new(), held: 0, holding: false,
+            knocked: VecDeque::new(), knocked_watch: VecDeque::new(), made: VecDeque::new(), held: 0, holding: false, web: Vec::new(),
         };
         self.by_name.insert(name.to_ascii_lowercase(), id.clone());
         if let Some(k) = &key {
@@ -453,6 +502,11 @@ impl Core {
     /// A session ends for good: its knocks are withdrawn, its visits end `gone`.
     fn depart(&mut self, oid: &str) {
         let Some(me) = self.offices.remove(oid) else { return };
+        for c in &me.web {   // the browsers speaking for it: it is gone, and so are they
+            c.send(&FromLobby::error("office_gone", format!("{} has left the lobby: open the lobby from its Visit panel again once it is back", me.name), None));
+            c.close(4410, "its office left the lobby");
+        }
+        self.web_resumes.retain(|_, o| o != oid);
         self.by_name.remove(&me.name.to_ascii_lowercase());
         self.resumes.remove(&me.resume);
         if let Some(k) = &me.key {
@@ -499,6 +553,96 @@ impl Core {
         });
     }
 
+    // ---------- browsers (3.1: SPEC 6.11) ----------
+    /// A browser with a web pass its office made (its signature checked by conn.rs), or back with its resume secret: it
+    /// speaks for that office, in the lobby, while the office is in it. A pass is good once, within its time.
+    fn web_hello(&mut self, conn: Conn, pass: Option<(String, u64, String)>, resume: Option<String>) -> Option<String> {
+        let refuse = |code: &str, text: String| {
+            conn.send(&FromLobby::error(code, text, Some("hello")));
+            conn.close(4401, "no pass");
+            None
+        };
+        let now = now_unix();
+        self.passes.retain(|_, until| *until > now);
+        let oid = match (pass, resume) {
+            (Some((key, expires, nonce)), _) => {
+                if expires <= now || expires > now + proto::PASS_TTL + 60 {
+                    return refuse("bad_proof", "this pass has expired: open the lobby from your Visit panel again".into());
+                }
+                if self.passes.insert(nonce, expires).is_some() {
+                    return refuse("bad_proof", "this pass was used already: open the lobby from your Visit panel again".into());
+                }
+                match self.online(&key) {
+                    Some(id) => id.to_string(),
+                    None => return refuse("not_in_lobby", "the workroom this pass is from is not in the lobby now".into()),
+                }
+            }
+            (None, Some(secret)) => match self.web_resumes.remove(&secret).filter(|o| self.offices.contains_key(o)) {
+                Some(o) => o,
+                None => return refuse("bad_proof", "that session is over: open the lobby from your Visit panel again".into()),
+            },
+            (None, None) => return refuse("bad_message", "a web hello has a pass, or a resume secret".into()),
+        };
+        if self.offices[&oid].web.len() >= WEB_SESSIONS {
+            return refuse("too_many", format!("at most {WEB_SESSIONS} browsers for one workroom"));
+        }
+        let secret = hex(16);
+        self.web_resumes.insert(secret.clone(), oid.clone());
+        let o = self.offices.get_mut(&oid).expect("there");
+        o.web.push(conn.clone());
+        let o = &self.offices[&oid];
+        conn.send(&FromLobby::WebWelcome {
+            proto: proto::PROTO4.into(), id: o.id.clone(), name: o.name.clone(), key: o.key.clone().unwrap_or_default(), resume: secret,
+            limits: self.limits4.clone(), admin: o.admin, title: self.cfg.title.clone(), motd: self.cfg.motd.clone(),
+        });
+        conn.send(&self.view(Proto::V4));
+        if let Some(k) = &o.key {
+            for g in self.groups.of(k) {
+                conn.send(&self.groups.view(&g, k));
+            }
+        }
+        info!("+ a browser for {}", o.name);
+        Some(oid)
+    }
+
+    /// A browser's message: what a browser may do for its office (talk, groups, the list of rooms, knock to walk into a
+    /// room or link), never what lets anyone into its room (answering, its door) or moves its visits. Refusals to it.
+    fn web_msg(&mut self, conn: u64, oid: &str, m: Value) {
+        let Some(c) = self.offices.get(oid).and_then(|o| o.web.iter().find(|c| c.id == conn)).cloned() else { return };
+        let t = ref_of(&m);
+        const WEB: [&str; 16] = ["chat", "whisper", "group_say", "group_create", "group_join", "group_leave", "group_answer", "group_remove", "group_set",
+                                 "group_op", "group_delete", "groups", "about", "admin", "knock", "bye"];
+        if !WEB.contains(&t.as_str()) {
+            return c.send(&FromLobby::error("not_from_web", format!("{t} is your workroom's to do, from its room"), Some(&t)));
+        }
+        if t == "bye" {
+            if let Some(o) = self.offices.get_mut(oid) {
+                o.web.retain(|x| x.id != conn);
+            }
+            return c.close(1000, "bye");
+        }
+        if t == "knock" && (m.get("watch") == Some(&Value::Bool(true))) {
+            return c.send(&FromLobby::error("not_from_web", "watching is your workroom's own (its world)", Some("knock")));
+        }
+        self.replying = Some(c);
+        let conn_id = self.offices[oid].conn.as_ref().map(|c| c.id);
+        match conn_id {
+            // As the office's own message, its refusals to this browser: the office need not be connected (held).
+            Some(id) => self.msg(id, oid, m),
+            None => self.msg_held(oid, m),
+        }
+        self.replying = None;
+    }
+
+    /// A browser's message while its office's connection is down (held for resuming): handled as the office's.
+    fn msg_held(&mut self, oid: &str, m: Value) {
+        let t = ref_of(&m);
+        match serde_json::from_value::<ToLobby>(m) {
+            Ok(x) => self.handle(oid, x),
+            Err(_) => self.error(oid, "bad_message", format!("{t} is not as it should be"), Some(&t)),
+        }
+    }
+
     // ---------- messages ----------
     fn msg(&mut self, conn: u64, oid: &str, m: Value) {
         if self.offices.get(oid).is_none_or(|o| o.conn.as_ref().is_none_or(|c| c.id != conn)) {
@@ -518,6 +662,12 @@ impl Core {
             | ToLobby::Answer { .. } | ToLobby::End { .. } | ToLobby::Rename { .. } | ToLobby::Chat { .. } | ToLobby::Whisper { .. } | ToLobby::Bye | ToLobby::Hello { .. }) {
             return self.error(oid, "unknown_type", format!("no message type {t:?}"), Some(&t));
         }
+        self.handle(oid, msg);
+    }
+
+    /// A message from an office (or a browser speaking for it), its shape checked.
+    fn handle(&mut self, oid: &str, msg: ToLobby) {
+        let p = self.offices[oid].proto;
         match msg {
             ToLobby::Hello { .. } => self.error(oid, "already_hello", format!("this connection is already in the lobby as {}", self.offices[oid].name), Some("hello")),
             ToLobby::Prove { .. } => self.error(oid, "already_hello", "this connection has proved its key already", Some("prove")),
@@ -872,7 +1022,7 @@ impl Core {
         let p = self.offices[oid].proto;
         let line: Utf8Bytes = FromLobby::LobbyChat { from: self.sayer(oid), text }.text().into();
         for o in self.offices.values().filter(|o| o.chat && o.proto == p) {
-            if let Some(c) = &o.conn {
+            for c in self.hearers(o) {
                 c.send_text(&line);
             }
         }
@@ -924,7 +1074,7 @@ impl Core {
         }
         if self.offices.contains_key(oid) {
             let bans = self.bans.list();
-            self.tell(oid, &FromLobby::LobbyBans { bans });
+            self.answer(oid, &FromLobby::LobbyBans { bans });
         }
     }
 
@@ -971,7 +1121,7 @@ impl Core {
         let res = match m {
             ToLobby::Groups => {
                 let list = self.groups.listed(|k| self.online(k).is_some());
-                return self.tell(oid, &FromLobby::Groups { groups: list });
+                return self.answer(oid, &FromLobby::Groups { groups: list });
             }
             ToLobby::GroupSay { group, text } => {
                 let Some(g) = group.and_then(|g| self.groups.find(&g)).filter(|g| self.groups.is_member(g, &me)) else {
@@ -980,8 +1130,10 @@ impl Core {
                 let Some(text) = self.chat_text(oid, text, r) else { return };
                 let line: Utf8Bytes = FromLobby::GroupChat { group: g.clone(), from: self.sayer(oid), text }.text().into();
                 for k in self.groups.member_keys(&g) {
-                    if let Some(c) = self.online(&k).and_then(|id| self.offices[id].conn.as_ref()) {
-                        c.send_text(&line);
+                    if let Some(o) = self.online(&k).map(|id| &self.offices[id]) {
+                        for c in self.hearers(o) {
+                            c.send_text(&line);
+                        }
                     }
                 }
                 return;
@@ -1024,6 +1176,15 @@ impl Core {
             self.group_changed(g);
         }
     }
+}
+
+/// What a browser speaking for an office hears of what the office does (3.1): the lobby and its talk, the office's
+/// groups, its knocks and their answers. Not its visits' tickets and links: those are its visit-client's alone.
+fn for_web(m: &FromLobby) -> bool {
+    matches!(m, FromLobby::Lobby { .. } | FromLobby::LobbyChat { .. } | FromLobby::Whisper { .. } | FromLobby::Group { .. }
+        | FromLobby::GroupLeft { .. } | FromLobby::GroupRequest { .. } | FromLobby::GroupAnswered { .. } | FromLobby::GroupChat { .. }
+        | FromLobby::Knock { .. } | FromLobby::KnockSent { .. }
+        | FromLobby::KnockCancelled { .. } | FromLobby::Answered { .. } | FromLobby::VisitEnded { .. })
 }
 
 fn is_type(t: &str) -> bool {

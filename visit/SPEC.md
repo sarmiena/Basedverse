@@ -139,6 +139,12 @@ program listening on their machine.
     The key that knocks is proved (6.1, and by the link as for a guest: point 9); whether that key is in the group is
     not, beyond the lobby. Join groups in lobbies you trust. A public door (`door` with `public`) lets anyone's knock
     to visit in, the same way, without asking the page: its watches stay for guests and groups.
+15. **A browser speaks for an office only by its pass** (3.1, 6.11). A web pass is signed by the office's key, for
+    one lobby, good once and for 10 minutes, made only at its signed-in user's asking (the person's page:
+    `lobby_pass`). It travels in a URL's fragment (never sent to a server, and taken out of the address as the page
+    reads it). The browser it lets in may talk, whisper, run groups, list the room and knock (to walk into another's
+    room: the visit happens in the office's own room); never answer a knock, open the door or touch a visit: what
+    lets anyone into the room stays with the room.
 
 Visitors get the host's whole scene: a sim that shows issue titles or agent activity in its room shows them
 to its visitors, wherever they stand and whether they look or not. Letting someone in is the host's
@@ -382,6 +388,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `about` | `about` {`text` (≤ 200), `tags` (≤ 5, each 1–20 lower-case letters, digits and `-`)} \| null | this room's line in the lobby's list of rooms (6.6), and on its public page; null: out of it. Kept in the state file, told to the lobby (and in each new `hello`). `about` back |
 | `group_create`, `group_join`, `group_leave`, `group_answer`, `group_remove`, `group_set`, `group_op`, `group_delete`, `groups` | as 6.2's | world groups (6.6), passed to the lobby (the user's: ../../engine/SPEC.md 3.3); what comes back, as 5.3 has it |
 | `admin` | as 6.2's | the lobby's operators' (6.7) |
+| `lobby_pass` | `req` | a web pass for the lobby's page (3.1, 6.11), the person's to ask: `lobby_pass` back with `req`, `url` (the lobby's page, the pass in its fragment) and `expires`; `offline` when not in the lobby, `no_lobby` without one |
 | `guest_add` | `key`, `name`? (≤ 24) | a guest: an office's key, as the lobby lists it (6.3) or a visit's peer has it (5.3), and the name it is known by; again for a key already there renames it. At most 256 (`too_many_guests`); not this office's own key |
 | `guest_remove` | `key` | no longer a guest; its watches of this plot end |
 | `world` | `on` (bool) | on: this office watches every guest online whose lobby entry says `world` (8.4), by itself, and keeps doing so (a declined or refused watch is tried again after 20 s); off: its watches end. No page for a minute: off |
@@ -436,6 +443,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `about` | `about` \| null, `public` | after `about`. `ready` has `about` and `public` |
 | `group` | `name`, `about`, `open`, `owner` (a key), `ops` [keys], `members` [{`key`, `name`, `since`}], `pending`? [{`key`, `name`}] (its ops' only) | one of this office's world groups, whole (6.6): after joining the lobby, and as it changes. `ready` has `groups` [the same] |
 | `group_left` / `group_request` / `group_answered` / `groups` / `lobby_bans` | as 6.3's | the lobby's, passed on |
+| `lobby_pass` | `req`, `url`, `expires` | the web pass asked for (3.1, 6.11) |
 | `layout` | `layout`: [{`key`, `x`, `z`, `turn`}] | after a change |
 | `seen` | `key`, `name`, `at` (as the page message `seen`'s, their plot's `size`) \| null | where a friend's world has this office's plot (8.4), as they said; null: not in it, or their last link gone. `ready` has every one known: `seen`: [{`key`, `name`, `at`}] |
 | `landscape` | `channel`, `key`, `json` | an office's landscape (8.10), as JSON: the room's on that visit's `channel` (kept here, or asked for and sent once), or a kept plot's (channel 0). Also to a page that comes back, for each visit it is on. `ready` has the kept plots: `kept`: [{`key`, `name`, `plot`, `unit`}] |
@@ -562,6 +570,7 @@ nobody has taken it meanwhile. Who someone is, is their key.
 | type | fields | effect |
 |---|---|---|
 | `hello` | `proto`: `"basedverse-lobby/4"`, `name`, `key`, `sim`?, `status`?, `max_visitors`? (default 3), `resume`?, `about`? (6.6), `public`? (bool) | join, or resume a dropped session (6.1) |
+| `hello` (a browser, 3.1) | `proto`, and `web` {`key`, `expires`, `nonce`, `signature`} (a web pass), or `web_resume` (its secret) | a browser speaking for an office (6.11) |
 | `prove` | `signature` | the challenge signed (6.1) |
 | `link` | `endpoint` (its key), `addr` (an object, ≤ 2 KiB as JSON, passed through untouched: how to reach it); or both null | publish or update how to reach this office; both null: withdraw it (not ready, until published again) |
 | `status` | `status`: `"available"` \| `"busy"` | busy: no knocks to visit or link (watches go on) |
@@ -592,6 +601,7 @@ nobody has taken it meanwhile. Who someone is, is their key.
 | type | fields | when |
 |---|---|---|
 | `challenge` | `nonce` (32 hex) | after `hello`: sign it (6.1) |
+| `web_welcome` | `proto`, `id`, `name`, `key` (the office's), `resume` (32 hex), `limits`, `admin`?, `title`?, `motd`? | to a browser let in by a web pass, or back by its secret (6.11) |
 | `welcome` | `proto`, `id`, `name`, `key`, `relays`: [url], `resume` (32 hex), `resumed` (bool), `visits`: [id], `knocking`: [{`id`, `to`}], `limits` (6.10), `chat`: true, `admin`? (true: this key is one of the lobby's operators), `title`?, `motd`? | after a good `hello` and `prove` |
 | `lobby` | `offices`: [{`id`, `name`, `status`, `sim`, `max_visitors`, `visitors` (count), `visiting` (version 4: always `null`, nobody's whereabouts being everyone's; version 3: the host's office id, or `null`), `ready`, `key`, `watchers` (count), `world`, `links`, `whisper` (true), `about` ({`text`, `tags`} or null), `public`}], you included | on any change |
 | `knock` | `id`, `from` {`id`, `name`, `sim`, `key`}, `message`, `expires_in`, `watch`?, `link`? | someone knocked (to watch, with `watch`; to link, with `link`) |
@@ -699,15 +709,38 @@ directly and need the relay only when that fails. At most 4 MiB a second from ea
 
 ### 6.9 The public page
 
-`GET /` without a WebSocket is the lobby's page (`--no-page`: none): its title and message of the day, how many
-offices are in it, its groups (name, line, open or by asking, size, how many online), and the rooms that describe
-themselves (name, sim, line, tags, visitors, public). Never a key, nor where anyone is; read from `GET /api/lobby`.
-Taking part takes a visit-client. `GET /health` answers `ok <n> online`.
+`GET /` without a WebSocket is the lobby's page (`--no-page`: none), drawn in basedverse's pixel-art world: its title
+and message of the day, how many offices are in it, its groups (name, line, open or by asking, size, how many
+online), and the rooms that describe themselves (name, sim, line, tags, visitors, public). Never a key, nor where
+anyone is; read from `GET /api/lobby`. Opened from a workroom's room, it is that workroom's (6.11): its chat, who is
+here, the rooms, its groups. `?side=rooms` (or `groups`) opens on that list. `GET /health` answers `ok <n> online`.
 
 **One connection's share** (3.0.0). A connection may send 20 messages a second, in bursts of 60 (a visit-client
 sends a few a minute); more, and it is closed (`rate_limited`; its session held, as for any drop). One that cannot
 take what it is sent (1024 messages waiting, or one not taken in 15 s) is closed too. An office makes at most 3
 groups an hour, and has at most 20 requests to join waiting.
+
+### 6.11 The lobby's page, as a workroom (3.1)
+
+The public page (6.9) can be a workroom's too: opened from its room (the panel's 🌐 Lobby: `v.openLobby()`), with a
+**web pass** in its address's fragment (`https://<lobby>/#pass=<key>.<expires>.<nonce>.<signature>`).
+
+- **The pass.** The office's visit-client makes it at its signed-in user's asking (`lobby_pass`, the person's page):
+  it signs, with the office's key, the UTF-8 text `basedverse-lobby/4 pass\n<lobby>\n<key>\n<expires>\n<nonce>`
+  (the lobby as its `VISIT_LOBBY` names it, 6.1's way; `expires` 10 minutes on, seconds since 1970; a nonce of 32
+  hex). The page reads it, takes it out of the address, and says `hello` with `web` (the pass); the lobby checks
+  its signature against its own names (`bad_proof` otherwise, closed 4401), that it is still good and not used
+  already (once each), and that the office is in the lobby now (`not_in_lobby`). Then `web_welcome`, the lobby, and
+  the office's groups.
+- **What the browser does** is the office's: `chat`, `whisper`, `group_say`, every `group_*`, `groups`, `about`,
+  `admin` (an operator's), and `knock` (to visit or link: the office knocks, and its visit-client takes the visit,
+  in its room, as for any knock). Nothing else (`not_from_web`): never `answer`, `door`, `link`, `status`, `end`.
+  Its refusals and answers come to it alone.
+- **What it hears** is what the office does: the lobby, its talk (the lobby's, its groups', whispers to it), its
+  groups, knocks on its door (to answer in its room) and its own knocks' fate. Never a visit's ticket or link.
+- **While its office is in the lobby.** A dropped office (held for resuming) keeps its browsers; one that leaves
+  closes them (`office_gone`, 4410). A reload comes back by its `resume` secret (`web_resume`; a new one each time,
+  kept in the tab's session storage). At most 4 browsers for an office.
 
 ### 6.10 Limits
 
@@ -1457,6 +1490,8 @@ v.answerGroup(name, key, accept); v.removeFromGroup(name, key); v.setGroup(name,
 v.setGroupOp(name, key, op); v.deleteGroup(name)   // its owner's
 v.groupsWith(key); v.isGroupOp(name)   // the groups of yours that key is in; whether you run that one
 v.lobbyBan(key, { minutes, reason }); v.lobbyUnban(key); v.lobbyBansList()   // the lobby's operators' (6.7): v.lobbyBans
+v.lobbyPass()      // a web pass (6.11, 3.1): a Promise of the lobby's page's URL, as yours; v.openLobby() opens it in a tab
+                   //   (call it from a click), as the panel's 🌐 Lobby does
 v.addGuest(key, name); v.removeGuest(key); v.isGuest(key)   // a key from v.offices, or (proved by the link) a visit's
                    //   peer.key; "visit_started" says guest: true for one let in through the open door
 

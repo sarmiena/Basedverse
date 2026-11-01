@@ -64,7 +64,12 @@ visit-clients, directly or through the relay, which cannot read them.
 10. **The public page is read only.** Taking part takes a visit-client (rule 3). A browser without one has no key,
    so it can watch, and that is all. A room appears in the directory, on the page and in Visit, only once it has
    described itself (`about`). Offices that have not are counted, not named. Groups show with their size.
-11. **One protocol crate.** `lobby/proto` (the `lobby-proto` crate) has what both ends must agree on: the
+11. **The page as a workroom (3.1).** A browser at the lobby's page has no key and no sign-in: the workroom has both.
+    So the workroom vouches for it: its room's 🌐 Lobby has its visit-client sign a web pass (its key, this lobby, 10
+    minutes, once), and the page that has it speaks for the workroom while the workroom is in the lobby. Talk,
+    groups, the list, knocking, yes; letting anyone in, never: that stays in the room. Lobby chat shows only to such
+    a page: it is said to the workrooms in the lobby, not to the web.
+12. **One protocol crate.** `lobby/proto` (the `lobby-proto` crate) has what both ends must agree on: the
     messages a visit-client sends, as types; the limits; the name rule; what is signed. `lobby` and `visit` are
     both built with it, so they cannot drift apart.
 

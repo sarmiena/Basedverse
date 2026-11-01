@@ -10,6 +10,22 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v3.1.0 — 2026-11-01 — the lobby's page as your workroom: Battle.net-style chat, rooms and groups in a browser tab
+
+- **The lobby's page, as you** ([visit/SPEC.md](visit/SPEC.md) 6.11, 3, point 15). The panel's new **🌐 Lobby**
+  (`v.openLobby()`, `v.lobbyPass()`) opens the lobby's page in a tab, as your workroom: your `visit` signs a web pass
+  with your office's key (this lobby, 10 minutes, once), and the page that has it speaks for your workroom while it
+  is in the lobby. There: the lobby's chat, your groups' and whispers (tabs; `/w`, `/r`, `/g`), who is here, the
+  rooms (Walk in, Knock, Link: the visit opens in your room), your groups (requests to let in, Find, New). Never
+  your door, nor letting anyone in: those stay in your room. A reload keeps the tab in, while your workroom is.
+- **The page, redrawn** in basedverse's pixel-art world (the sign-in page's). Read only without a pass: its groups,
+  the rooms that list themselves, how many are here, how to join. Chat shows only to a workroom's tab.
+- **The lobby** (`lobby` 3.1.0) takes web passes (`hello` with `web`, `web_welcome`), and answers what a browser or an
+  office asks (the group list, the bans) to it alone; deploy it (`bin/deploy-lobby`).
+
+**What an integration does:** nothing, with Visit's panel (its 🌐 Lobby is there). A room with its own UI may offer
+`v.openLobby()` from a click.
+
 ## v3.0.1 — 2026-11-01 — the owner's visit kept through the lobby's sessions
 
 - **Your own room stays round you when the lobby's session changes.** A new session (joining the lobby, as after
