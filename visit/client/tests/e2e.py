@@ -760,12 +760,12 @@ async def main():
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-        async def browser(pass_=None, sk=None):
+        async def browser(pass_=None, sk=None, verify=None):
             """A browser at the lobby's page: its own key (made, unless given), proved; with a pass if given."""
             sk = sk or Ed25519PrivateKey.generate()
             key = sk.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
             w = await connect(url)
-            await w.send(json.dumps({"type": "hello", "proto": "basedverse-lobby/4", "browser": key, **({"pass": pass_} if pass_ else {})}))
+            await w.send(json.dumps({"type": "hello", "proto": "basedverse-lobby/4", "browser": key, **({"pass": pass_} if pass_ else {}), **({"verify": verify} if verify else {})}))
             ch = json.loads(await asyncio.wait_for(w.recv(), 5))
             host = re.match(r"^wss?://([^/]+)", url).group(1)
             await w.send(json.dumps({"type": "prove", "signature": sk.sign(("basedverse-lobby/4 browser\n%s\n%s\n%s" % (host, ch["nonce"], key)).encode()).hex()}))
@@ -798,8 +798,17 @@ async def main():
         pend = await a.until(lambda m: m["type"] == "browser_pending")
         check("A's page types it: the browser waiting, its pictures the same as on its screen", (pend["key"], pend["pictures"]), (pkey, code["pictures"]))
         await a.send(type="browser_allow", code=code["code"])
+        cf = await a.until(lambda m: m["type"] == "browser_confirm")
+        ing = json.loads(await asyncio.wait_for(p.recv(), 5))
+        vm = re.match(r"^http://127\.0\.0\.1:\d+/#verify=(\d{6})$", cf["url"])
+        check("3.2, A allows it: A's page gets the confirmation that browser must show, as the lobby's page's address and its QR code",
+              (bool(vm) and vm.group(1) == cf["confirm"], cf["key"], (cf["qr"] or "").lstrip().startswith(("<?xml", "<svg")), ing["type"], ing["office"]),
+              (True, pkey, True, "browser_confirming", "A"))
+        t, _, _, wel = await browser(sk=psk, verify=cf["confirm"])
+        check("the browser's camera opens that address in it (a tab, #verify=): linked, in as A", (wel["type"], wel["id"]), ("web_welcome", ids["A"]))
         wel = json.loads(await asyncio.wait_for(p.recv(), 5))
-        check("A allows it: the browser is in, as A", (wel["type"], wel["id"]), ("web_welcome", ids["A"]))
+        check("and its waiting tab is in too", (wel["type"], wel["id"]), ("web_welcome", ids["A"]))
+        await t.close()
         bl = await a.until(lambda m: m["type"] == "browsers" and len(m["browsers"]) == 2)
         check("both browsers in A's list", sorted(x["key"] for x in bl["browsers"]), sorted([wkey, pkey]))
         await a.send(type="browser_revoke", key=pkey)

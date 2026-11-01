@@ -681,13 +681,13 @@ def web_pass(sk, key, host, expires=None, nonce=None):
 UA = "Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0"
 
 
-async def browser(lob, sk=None, pass_=None, host=None):
+async def browser(lob, sk=None, pass_=None, host=None, verify=None):
     """A browser (3.1): its own key (made, unless given), proved, with a web pass if given: (client, what answered:
     web_welcome, browser_code, or the error that refused it)."""
     sk, key = (sk, sk.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()) if sk else keypair()
     c = Client(await connect(lob.url, user_agent_header=UA))
     c.sk, c.key = sk, key
-    await c.send(type="hello", proto=P4, browser=key, **({"pass": pass_} if pass_ else {}))
+    await c.send(type="hello", proto=P4, browser=key, **({"pass": pass_} if pass_ else {}), **({"verify": verify} if verify else {}))
     m = json.loads(await asyncio.wait_for(c.ws.recv(), 2))
     if m["type"] != "challenge":
         return c, m
@@ -771,8 +771,18 @@ async def t_browsers(L):
     pend = await b.expect("browser_pending")
     check("its office types its code: the browser waiting, the same pictures, what it is", (pend["key"], pend["pictures"], pend["agent"]), (p1.key, code["pictures"], "Firefox on Linux"))
     await b.send(type="browser_allow", code=code["code"])
+    cf = await b.expect("browser_confirm")
+    ing = await p1.expect("browser_confirming")
+    check("3.2, allowed: not linked yet; its room gets a confirmation (6 digits), the browser is told who would link it",
+          (cf["key"], len(cf["confirm"]), cf["expires_in"], ing["office"]), (p1.key, 6, 300, "Web B"))
+    check("and nothing is linked meanwhile", (await L.state())["pending"], 1)
+    await p1.send(type="browser_verify", confirm="000000" if cf["confirm"] != "000000" else "111111")
+    check("the browser shows a wrong one: refused, still waiting", (await p1.expect("error"))["code"], "bad_confirm")
+    await p1.send(type="chat", text="hi")
+    check("waiting still: nothing else", (await p1.expect("error"))["code"], "not_linked")
+    await p1.send(type="browser_verify", confirm=cf["confirm"][:3] + " " + cf["confirm"][3:])
     wel = await p1.expect("web_welcome")
-    check("allowed: the browser is in, as that office", (wel["id"], wel["name"]), (b.id, "Web B"))
+    check("it shows its room's (typed on its page): linked, in as that office", (wel["id"], wel["name"]), (b.id, "Web B"))
     bl = await b.expect("browsers", skip=("lobby",))
     check("and in its office's list", [x["key"] for x in bl["browsers"]], [p1.key])
     check("the code is spent", (await L.state())["pending"], 0)
@@ -832,6 +842,39 @@ async def t_browsers_guarded(L):
     check("a fifth: busy", (e.get("code"), await closed_code(z)), ("busy", 1013))
     for c, _ in waiting:
         await c.close()
+    for c in (a, b):
+        await c.send(type="bye")
+
+
+async def t_browsers_confirmed(L):
+    """3.2: a code typed in a room links the browser only once the browser shows the room's confirmation: by a tab
+    its room's QR code opens (`hello` with `verify`), or typed. A confirmation is that browser's alone, from that
+    room, for its time; wrong ones are counted."""
+    a, b = await join(L, "Conf A", proto=P4), await join(L, "Conf B", proto=P4)
+    w, code = await browser(L)
+    await a.send(type="browser_allow", code=code["code"])
+    cf = await a.expect("browser_confirm")
+    await w.expect("browser_confirming")
+    x, e = await browser(L, verify=cf["confirm"])
+    check("another browser, with that confirmation (its QR code scanned elsewhere): refused, closed", (e.get("code"), await closed_code(x)), ("no_confirm", 4401))
+    t, wel = await browser(L, sk=w.sk, verify=cf["confirm"])
+    check("a tab of that browser, the QR code's (#verify=): linked, in as A", (wel["type"], wel.get("name")), ("web_welcome", "Conf A"))
+    check("and its waiting tab is in too", (await w.expect("web_welcome"))["name"], "Conf A")
+    await t.close()
+    await w.close()
+    w2, code = await browser(L)
+    await a.send(type="browser_allow", code=code["code"])
+    cf = await a.expect("browser_confirm", skip=("lobby", "browsers"))
+    await b.send(type="browser_allow", code=code["code"])
+    cfb = await b.expect("browser_confirm")
+    wrong = [c for c in ("000000", "111111", "222222", "333333", "444444", "555555") if c not in (cf["confirm"], cfb["confirm"])][:5]
+    for c in wrong:
+        await w2.send(type="browser_verify", confirm=c)
+        e = await w2.expect("error", skip=("browser_confirming",))
+    check("five wrong: every confirmation of it off", e["code"], "bad_confirm")
+    await w2.send(type="browser_verify", confirm=cf["confirm"])
+    check("then even the right one is refused (its rooms ask again)", (await w2.expect("error", skip=("browser_confirming",)))["code"], "bad_confirm")
+    await w2.close()
     for c in (a, b):
         await c.send(type="bye")
 
@@ -1072,7 +1115,7 @@ async def main():
     S = await Lobby("--v3", "--resume", "1", "--world-size", "2").start()
     T = await Lobby("--v3", "--knock-ttl", "1").start()
     tests = [(t, L) for t in (t_hello, t_hello_rules, t_knock_refusals, t_visit, t_end_and_full, t_resume, t_resume_replays_visits, t_rename,
-                               t_link_withdrawn, t_keys, t_watch, t_link, t_chat, t_whisper, t_v4_hello, t_v4_takeover_and_resume, t_browsers, t_browsers_guarded, t_flood, t_v4_directory,
+                               t_link_withdrawn, t_keys, t_watch, t_link, t_chat, t_whisper, t_v4_hello, t_v4_takeover_and_resume, t_browsers, t_browsers_guarded, t_browsers_confirmed, t_flood, t_v4_directory,
                                t_v4_groups)]
     tests += [(t_resume_window_and_bye, S), (t_world_size, S), (t_knock_timeout_and_health, T)]
     try:

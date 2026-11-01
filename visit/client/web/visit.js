@@ -13,7 +13,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "3.1.0", PROTO = "basedverse-visit-local/2";
+  const VERSION = "3.2.0", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -764,6 +764,7 @@
       this.about = null;       // your line in the lobby's list of who is here: { text, tags }, or null (none)
       this.browsers = [];      // browsers linked to your office (3.1): [{ key, agent, pictures, created, used, online }]
       this.browserPending = null;   // the browser whose code you typed, to allow: { code, key, agent, pictures }
+      this.browserConfirm = null;   // 3.2: a browser you allowed, until it shows your confirmation: { code, key, confirm, url, qr, until }
       this.unseen = { count: 0, conversations: [], lines: [] };   // the mailbox (8.9): lines meant for you, not read yet
       this.held = [];          // whispers you left for someone away, still with your visit-client: [{ id, key, name, text, at }]
       this._attention = false; // someone looking at this page's chat (Visit.chat says), as last told
@@ -941,9 +942,16 @@
           this._emit("group_left", { group: String(m.group), reason: String(m.reason) }); break;
         case "groups": this.groupList = (Array.isArray(m.groups) ? m.groups : []).filter(isObj).map(g => ({ name: String(g.name), about: String(g.about || ""), open: g.open === true,
           locked: g.locked === true, members: Number(g.members) || 0, online: Number(g.online) || 0 })); this._emit("groups", this.groupList); break;
-        case "browsers": this.browsers = (Array.isArray(m.browsers) ? m.browsers : []).filter(isObj).map(linkedFrom); this._emit("browsers", this.browsers); break;
+        case "browsers": this.browsers = (Array.isArray(m.browsers) ? m.browsers : []).filter(isObj).map(linkedFrom);
+          if (this.browserConfirm && this.browsers.some(b => b.key === this.browserConfirm.key)) this.browserConfirm = null;   // it showed it: linked
+          this._emit("browsers", this.browsers); break;
         case "browser_pending": this.browserPending = { code: String(m.code), key: String(m.key), agent: String(m.agent || "A browser"), pictures: String(m.pictures || "") };
           this._emit("browser_pending", this.browserPending); break;
+        case "browser_confirm":   // 3.2: what the browser you allowed must show: this QR code (its camera), or these digits
+          this.browserPending = null;
+          this.browserConfirm = { code: String(m.code), key: String(m.key), confirm: String(m.confirm), url: String(m.url), qr: typeof m.qr === "string" ? m.qr : null,
+            until: Date.now() + 1000 * (Number(m.expires_in) || 300) };
+          this._emit("browser_confirm", this.browserConfirm); break;
         case "lobby_bans": this.lobbyBans = (Array.isArray(m.bans) ? m.bans : []).filter(isObj).map(b => ({ key: String(b.key), until: b.until == null ? null : Number(b.until), reason: String(b.reason || "") })); break;
         case "about": this.about = aboutFrom(m.about); break;
         case "lobby":
@@ -1429,8 +1437,11 @@
     }
     // Browsers linked to your office (3.1). A browser at the lobby's page that is not linked shows a code: typed here,
     // linkBrowser(code) is a Promise of the browser waiting with it ({ code, key, agent, pictures }: the same pictures
-    // show on its screen); allowBrowser(code) links it, and it is in as you. v.browsers (listBrowsers() asks; the lobby
-    // says it again as one comes, goes, is linked or unlinked); unlinkBrowser(key): out, and its key forgotten.
+    // show on its screen); allowBrowser(code) (3.2) a Promise of the confirmation that browser must show to be linked
+    // ({ code, key, confirm, url, qr, until }; v.browserConfirm): show the QR code (an SVG: as an image) for its
+    // camera, and its 6 digits to type on its page. Once it does, it is in as you, and v.browsers has it. v.browsers
+    // (listBrowsers() asks; the lobby says it again as one comes, goes, is linked or unlinked); unlinkBrowser(key): out,
+    // and its key forgotten.
     linkBrowser(code) {
       this._as("user", "linkBrowser");
       return new Promise((resolve, reject) => {
@@ -1442,7 +1453,17 @@
         this._send({ type: "browser_code", code: String(code) });
       });
     }
-    allowBrowser(code) { this._as("user", "allowBrowser"); this.browserPending = null; this._send({ type: "browser_allow", code: String(code) }); }
+    allowBrowser(code) {
+      this._as("user", "allowBrowser");
+      return new Promise((resolve, reject) => {
+        const done = () => { clearTimeout(t); this.off("browser_confirm", yes); this.off("error", no); };
+        const yes = c => { if (c.code === String(code).replace(/[\s-]/g, "").toUpperCase()) { done(); resolve(c); } };
+        const no = e => { if (e && e.ref === "browser_allow") { done(); reject(new Error(e.message || e.code)); } };
+        const t = setTimeout(() => { done(); reject(new Error("the lobby did not answer")); }, 15000);
+        this.on("browser_confirm", yes); this.on("error", no);
+        this._send({ type: "browser_allow", code: String(code) });
+      });
+    }
     listBrowsers() { this._send({ type: "browsers" }); }
     unlinkBrowser(key) { this._as("user", "unlinkBrowser"); this._send({ type: "browser_revoke", key: String(key) }); }
     // The worlds you are in that `key` is in too (their names).
@@ -4252,7 +4273,7 @@
 .visit-panel .seg button.on2 { background: #1f6feb; border-color: #1f6feb; color: #fff; }
 .visit-panel .hd button.caret { padding: 0 2px 0 0; } .visit-panel .ver { padding-top: 3px; padding-bottom: 3px; font-size: 11px; }
 .visit-panel .qr { background: #fff; padding: 6px; border-radius: 6px; width: 232px; max-width: 100%; margin-bottom: 4px; } .visit-panel .qr img { display: block; width: 100%; height: auto; image-rendering: pixelated; }
-.visit-panel .pics { letter-spacing: 2px; } .visit-panel .sub form { display: flex; gap: 6px; margin-top: 4px; }`;
+.visit-panel .pics { letter-spacing: 2px; } .visit-panel .digits { font-size: 15px; letter-spacing: 2px; color: #e3b341; } .visit-panel .sub form { display: flex; gap: 6px; margin-top: 4px; }`;
 
   // Where a friend's world has put your room (8.4, `seen`), said plainly: which way from theirs (north is -z), and how
   // far apart the two plots' edges are.
@@ -4355,6 +4376,10 @@
         rows.push(`<div class="row"><span class="grow" title="the lobby's page in a browser, as you: its chat, who is here, your worlds">browsers <span class="muted">· ${v.browsers.length ? `${v.browsers.length} linked${on ? `, ${on} in` : ""}` : "the lobby, as you"}</span></span><button data-v="qr" class="${qr ? "go" : ""}" title="a QR code: your phone's camera opens the lobby there, as you (once, within 10 minutes)">📱 Phone</button><button data-v="browsers" class="${linking ? "go" : ""}" title="a browser at the lobby's page shows a code: type it here; and the browsers linked to you">Link a browser</button></div>`);
         // (An image of the SVG, never the SVG itself in the page: an image runs no script, whoever made it.)
         if (qr && qr.until > Date.now()) rows.push(`<div class="row sub"><div class="qr"><img alt="a QR code: the lobby, as you" src="data:image/svg+xml;charset=utf-8,${esc(encodeURIComponent(qr.svg))}"></div><div class="muted">scan it with your phone's camera: the lobby opens there as you, linked (good once, for ${Math.max(1, Math.round((qr.until - Date.now()) / 60000))} more minutes)</div></div>`);
+        // 3.2: a browser allowed, until it shows this: its camera scans the QR code (opening the lobby's page in it), or
+        // its page takes the digits. Then it is linked ("browsers" says so).
+        const cf = v.browserConfirm;
+        if (cf && cf.until > Date.now()) rows.push(`<div class="row sub">${cf.qr ? `<div class="qr"><img alt="a QR code: the confirmation, for that browser's camera" src="data:image/svg+xml;charset=utf-8,${esc(encodeURIComponent(cf.qr))}"></div>` : ""}<div>Now on that browser: scan this with its camera, or type <b class="digits">${esc(cf.confirm.slice(0, 3))} ${esc(cf.confirm.slice(3))}</b> on its page. <span class="muted">Linked once it does (${Math.max(1, Math.round((cf.until - Date.now()) / 60000))} min).</span></div><div class="btns"><button data-v="b_cancel">Cancel</button></div></div>`);
         if (linking) {
           const p = v.browserPending;
           if (p) rows.push(`<div class="row knock"><b>${esc(p.agent)}</b> <span class="pics">${esc(p.pictures)}</span> waits with ${esc(p.code.slice(0, 4))}-${esc(p.code.slice(4))}: the same pictures on its screen? <div class="btns"><button class="go" data-v="b_allow" data-code="${esc(p.code)}">Link it</button><button data-v="b_not">Not that one</button></div></div>`);
@@ -4526,7 +4551,8 @@
           x => note(`📱 ${x.message || x}`));
       }
       else if (act === "browsers") { linking = !linking; v.browserPending = null; if (linking) v.listBrowsers(); draw(); }
-      else if (act === "b_allow") v.allowBrowser(b.dataset.code);   // ("browsers" then says it is linked)
+      else if (act === "b_allow") v.allowBrowser(b.dataset.code).then(c => { draw(); setTimeout(draw, Math.max(0, c.until - Date.now()) + 500); }, x => note(`Link a browser: ${x.message || x}`));
+      else if (act === "b_cancel") { v.browserConfirm = null; draw(); }   // (it lapses at the lobby in its time)
       else if (act === "b_not") { v.browserPending = null; draw(); }
       else if (act === "b_unlink") v.unlinkBrowser(b.dataset.key);
       else if (act === "describe") { describing = !describing; draw(); }

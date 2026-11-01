@@ -538,7 +538,7 @@ async def run(a, b, url):
           const hex = x => Array.from(new Uint8Array(x), y => y.toString(16).padStart(2, '0')).join('');
           const p = await crypto.subtle.generateKey({ name: 'Ed25519' }, false, ['sign', 'verify']);
           const pub = hex(await crypto.subtle.exportKey('raw', p.publicKey));
-          const ws = new WebSocket('%s'); window.pairMsgs = [];
+          const ws = window.pairWs = new WebSocket('%s'); window.pairMsgs = [];
           ws.onopen = () => ws.send(JSON.stringify({ type: 'hello', proto: 'basedverse-lobby/4', browser: pub }));
           ws.onmessage = async e => { const m = JSON.parse(e.data); window.pairMsgs.push(m);
             if (m.type === 'challenge') ws.send(JSON.stringify({ type: 'prove', signature: hex(await crypto.subtle.sign({ name: 'Ed25519' }, p.privateKey,
@@ -552,7 +552,14 @@ async def run(a, b, url):
         check("A types it: the browser waiting, its pictures the same as on its screen", await a.until(
             "(r => r && r.textContent.includes(%s) && r.textContent.includes('Chrome on Linux'))(document.querySelector('.visit-panel .knock'))" % json.dumps(pics)), True)
         await a.js("document.querySelector('.visit-panel button[data-v=b_allow]').click()")
-        check("A links it: the browser is in the lobby as A", await b.until("(window.pairMsgs.find(m => m.type === 'web_welcome') || {}).name"), "A")
+        check("3.2, A allows it: A's panel shows the confirmation that browser must show (a QR code, an image; its digits)", await a.until(
+            "(i => !!i && i.complete && i.naturalWidth > 0 && !!v.browserConfirm && document.querySelector('.visit-panel .digits').textContent.replace(' ', '') === v.browserConfirm.confirm)(document.querySelector('.visit-panel .sub .qr img'))"), True)
+        await a.shot("a_confirm.png")
+        check("and the browser is told who would link it", await b.until("(window.pairMsgs.find(m => m.type === 'browser_confirming') || {}).office"), "A")
+        digits = await a.js("v.browserConfirm.confirm")
+        await b.js("window.pairWs.send(JSON.stringify({ type: 'browser_verify', confirm: '%s' })); 1" % (digits[:3] + " " + digits[3:]))
+        check("the browser shows them (typed): linked, in the lobby as A", await b.until("(window.pairMsgs.find(m => m.type === 'web_welcome') || {}).name"), "A")
+        check("and A's panel no longer shows the confirmation", await a.until("!v.browserConfirm && !document.querySelector('.visit-panel .digits')"), True)
         check("and A's panel lists it, in now, to unlink", await a.until("v.browsers.length === 1 && v.browsers[0].online && !!document.querySelector('.visit-panel button[data-v=b_unlink]')"), True)
         check("and says so, once: a browser linked to A just now", await a.until("[...document.querySelectorAll('.visit-panel .note')].some(n => n.textContent.includes('is linked to you now'))"), True)
         await a.js("document.querySelector('.visit-panel button[data-v=b_unlink]').click()")

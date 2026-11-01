@@ -73,7 +73,10 @@ visit-clients, directly or through the relay, which cannot read them.
     and its key. So the browser makes a key of its own (never leaving it), and the workroom vouches for it, once:
     its room's 🌐 Lobby (or 📱 Phone: a QR code) has its visit-client sign a web pass (its key, this lobby, 10
     minutes, once) that links the browser that opens it; or the page shows a code, typed in the room (Link a
-    browser) with the same three pictures on both screens. Linked, the browser comes back by its key alone, and
+    browser) with the same three pictures on both screens, and then (3.2) the browser shows the room's confirmation
+    back: its QR code scanned by the browser's own camera, or its digits typed there. A code proves the room saw the
+    browser; the confirmation, that the browser sees the room: a code someone talks you into typing links nothing
+    without your screen. Linked, the browser comes back by its key alone, and
     speaks for the workroom while the workroom is in the lobby, until either unlinks it. Talk, worlds, the list,
     knocking, yes; letting anyone in, never: that stays in the room. Signatures, not a shared secret: the lobby
     needs proof that the room vouches for this browser, not a channel the two share. The page, unlinked, is read
@@ -117,4 +120,5 @@ What it did well, and what Visit's panel and chat window take from it:
 | 7 | hosting one: the release's `lobby` files, `lobby/deploy` without Docker, the README | done: setup.sh dry-run under systemd in a container (all but Let's Encrypt) |
 | 8 | the specs, the changelog, every test (ci.yml's steps, here), the pull request | done: every ci.yml step here (unit 45, lobby 153, e2e 290, browser 302 checks); an independent review's findings fixed (the Host a hello may sign, bounded queues and rates, group limits, a reconnect's groups) |
 | 9 | 3.1: users and worlds (public, or a password; owner's kick, ban, hand on; `--world-size`), no public door | done: the lobby's tests (worlds, a 3.0 world kept closed until opened), e2e (a password world through visit-client) |
+| 11 | 3.2: linking by code confirmed both ways: the room's QR code scanned by the browser's camera (`#verify=`), or its digits typed | done: the lobby's tests (a QR code's tab, typed, another browser refused, wrong ones counted), e2e and the browser test (the panel's QR code, the digits typed), the page in Chrome (its prompt; a #verify tab linking both) |
 | 10 | 3.1: linked browsers (a key of their own; a pass, a QR code, or a code typed in the room), the page as a workroom | done: the lobby's tests, e2e (a pass and a code through visit-client), the browser test (the panel: 📱, a code, allow, unlink), the page in Chrome (linked by its code, a reload) |

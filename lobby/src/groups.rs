@@ -209,6 +209,7 @@ impl Groups {
         self.groups.values().map(|g| Listed {
             name: g.name.clone(), about: g.about.clone(), open: g.open && g.password.is_none(), locked: g.password.is_some(), members: g.members.len(),
             online: g.members.iter().filter(|m| online(&m.key)).count(),
+            owner: g.members.iter().find(|m| m.key == g.owner).map(|m| m.name.clone()).unwrap_or_default(),
         }).collect()
     }
 

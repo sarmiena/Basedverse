@@ -98,7 +98,9 @@ pub enum Ev {
     /// when, its nonce: its signature checked already). The reply: whether its connection goes on (linked, or waiting
     /// with a pairing code), else refused (said, and closed, on `conn`).
     /// `switch`: the page agreed to a pass that links this browser, linked to another office, to the pass's instead.
-    BrowserHello { conn: Conn, key: String, agent: String, ip: std::net::IpAddr, pass: Option<(String, u64, String)>, switch: bool, reply: oneshot::Sender<bool> },
+    /// `verify` (3.2): a tab its room's QR code opened, showing that room's confirmation of the browser's waiting tab.
+    BrowserHello { conn: Conn, key: String, agent: String, ip: std::net::IpAddr, pass: Option<(String, u64, String)>, switch: bool, verify: Option<String>,
+                   reply: oneshot::Sender<bool> },
     BrowserMsg { conn: u64, m: Value },
     BrowserClosed { conn: u64 },
     /// A pairing code's time is up.
@@ -157,6 +159,29 @@ struct Browser {
     office: Option<String>,
     code: Option<String>,
     gone: bool,
+    /// 3.2, waiting with a code: the confirmations its rooms show (at most 3), and the wrong ones it has shown.
+    confirms: Vec<Confirm>,
+    wrong: u8,
+}
+
+/// A room's confirmation of a waiting browser (3.2): its digits, the office, until when.
+struct Confirm {
+    secret: String,
+    oid: String,
+    okey: String,
+    until: Instant,
+}
+
+/// 6 digits, each as likely (4,294,000,000 is a whole number of millions).
+fn six_digits() -> String {
+    loop {
+        let mut b = [0u8; 4];
+        getrandom::fill(&mut b).expect("the OS's random numbers");
+        let n = u32::from_le_bytes(b);
+        if n < 4_294_000_000 {
+            return format!("{:06}", n % 1_000_000);
+        }
+    }
 }
 
 /// An address as pairing codes count it: an IPv4 one, or an IPv6 one's /64 (one host has a whole /64).
@@ -327,8 +352,8 @@ impl Core {
                 }
                 Ev::Msg { conn, office, m } => self.msg(conn, &office, m),
                 Ev::Closed { conn, office } => self.closed(conn, &office),
-                Ev::BrowserHello { conn, key, agent, ip, pass, switch, reply } => {
-                    let on = self.browser_hello(conn, key, agent, ip, pass, switch);
+                Ev::BrowserHello { conn, key, agent, ip, pass, switch, verify, reply } => {
+                    let on = self.browser_hello(conn, key, agent, ip, pass, switch, verify);
                     let _ = reply.send(on);
                 }
                 Ev::BrowserMsg { conn, m } => self.browser_msg(conn, m),
@@ -669,7 +694,8 @@ impl Core {
     /// A browser, its own key proved: linked by the web pass it brought (its office's, checked by conn.rs: good once,
     /// within its time, its office in the lobby); else linked already; else it waits with a pairing code, for its
     /// office to type in its room. A linked browser speaks for its office while the office is in the lobby.
-    fn browser_hello(&mut self, conn: Conn, key: String, agent: String, ip: std::net::IpAddr, pass: Option<(String, u64, String)>, switch: bool) -> bool {
+    fn browser_hello(&mut self, conn: Conn, key: String, agent: String, ip: std::net::IpAddr, pass: Option<(String, u64, String)>, switch: bool,
+                     verify: Option<String>) -> bool {
         let refuse = |code: &str, text: String, close: u16, why: &'static str| {
             conn.send(&FromLobby::error(code, text, Some("hello")));
             conn.close(close, why);
@@ -709,10 +735,26 @@ impl Core {
                 }
                 Some(office)
             }
+            None if verify.is_some() => {
+                // 3.2: a tab its room's QR code opened (`#verify=`), in the browser whose tab waits with a code: that
+                // room's confirmation, shown, links it, and both tabs are in.
+                let Some(waiting) = self.browsers.iter().find(|(_, b)| b.key == key && b.code.is_some() && !b.gone).map(|(id, _)| *id) else {
+                    return refuse("no_confirm", "nothing waits to be linked in this browser: open the lobby's page here, and type its code in your room".into(),
+                                  4401, "nothing to confirm");
+                };
+                let id = conn.id;
+                self.browsers.insert(id, Browser { conn: conn.clone(), key, agent, ip, office: None, code: None, gone: false, confirms: vec![], wrong: 0 });
+                let on = self.verify(waiting, verify, Some(id));
+                if !on {
+                    self.browsers.remove(&id);
+                    conn.close(4401, "not confirmed");
+                }
+                return on;
+            }
             None => self.links.office(&key),
         };
         let id = conn.id;
-        self.browsers.insert(id, Browser { conn: conn.clone(), key: key.clone(), agent, ip, office: None, code: None, gone: false });
+        self.browsers.insert(id, Browser { conn: conn.clone(), key: key.clone(), agent, ip, office: None, code: None, gone: false, confirms: vec![], wrong: 0 });
         match office {
             Some(office) => match self.online(&office).map(str::to_string) {
                 Some(oid) => {
@@ -861,6 +903,11 @@ impl Core {
             if t == "bye" {
                 return c.close(1000, "bye");
             }
+            if t == "browser_verify" && b.code.is_some() {   // 3.2: its room's confirmation, typed on its page
+                let confirm = m.get("confirm").and_then(Value::as_str).map(str::to_string);
+                self.verify(id, confirm, None);
+                return;
+            }
             return c.send(&FromLobby::error("not_linked", "this browser is not linked yet: type its code in your room (Visit panel: Link a browser)", Some(&t)));
         };
         const WEB: [&str; 17] = ["chat", "whisper", "group_say", "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set",
@@ -895,7 +942,47 @@ impl Core {
         self.replying = None;
     }
 
-    /// An office's own: the browser waiting with a code (`allow`: linked, and in), its linked browsers, one unlinked.
+    /// A waiting browser shows a confirmation (3.2): typed on its page (`browser_verify`), or by a tab of it its room's
+    /// QR code opened (`via`). One of its rooms' that still waits: linked to that office, and in (that tab too). A wrong
+    /// one is counted: at CONFIRM_TRIES, every confirmation of it is off (its rooms ask again).
+    fn verify(&mut self, id: u64, secret: Option<String>, via: Option<u64>) -> bool {
+        let now = Instant::now();
+        let asker = via.and_then(|v| self.browsers.get(&v)).map(|b| b.conn.clone());
+        let Some(b) = self.browsers.get_mut(&id).filter(|b| !b.gone && b.code.is_some()) else { return false };
+        let to = asker.unwrap_or_else(|| b.conn.clone());
+        b.confirms.retain(|c| c.until > now);
+        let hit = secret.as_deref().and_then(proto::confirm_of).and_then(|s| b.confirms.iter().position(|c| c.secret == s));
+        let Some(i) = hit else {
+            b.wrong = b.wrong.saturating_add(1);
+            let off = b.wrong >= proto::CONFIRM_TRIES || b.confirms.is_empty();
+            if b.wrong >= proto::CONFIRM_TRIES {
+                b.confirms.clear();
+            }
+            let text = if b.confirms.is_empty() && off { "no confirmation waits for this browser now: in your room, Link a browser and its code again" }
+                       else { "that is not what your room shows" };
+            to.send(&FromLobby::error("bad_confirm", text, Some("browser_verify")));
+            return false;
+        };
+        let c = b.confirms.remove(i);
+        b.confirms.clear();
+        b.wrong = 0;
+        let (key, agent) = (b.key.clone(), b.agent.clone());
+        if !self.offices.get(&c.oid).is_some_and(|o| o.key.as_deref() == Some(c.okey.as_str())) {
+            to.send(&FromLobby::error("not_in_lobby", "the workroom that would link this browser has left the lobby", Some("browser_verify")));
+            return false;
+        }
+        for k in self.links.add(&key, &c.okey, &agent, self.limits4.browsers.unwrap_or(10)) {
+            self.detach_key(&k, "unlinked: its workroom linked a newer browser");
+        }
+        let waiting = self.attach(id, &c.oid);
+        match via {
+            Some(v) => self.attach(v, &c.oid),
+            None => waiting,
+        }
+    }
+
+    /// An office's own: the browser waiting with a code (`allow`: 3.2, a confirmation for it to show), its linked
+    /// browsers, one unlinked.
     fn on_browser(&mut self, oid: &str, m: ToLobby) {
         let r = match &m {
             ToLobby::BrowserCode { .. } => "browser_code",
@@ -921,13 +1008,20 @@ impl Core {
                     let p = FromLobby::BrowserPending { code: code.clone(), key: b.key.clone(), agent: b.agent.clone(), pictures: proto::pictures(&b.key) };
                     return self.answer(oid, &p);
                 }
-                let (key, agent) = (b.key.clone(), b.agent.clone());
-                for k in self.links.add(&key, &okey, &agent, self.limits4.browsers.unwrap_or(10)) {
-                    self.detach_key(&k, "unlinked: its workroom linked a newer browser");
+                // 3.2: not linked yet. The room gets a confirmation to show (its QR code, its digits); the browser is
+                // linked once it shows it: its tab the QR code opens, or the digits typed on its page. So linking takes
+                // both ways: the room saw the browser's code, and the browser saw the room's screen.
+                let secret = six_digits();
+                let key = b.key.clone();
+                let name = self.offices[oid].name.clone();
+                let b = self.browsers.get_mut(&id).expect("there");
+                b.confirms.retain(|c| c.oid != oid);
+                if b.confirms.len() >= 3 {
+                    b.confirms.remove(0);
                 }
-                if !self.attach(id, oid) {
-                    self.tell_browsers(oid);
-                }
+                b.confirms.push(Confirm { secret: secret.clone(), oid: oid.to_string(), okey: okey.clone(), until: Instant::now() + Duration::from_secs(proto::CONFIRM_TTL) });
+                b.conn.send(&FromLobby::BrowserConfirming { office: name, expires_in: proto::CONFIRM_TTL });
+                self.answer(oid, &FromLobby::BrowserConfirm { code, key, confirm: secret, expires_in: proto::CONFIRM_TTL });
             }
             ToLobby::BrowserRevoke { key } => {
                 let Some(key) = key.filter(|k| self.links.remove(k, Some(&okey))) else {
@@ -1018,6 +1112,7 @@ impl Core {
             ToLobby::Admin { action, key, minutes, text } => self.on_admin(oid, action, key, minutes, text),
             m @ (ToLobby::BrowserCode { .. } | ToLobby::BrowserAllow { .. } | ToLobby::Browsers | ToLobby::BrowserRevoke { .. }) => self.on_browser(oid, m),
             ToLobby::BrowserForget => self.error(oid, "bad_message", "browser_forget is a linked browser's", Some("browser_forget")),
+            ToLobby::BrowserVerify { .. } => self.error(oid, "bad_message", "browser_verify is a waiting browser's", Some("browser_verify")),
             g => self.on_group(oid, g, None),
         }
     }
@@ -1576,9 +1671,9 @@ fn for_web(m: &FromLobby) -> bool {
 }
 
 fn is_type(t: &str) -> bool {
-    const TYPES: [&str; 30] = ["hello", "prove", "link", "status", "max_visitors", "knock", "answer", "end", "rename", "chat", "whisper", "bye",
+    const TYPES: [&str; 31] = ["hello", "prove", "link", "status", "max_visitors", "knock", "answer", "end", "rename", "chat", "whisper", "bye",
         "about", "door", "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set", "group_owner", "group_delete",
-        "group_say", "groups", "admin", "browser_code", "browser_allow", "browsers", "browser_revoke", "browser_forget"];
+        "group_say", "groups", "admin", "browser_code", "browser_allow", "browsers", "browser_revoke", "browser_forget", "browser_verify"];
     TYPES.contains(&t)
 }
 
