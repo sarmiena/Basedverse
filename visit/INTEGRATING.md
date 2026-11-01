@@ -489,7 +489,8 @@ visit.host({
   everywhere in your room); play one once with `visit.soundAt(objectOrPoint, "shot")` (on the engine, from your server
   page). A room that makes its sounds with Web Audio renders each once (`OfflineAudioContext`, then a WAV of it) and
   gives that: Visit plays files, never your code. Your own page then needs no sound code of its own for those: Visit
-  plays them for you too (the panel's 🔈 turns them off).
+  plays them for you too (the panel's 🔈 turns them off). Or keep your page's own (a mixer, an echo, a synth that never
+  repeats) and call `visit.ownSounds(false)` on it: Visit plays your room's sounds for your visitors only.
 - **Your user's name** (if your room knows it): `visit.setName(name)`, now and whenever it changes. Others then see
   it with what your user says, over their voice, and in their panel ("Ann (Duckroom)"); without it, your office's
   name.

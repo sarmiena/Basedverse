@@ -1487,8 +1487,9 @@ and side, as voices are (8.7). Files, never code: what runs on a visitor's page 
   too, and a page plays it if it is within `far` (at most 6 at once).
 - **Who hears.** The room your user is in: a visit, a plot in your world you stepped onto, your own room at home. A host
   page (the engine's) hears nothing. Nothing plays before the browser lets it (a click or a key, its autoplay rule). Room
-  sounds are on or off apart from voices (`v.setRoomSounds`, the panel's 🔈), kept in that browser. Nothing goes
-  quieter under voices (yet).
+  sounds are on or off apart from voices (`v.setRoomSounds`, the panel's 🔈), kept in that browser. A page that plays
+  its own room's sounds itself (its own synth, a mixer, an echo) says so (`v.ownSounds(false)`): Visit then plays them
+  for its visitors only, and every other room's for it as ever. Nothing goes quieter under voices (yet).
 
 ## 9. The library: `visit.js`
 
@@ -1650,6 +1651,7 @@ v.sounds({ kind: file })           // 3.4, host (8.13): your room's sounds (a Bl
 object.userData.visitSound = { kind, volume, ref, far, bed }   // a loop from that thing (bed: everywhere in your room)
 v.soundAt(objectOrPoint, kind, { volume, ref, far })   // host: one of your room's sounds, once, from there, for everyone in it
 v.roomSounds; v.setRoomSounds(on)  // the room's sounds on or off on this page (the panel's 🔈), kept in this browser
+v.ownSounds(false)                 // your own room's sounds: your page plays them itself (Visit, for your visitors only)
 v.pick(key, name); v.unpick(key); v.isPicked(key)   // 3.3: a room in your world, or out of it: a key from v.offices,
                    //   or (proved by the link) a visit's peer.key; at most v.maxPicks (8: "too_many" past it)
 v.isGuest(key)     // whether that key is in a world with you; "visit_started" says guest: true for one let in through the
