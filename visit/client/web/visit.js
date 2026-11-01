@@ -4056,7 +4056,7 @@
     // in it. New to the world, back in view, or stepped into or out of: its shadows worked out at once. In VR the
     // eyes are not this camera, so nothing is left out there.
     _neighbour(x, h, camera, now) {
-      const T = this.T, q = this._nb || (this._nb = { f: new T.Frustum(), m: new T.Matrix4(), b: new T.Box3(), st: new WeakMap(), n: 0, at: -1 });
+      const T = this.T, q = this._nb || (this._nb = { f: new T.Frustum(), m: new T.Matrix4(), b: new T.Box3(), st: new WeakMap(), n: 0, at: -1, cam: null });   // the camera's frustum: once per render and camera
       let st = q.st.get(h);
       const fresh = !st;
       if (!st) q.st.set(h, st = { lights: null, litAt: 0, y: null, at: now + (q.n++ * 61) % (this.shadowMs || 1), out: false, inside: false });
@@ -4070,7 +4070,7 @@
       }
       const inside = !!(x.w && this.in != null && x.w.channel === this.in);
       if (this.cull && !inside && st.y && !(this.renderer.xr && this.renderer.xr.isPresenting)) {
-        if (q.at !== now) { q.at = now; camera.updateMatrixWorld(); q.f.setFromProjectionMatrix(q.m.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)); }
+        if (q.cam !== camera || q.at !== now) { q.cam = camera; q.at = now; camera.updateMatrixWorld(); q.f.setFromProjectionMatrix(q.m.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)); }
         const [x0, z0, x1, z1] = x.rect;
         q.b.min.set(x0, st.y[0], z0); q.b.max.set(x1, st.y[1], z1);
         if (!q.f.intersectsBox(q.b)) { st.out = true; return true; }
@@ -4118,6 +4118,7 @@
         const home = [mine.center[0] - mine.size[0] / 2, mine.center[1] - mine.size[1] / 2, mine.center[0] + mine.size[0] / 2, mine.center[1] + mine.size[1] / 2];
         const passes = [...(this.scene ? [{ x: null, d: far(home) }] : []), ...list.filter(x => x.kept || (x.w && x.w.scene)).map(x => ({ x, d: far(x.rect) }))].sort((a, b) => b.d - a.d);
         let drawn = 0, out = 0;
+        if (this._nb) this._nb.cam = null;   // this render's camera, looked at afresh (two views in one ms are two renders)
         for (const { x } of passes) {
           if (!x) {   // your own room (its sky already drawn)
             const bg = this.scene.background;
