@@ -41,7 +41,7 @@ enum Phase {
     Proving { hello: Value, key: String, nonce: String, tries: usize },
     In(String),
     /// 3.1: a browser, its key's proof awaited (and the web pass it brought, if any)...
-    BrowserProving { key: String, pass: Option<proto::WebPass>, switch: bool, verify: Option<String>, nonce: String },
+    BrowserProving { key: String, pass: Option<proto::WebPass>, switch: bool, verify: Option<String>, forget: bool, nonce: String },
     /// ...and in: linked (speaking for its office), or waiting with a pairing code.
     Browser,
 }
@@ -140,7 +140,7 @@ pub async fn run(server: Arc<Server>, socket: WebSocket, ip: IpAddr, host: Strin
                         let _ = core.0.send(Ev::BrowserMsg { conn: conn.id, m });
                         Phase::Browser
                     }
-                    Phase::BrowserProving { key, pass, switch, verify, nonce } => {
+                    Phase::BrowserProving { key, pass, switch, verify, forget, nonce } => {
                         let sig = m.get("signature").and_then(Value::as_str).unwrap_or("");
                         if kind != "prove" || !hosts.iter().any(|h| signed(&key, &proto::browser_message(h, &nonce, &key), sig)) {
                             conn.send(&FromLobby::error("bad_proof", "prove signs the browser's challenge with its key", Some("prove")));
@@ -149,7 +149,7 @@ pub async fn run(server: Arc<Server>, socket: WebSocket, ip: IpAddr, host: Strin
                         }
                         let (reply, rx) = oneshot::channel();
                         let pass = pass.map(|p| (p.key, p.expires, p.nonce));
-                        let _ = core.0.send(Ev::BrowserHello { conn: conn.clone(), key, agent: agent.clone(), ip, pass, switch, verify, reply });
+                        let _ = core.0.send(Ev::BrowserHello { conn: conn.clone(), key, agent: agent.clone(), ip, pass, switch, verify, forget, reply });
                         if !rx.await.unwrap_or(false) {
                             break;   // refused, and closed by the core
                         }
@@ -188,7 +188,8 @@ pub async fn run(server: Arc<Server>, socket: WebSocket, ip: IpAddr, host: Strin
                                     deadline = Some(Instant::now() + HELLO_TIMEOUT);
                                     let switch = m.get("switch") == Some(&Value::Bool(true));
                                     let verify = m.get("verify").and_then(Value::as_str).map(|v| v.chars().take(16).collect());
-                                    Phase::BrowserProving { key: k.to_string(), pass, switch, verify, nonce }
+                                    let forget = m.get("forget") == Some(&Value::Bool(true));
+                                    Phase::BrowserProving { key: k.to_string(), pass, switch, verify, forget, nonce }
                                 }
                             }
                         } else if p == Some(proto::PROTO4) {

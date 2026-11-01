@@ -587,7 +587,7 @@ nobody has taken it meanwhile. Who someone is, is their key.
 | type | fields | effect |
 |---|---|---|
 | `hello` | `proto`: `"basedverse-lobby/4"`, `name`, `key`, `sim`?, `status`?, `max_visitors`? (default 3), `resume`?, `about`? (6.6) | join, or resume a dropped session (6.1) |
-| `hello` (a browser, 3.1) | `proto`, `browser` (its own key: Ed25519, 64 hex), `pass`? {`key`, `expires`, `nonce`, `signature`} (a web pass), `switch`? (true: the page's person agreed that the pass moves this browser from the office it is linked to), `verify`? (3.2: a room's confirmation, 6 digits: a tab its QR code opened) | a browser, to speak for the office it is linked to (6.11); `challenge` back, as for an office |
+| `hello` (a browser, 3.1) | `proto`, `browser` (its own key: Ed25519, 64 hex), `pass`? {`key`, `expires`, `nonce`, `signature`} (a web pass), `switch`? (true: the page's person agreed that the pass moves this browser from the office it is linked to), `verify`? (3.2: a room's confirmation, 6 digits: a tab its QR code opened), `forget`? (3.2.3, true: unlink this browser, its office in the lobby or not; closed 1000, `unlinked`) | a browser, to speak for the office it is linked to (6.11); `challenge` back, as for an office |
 | `prove` | `signature` | the challenge signed (6.1) |
 | `link` | `endpoint` (its key), `addr` (an object, ≤ 2 KiB as JSON, passed through untouched: how to reach it); or both null | publish or update how to reach this office; both null: withdraw it (not ready, until published again) |
 | `status` | `status`: `"available"` \| `"busy"` | busy: no knocks to visit or link (watches go on) |
@@ -762,7 +762,10 @@ own to come back by.
   `prove`s with the UTF-8 text `basedverse-lobby/4 browser\n<lobby>\n<nonce>\n<key>` signed (the lobby as the
   browser dialled it, 6.1's way; `bad_proof` otherwise, closed 4401). Then: linked to an office in the lobby,
   `web_welcome`, the lobby, and the office's worlds; linked to one not in it, `not_in_lobby` (closed 4410: the page
-  tries again now and then); not linked, `browser_code`.
+  tries again now and then); not linked, `browser_code`. A browser unlinks itself by `browser_forget` once in, or
+  (3.2.3) by `hello` with `forget`, its key proved, whether its office is in the lobby or not (a browser whose room
+  is off is never stuck with it): its link gone, its tabs out (`unlinked`, 4403), a confirmation waiting for it off,
+  closed 1000 `unlinked`; the page forgets its key, and has a new one and a code.
 - **Linked by a web pass** (the room's 🌐 Lobby, `v.openLobby()`; or 📱 Phone, the same as a QR code, `v.lobbyQr()`).
   The office's visit-client makes the pass at its signed-in user's asking (`lobby_pass`, the person's page): it
   signs, with the office's key, `basedverse-lobby/4 pass\n<lobby>\n<key>\n<expires>\n<nonce>` (the lobby as its

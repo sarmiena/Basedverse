@@ -99,8 +99,9 @@ pub enum Ev {
     /// with a pairing code), else refused (said, and closed, on `conn`).
     /// `switch`: the page agreed to a pass that links this browser, linked to another office, to the pass's instead.
     /// `verify` (3.2): a tab its room's QR code opened, showing that room's confirmation of the browser's waiting tab.
+    /// `forget` (3.2.3): the browser unlinks itself, its office in the lobby or not.
     BrowserHello { conn: Conn, key: String, agent: String, ip: std::net::IpAddr, pass: Option<(String, u64, String)>, switch: bool, verify: Option<String>,
-                   reply: oneshot::Sender<bool> },
+                   forget: bool, reply: oneshot::Sender<bool> },
     BrowserMsg { conn: u64, m: Value },
     BrowserClosed { conn: u64 },
     /// A pairing code's time is up.
@@ -366,8 +367,8 @@ impl Core {
                 }
                 Ev::Msg { conn, office, m } => self.msg(conn, &office, m),
                 Ev::Closed { conn, office } => self.closed(conn, &office),
-                Ev::BrowserHello { conn, key, agent, ip, pass, switch, verify, reply } => {
-                    let on = self.browser_hello(conn, key, agent, ip, pass, switch, verify);
+                Ev::BrowserHello { conn, key, agent, ip, pass, switch, verify, forget, reply } => {
+                    let on = if forget { self.browser_unlink(conn, key) } else { self.browser_hello(conn, key, agent, ip, pass, switch, verify) };
                     let _ = reply.send(on);
                 }
                 Ev::BrowserMsg { conn, m } => self.browser_msg(conn, m),
@@ -839,6 +840,22 @@ impl Core {
                 true
             }
         }
+    }
+
+    /// A browser unlinking itself, its key proved (3.2.3: `hello` with `forget`): its link gone, whichever office it was
+    /// (in the lobby or not: a browser whose room is off can still let go of it), its tabs out, a confirmation waiting
+    /// for it off; closed 1000 `unlinked`, as `browser_forget` is, and its page forgets its key. Its office, if in the
+    /// lobby, hears its list. Never in: it says nothing more.
+    fn browser_unlink(&mut self, conn: Conn, key: String) -> bool {
+        let office = self.links.office(&key);
+        self.links.remove(&key, None);
+        self.awaiting.remove(&key);
+        self.detach_key(&key, "this browser unlinked itself");
+        if let Some(oid) = office.as_deref().and_then(|o| self.online(o)).map(str::to_string) {
+            self.tell_browsers(&oid);
+        }
+        conn.close(1000, "unlinked");
+        false
     }
 
     /// The name an office goes by: in the lobby now, else as its worlds last knew it, else "another workroom".

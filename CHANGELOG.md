@@ -10,6 +10,24 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v3.2.3 — 2026-11-01 — a friend's plot out of view left out of the frame, its shadows on a beat; a browser unlinks itself with its room off
+
+- **Your world draws only what you can see** (kfatehi, #43, from #42; [visit/SPEC.md](visit/SPEC.md) 8.4,
+  "Drawing"). A friend's plot wholly out of the camera's view (its rectangle, as high and low as its scene reaches) is
+  left out of the frame, its shadows too: they only ever land inside it. A friend's plot's lights work out their
+  shadows every 250 ms, each plot on its own beat, not every frame. Your own room and the plot you are in are always
+  drawn, with every-frame shadows. Measured on a dense neighbour (3,490 meshes): 1,616–1,901 draws a frame down to
+  654–1,027, render 8.4–10.3 ms down to 4.8–6.8 ms. `v.world({ cull, shadowMs })` turns either off;
+  `world.drawn` says how many plots a frame drew and left out.
+- **A browser unlinks itself while its room is not in the lobby** ([visit/SPEC.md](visit/SPEC.md) 6.11). The page that
+  waits for its workroom ("… is not in the lobby now") has **Unlink this browser**: it says `hello` with `forget`, its
+  key proved, and the lobby lets go of the link (its other tabs out, a confirmation waiting for it off); the page
+  forgets its key and shows a new code. Before, only the room could unlink it then, and only once it was back.
+- The lobby changed (that `forget`): deploy it (`! bin/deploy-lobby`). A 3.2.2 lobby ignores `forget`, so its page,
+  which is its own, never offers it.
+
+**What an integration does:** nothing.
+
 ## v3.2.2 — 2026-11-01 — scan your room's QR code with your phone, and the browser waiting on your computer goes in
 
 - **The room's QR code is for your phone to scan, for the browser you are linking** ([visit/SPEC.md](visit/SPEC.md)

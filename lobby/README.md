@@ -110,7 +110,7 @@ only when they cannot does the relay carry them (at most 4 MiB a second each way
 - **A world's password** is kept as an Argon2id hash, and an office tries at most 5 a minute.
 - **A linked browser** speaks for its workroom only after the workroom linked it (a pass it signed, or the code the
   browser shows, typed in its room), only while the workroom is in the lobby, and never lets anyone in: answering
-  knocks and the door stay in the room. The browser's key never leaves it; the workroom unlinks it from its panel.
+  knocks and the door stay in the room. The browser's key never leaves it; the workroom unlinks it from its panel, and the browser can unlink itself, its room in the lobby or not.
 - **The lobby keeps no words.** Its chat, whispers and world lines pass through and are gone. It keeps its worlds
   (who is in which, by key), its linked browsers (their keys, their workrooms') and its bans.
 - **Its page shows** its worlds, and who is here with a line (by name: never a key, nor where anyone is).
