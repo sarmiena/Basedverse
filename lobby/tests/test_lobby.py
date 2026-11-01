@@ -317,6 +317,23 @@ async def t_end_and_full(L):
         await x.close()
 
 
+async def t_announce(L):
+    # 3.4.3: the lobby goes out to everyone at most every 250 ms, whatever one office does; the same again, to it alone.
+    a, b = await join(L, "A10"), await join(L, "B10")
+    await a.quiet(); await b.quiet()
+    for i in range(20):
+        await a.send(type="status", status="busy" if i % 2 == 0 else "available")
+    heard = [m for m in await b.quiet(1.0) if m["type"] == "lobby"]
+    await a.quiet()
+    check("A changes its status 20 times at once: B hears the lobby a few times, not 20, the last as it is now",
+          (0 < len(heard) <= 4, office(heard[-1], "A10")["status"] if heard else None), (True, "available"))
+    await a.send(type="status", status="available")
+    lob = await a.expect("lobby", skip=())
+    check("the same status again: A has the lobby (as it is)...", office(lob, "A10")["status"], "available")
+    check("...and B nothing", [m["type"] for m in await b.quiet(0.6)], [])
+    await a.close(); await b.close()
+
+
 async def t_resume(L):
     a, b = await join(L, "A5"), await join(L, "B5")
     vv, hv = await visit(a, b)
@@ -1175,7 +1192,7 @@ async def main():
     L = await Lobby("--v3", "--admin", admin_key, "--title", "Test lobby").start()
     S = await Lobby("--v3", "--resume", "1", "--world-size", "2").start()
     T = await Lobby("--v3", "--knock-ttl", "1").start()
-    tests = [(t, L) for t in (t_hello, t_hello_rules, t_knock_refusals, t_visit, t_end_and_full, t_resume, t_resume_replays_visits, t_rename,
+    tests = [(t, L) for t in (t_hello, t_hello_rules, t_knock_refusals, t_visit, t_end_and_full, t_announce, t_resume, t_resume_replays_visits, t_rename,
                                t_link_withdrawn, t_keys, t_watch, t_link, t_chat, t_whisper, t_v4_hello, t_v4_takeover_and_resume, t_browsers, t_browsers_guarded, t_browsers_confirmed, t_flood, t_v4_directory,
                                t_v4_groups)]
     tests += [(t_resume_window_and_bye, S), (t_world_size, S), (t_knock_timeout_and_health, T)]

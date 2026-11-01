@@ -7,7 +7,7 @@
 //! them, and a newer key delta cuts off the older stream's rest. A scene's edits are never dropped one by one:
 //! a link too far behind drops them all, and the host's page sends its whole scene again.
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
@@ -55,8 +55,49 @@ const STREAM_LAND: u8 = 3;
 const STREAM_POSSESSION: u8 = 4;
 /// A picture shared in chat (8.12), either way, as the other side asked for it: its id, its type, then its bytes.
 const STREAM_MEDIA: u8 = 5;
-/// The most pictures taken from the other side a minute.
+/// The most pictures taken from the other side a minute (and, 3.4.3, the most sent it: core.rs MEDIA_WANTS).
 const MEDIA_PER_MINUTE: u32 = 30;
+/// 3.4.3: pictures on their way to the other side, at most this many bytes a link and over all of them; each given
+/// MEDIA_OUT_WAIT to go (one the other side does not read is let go, its bytes with it); one already on its way
+/// is not sent again meanwhile. More: dropped (the other side asks again, if it still wants it).
+const MEDIA_OUT_LINK: usize = 16 << 20;
+const MEDIA_OUT_ALL: usize = 64 << 20;
+const MEDIA_OUT_WAIT: Duration = Duration::from_secs(60);
+static MEDIA_OUT: AtomicUsize = AtomicUsize::new(0);
+
+/// A picture on its way (3.4.3): its bytes counted against MEDIA_OUT_LINK and MEDIA_OUT_ALL until it has gone, or
+/// failed, or its link ended (its task ended, aborted or not).
+struct MediaOut {
+    link: Arc<Mutex<(usize, HashSet<String>)>>,
+    id: String,
+    n: usize,
+}
+
+impl MediaOut {
+    fn take(link: &Arc<Mutex<(usize, HashSet<String>)>>, id: &str, n: usize) -> Option<MediaOut> {
+        let mut l = link.lock().expect("media out");
+        if l.1.contains(id) || l.0 + n > MEDIA_OUT_LINK {
+            return None;
+        }
+        if MEDIA_OUT.fetch_add(n, Ordering::SeqCst) + n > MEDIA_OUT_ALL {
+            MEDIA_OUT.fetch_sub(n, Ordering::SeqCst);
+            return None;
+        }
+        l.0 += n;
+        l.1.insert(id.to_string());
+        Some(MediaOut { link: link.clone(), id: id.to_string(), n })
+    }
+}
+
+impl Drop for MediaOut {
+    fn drop(&mut self) {
+        MEDIA_OUT.fetch_sub(self.n, Ordering::SeqCst);
+        if let Ok(mut l) = self.link.lock() {
+            l.0 -= self.n;
+            l.1.remove(&self.id);
+        }
+    }
+}
 /// The least time between two possessions' models a host takes from one visitor: a sooner one waits its turn (its
 /// host asked for it, once), but not more than POSSESSIONS_QUEUED of them.
 const POSSESSION_EVERY: Duration = Duration::from_millis(500);
@@ -474,6 +515,7 @@ async fn run(role: Role, visit: &str, est: Established, cmds: &mut mpsc::Receive
     let (ctl_tx, mut ctl_rx) = mpsc::channel::<Value>(64);
     let mut tasks: Vec<JoinHandle<()>> = vec![tokio::spawn(read_ctl(recv, ctl_tx))];
     let (need_key, newest) = (Arc::new(AtomicBool::new(true)), Arc::new(AtomicU64::new(0)));
+    let media_out = Arc::new(Mutex::new((0usize, HashSet::new())));   // (3.4.3: pictures on their way, MediaOut)
     let deltas = match role {
         Role::Host => {
             let (tx, rx) = mpsc::channel::<Frame>(32);
@@ -562,9 +604,10 @@ async fn run(role: Role, visit: &str, est: Established, cmds: &mut mpsc::Receive
                     d.extend_from_slice(&data);
                     let _ = conn.send_datagram(Bytes::from(d));
                 }
-                Some(LinkCmd::Media { id, mime, bytes }) => {
-                    tasks.push(tokio::spawn(write_media(conn.clone(), id, mime, bytes, visit.to_string())));
-                }
+                Some(LinkCmd::Media { id, mime, bytes }) => match MediaOut::take(&media_out, &id, bytes.len()) {
+                    Some(out) => tasks.push(tokio::spawn(write_media(conn.clone(), id, mime, bytes, visit.to_string(), out))),
+                    None => debug!(%visit, "a picture asked for while too much is on its way (or it is): not sent"),
+                },
                 Some(LinkCmd::Voice { up, data }) => {
                     let mut d = Vec::with_capacity(1 + data.len());
                     d.push(if up { DATAGRAM_VOICE_UP } else { DATAGRAM_VOICE_DOWN });
@@ -723,7 +766,7 @@ async fn write_possession(conn: Connection, id: String, gz: Bytes, visit: String
 }
 
 /// A picture the other side asked for (8.12), on a stream of its own: its id and type, then its bytes.
-async fn write_media(conn: Connection, id: String, mime: String, bytes: Bytes, visit: String) {
+async fn write_media(conn: Connection, id: String, mime: String, bytes: Bytes, visit: String, out: MediaOut) {
     let sent = async {
         let mut s = conn.open_uni().await?;
         s.write_all(&[STREAM_MEDIA, id.len() as u8]).await?;
@@ -734,9 +777,12 @@ async fn write_media(conn: Connection, id: String, mime: String, bytes: Bytes, v
         s.finish()?;
         anyhow::Ok(())
     };
-    if let Err(e) = sent.await {
-        debug!(%visit, "a picture did not go: {e:#}");
+    match tokio::time::timeout(MEDIA_OUT_WAIT, sent).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => debug!(%visit, "a picture did not go: {e:#}"),
+        Err(_) => debug!(%visit, "a picture the other side did not take in {} s: let go", MEDIA_OUT_WAIT.as_secs()),
     }
+    drop(out);
 }
 
 /// A picture or a voice message from the other side (8.12): its bytes must be what its id says (their hash), and one
@@ -974,5 +1020,31 @@ async fn read_scene(mut stream: RecvStream, visit: String, core: mpsc::Unbounded
                 let _ = core.send(Ev::SceneLost { visit: visit.clone() });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pictures_on_their_way_are_capped_and_let_go() {
+        // 3.4.3: a link's pictures on their way are at most MEDIA_OUT_LINK bytes, and one is not sent twice at once.
+        let link = Arc::new(Mutex::new((0usize, HashSet::new())));
+        let a = MediaOut::take(&link, "a", 8 << 20).expect("the first");
+        assert!(MediaOut::take(&link, "a", 1).is_none(), "the same one again, while it goes");
+        let b = MediaOut::take(&link, "b", 8 << 20).expect("a second: 16 MB on its way");
+        assert!(MediaOut::take(&link, "c", 1).is_none(), "past 16 MB");
+        drop(a);
+        assert!(MediaOut::take(&link, "a", 1).is_some(), "gone: again");
+        drop(b);
+        assert_eq!(link.lock().unwrap().0, 0);
+        // And over all links, at most MEDIA_OUT_ALL.
+        let links: Vec<_> = (0..4).map(|_| Arc::new(Mutex::new((0usize, HashSet::new())))).collect();
+        let held: Vec<_> = links.iter().map(|l| MediaOut::take(l, "x", 16 << 20).expect("16 MB each, 64 in all")).collect();
+        let fifth = Arc::new(Mutex::new((0usize, HashSet::new())));
+        assert!(MediaOut::take(&fifth, "x", 1).is_none(), "past 64 MB over all");
+        drop(held);
+        assert!(MediaOut::take(&fifth, "x", 1).is_some());
     }
 }

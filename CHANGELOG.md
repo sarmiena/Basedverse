@@ -10,6 +10,27 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v3.4.3 — 2026-11-01 — security fixes: calls, the panel, pictures, the lobby's broadcasts
+
+**Every workroom upgrades**, and the lobby is deployed again. Nothing in the protocols changes name.
+
+- **A call is on only when the side that was rung answers it** ([visit/SPEC.md](visit/SPEC.md) 8.8). Before, a
+  linked office could send an answer to a call nobody rang, and from then on it had your voice whenever you were on
+  a call with anyone. Now an answer counts only for a ring the other side made, and a page answering a call nobody
+  rang is refused (`no_call`).
+- **The panel shows what a room says of your model as text** (Visit.panel: "yours can't be shown: …"). Before, a
+  room's owner could put HTML in it, and it ran in your page when you opened their row.
+- **Pictures sent over a link are capped** (8.12). At most 30 asked a minute a link, at most 16 MB on their way to
+  one link and 64 MB to all, one picture not twice at once, 60 s each to go. Before, a linked office could ask for the
+  same picture over and over, without reading it, until your `visit` ran out of memory.
+- **The lobby goes out to everyone at most every 250 ms** (6.3). What changes in between goes out together, once.
+  A `status`, `max_visitors` or `about` that changes nothing goes back to the office that sent it alone. Before,
+  one connection changing its status 20 times a second sent the whole office list to every office and browser
+  each time.
+
+**What an integration does:** upgrade (`VISIT_VERSION=v3.4.3`); the lobby's operator deploys it. Nothing in a page
+changes, unless it answered calls nobody rang (Visit's own phone never does).
+
 ## v3.4.2 — 2026-11-01 — a line said aloud is heard within 45 m of its sayer, as their voice is (#54)
 
 - **Say goes by distance** ([visit/SPEC.md](visit/SPEC.md) 8.9; [#54](https://github.com/sarmiena/Basedverse/issues/54)).

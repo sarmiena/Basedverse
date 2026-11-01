@@ -13,7 +13,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "3.4.2", PROTO = "basedverse-visit-local/2";
+  const VERSION = "3.4.3", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -5020,7 +5020,8 @@
         if (p.visit) btns.push(`<button data-v="kick" data-x="${esc(p.visit.id)}" title="out of your room">Kick</button>`);
         if (p.key) btns.push(`<button data-v="ignore" data-key="${esc(p.key)}" data-name="${esc(p.name)}" title="${v.isIgnored(p.key) ? "hear them in chat again" : "their lines in chat never reach you (nothing tells them)"}">${v.isIgnored(p.key) ? "Unignore" : "Ignore"}</button>`);
         btns.push(`<button data-v="cut" data-p="${esc(p.key || p.id)}" title="every link between you two ends${p.key && v.isPicked(p.key) ? ", and their room leaves your world" : ""}">Unlink</button>`);
-        return `<div class="row sub">${seen.length ? `<div class="muted">${[...new Set(seen)].join(" · ")}</div>` : ""}<div class="btns">${btns.join("")}</div></div>`;
+        // (Plain text, each: a model's problem is the other room's word, or the other model's. 3.4.3: escaped.)
+        return `<div class="row sub">${seen.length ? `<div class="muted">${[...new Set(seen)].map(esc).join(" · ")}</div>` : ""}<div class="btns">${btns.join("")}</div></div>`;
       };
       for (const p of [...people.filter(linked), ...people.filter(p => !linked(p))]) {
         const o = p.office, dot = `<span class="dot ${o ? esc(o.status) : ""}"></span>`;
