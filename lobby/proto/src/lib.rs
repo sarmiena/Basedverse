@@ -181,6 +181,17 @@ pub struct WebPass {
 /// How long a web pass is good for, at most, in seconds; and a pairing code.
 pub const PASS_TTL: u64 = 600;
 
+/// 3.2: how long a room's confirmation of a browser (`browser_confirm`) waits for that browser to show it, in seconds;
+/// and how many wrong ones the browser may show before every confirmation of it is off.
+pub const CONFIRM_TTL: u64 = 300;
+pub const CONFIRM_TRIES: u8 = 5;
+
+/// A confirmation as typed (spaces or a dash anywhere), as the lobby keeps it: 6 digits.
+pub fn confirm_of(typed: &str) -> Option<String> {
+    let c: String = typed.chars().filter(|c| !c.is_whitespace() && *c != '-').collect();
+    (c.len() == 6 && c.bytes().all(|b| b.is_ascii_digit())).then_some(c)
+}
+
 /// A flag that is true only when it is `true` (anything else, or none, is false), as the lobby has always read them.
 fn truthy<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     Ok(Value::deserialize(d)? == Value::Bool(true))
@@ -319,13 +330,16 @@ pub enum ToLobby {
     /// The worlds' directory (`groups` answers).
     Groups,
     /// 3.1, an office's own (never a browser's): the browser waiting with this pairing code (`browser_pending`
-    /// answers); link it; its linked browsers (`browsers` answers); one unlinked.
+    /// answers); link it (3.2: once it shows the confirmation `browser_confirm` answers with: the room's QR code, or
+    /// its digits); its linked browsers (`browsers` answers); one unlinked.
     BrowserCode { code: Option<String> },
     BrowserAllow { code: Option<String> },
     Browsers,
     BrowserRevoke { key: Option<String> },
     /// 3.1, a linked browser's: unlink this browser.
     BrowserForget,
+    /// 3.2, a browser waiting with a code: the confirmation its room shows (6 digits), typed, to be linked.
+    BrowserVerify { confirm: Option<String> },
     /// Version 4, the lobby's own operators: ban or unban a key, the message of the day, the bans.
     Admin {
         action: Option<String>,
@@ -439,6 +453,9 @@ pub struct Listed {
     pub members: usize,
     /// Members in the lobby now.
     pub online: usize,
+    /// 3.2: its owner's name, as the world last knew it (never its key).
+    #[serde(default)]
+    pub owner: String,
 }
 
 /// A browser linked to an office (3.1), as its office hears the list.
@@ -576,6 +593,11 @@ pub enum FromLobby {
     BrowserCode { code: String, pictures: String, expires_in: u64 },
     /// 3.1, to an office that typed a code: the browser waiting with it, for its user to allow (`browser_allow`).
     BrowserPending { code: String, key: String, agent: String, pictures: String },
+    /// 3.2, to an office that allowed a browser: the confirmation that browser must show (6 digits), for the room to
+    /// show as a QR code (the lobby's page, `#verify=` these) and as they are.
+    BrowserConfirm { code: String, key: String, confirm: String, expires_in: u64 },
+    /// 3.2, to a browser waiting with a code: this office would link it; it shows the room's confirmation to be linked.
+    BrowserConfirming { office: String, expires_in: u64 },
     /// 3.1, to an office: its linked browsers (on asking, and as one is linked, unlinked, comes or goes).
     Browsers { browsers: Vec<Linked> },
     /// Version 4, to an operator: the lobby's bans (not a room's: Visit's own `bans` are those).
@@ -629,6 +651,9 @@ mod tests {
         assert_eq!(code_of(" ABCD EFGH "), Some("ABCDEFGH".into()));
         assert_eq!(code_of("ABCD-EFG0"), None, "no 0, 1, I or O");
         assert_eq!(code_of("ABCDEFG"), None);
+        assert_eq!(confirm_of("482 913"), Some("482913".into()));
+        assert_eq!(confirm_of("48291"), None);
+        assert_eq!(confirm_of("48291a"), None);
         assert_eq!(pictures("000140ff"), "🐙🌵🐙");
         assert_eq!(pictures(""), "???");
     }

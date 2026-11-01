@@ -7,10 +7,14 @@
   - read only, by anyone: the lobby's worlds, who is here with a line about them, how many are in it (/api/lobby);
   - as a workroom: this browser keeps a key of its own (made here, never leaving it: IndexedDB, not extractable), and
     the workroom links it, once: by a web pass in this page's address (#pass=…, its room's 🌐 Lobby or 📱 Phone), or
-    by the code this page shows, typed in its room (Visit panel: Link a browser). Linked, it comes back by its key
+    by the code this page shows, typed in its room (Visit panel: Link a browser), and then (3.2) the room's
+    confirmation shown here: its QR code scanned by this device's camera (a tab of this page, #verify=…), or its
+    6 digits typed. Linked, it comes back by its key
     alone, and is that workroom's in the lobby while the workroom is in it: its chat (the lobby's, its worlds',
     whispers), who is here, its worlds, knocking (the visit itself happens in its room). Never its door, nor letting
     anyone in: those stay in its room. Unlinked by its room, or by itself (the footer), it is read only again.
+  Laid out as a game's server browser (3.2): the worlds, the screen's focus, a list to filter, sort and pick from
+  (Worlds, Your worlds, Users), the row picked shown below it with what can be done; chat in a column beside it.
   The world behind it and the logo are the sign-in page's, copied (keep them alike).
 -->
 <html lang="en">
@@ -33,18 +37,19 @@
 html, body { height: 100%; margin: 0; }
 body { background: var(--night); color: var(--ink); font: 600 14px/1.45 var(--mono); overflow: hidden; }
 #world { position: fixed; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; image-rendering: crisp-edges; }
-main { position: relative; height: 100%; display: flex; flex-direction: column; gap: 10px; padding: 12px; max-width: 1280px; margin: 0 auto; }
+/* The whole width: a lobby is a screen of its own, not a column. */
+main { position: relative; height: 100%; display: flex; flex-direction: column; gap: 12px; padding: 12px 18px; }
 
 /* A frame of whole pixels, as the sign-in page's. */
 .panel {
-  background: rgba(16, 27, 49, .92);
+  background: rgba(16, 27, 49, .93);
   box-shadow:
     0 calc(-1 * var(--px)) 0 0 var(--edge), 0 var(--px) 0 0 var(--edge), calc(-1 * var(--px)) 0 0 0 var(--edge), var(--px) 0 0 0 var(--edge),
     0 calc(-2 * var(--px)) 0 0 var(--shade), 0 calc(2 * var(--px)) 0 0 var(--shade), calc(-2 * var(--px)) 0 0 0 var(--shade), calc(2 * var(--px)) 0 0 0 var(--shade),
     calc(3 * var(--px)) calc(4 * var(--px)) 0 0 rgba(0, 0, 0, .45);
 }
-header.top { display: flex; align-items: center; gap: 16px; padding: 10px 14px; }
-header.top .logo { width: 150px; flex: none; filter: drop-shadow(0 0 12px rgba(8, 168, 255, .35)); }
+header.top { display: flex; align-items: center; gap: 16px; padding: 8px 14px; }
+header.top .logo { width: 130px; flex: none; filter: drop-shadow(0 0 12px rgba(8, 168, 255, .35)); }
 header.top .logo svg { display: block; width: 100%; height: auto; }
 header.top .what { flex: 1; min-width: 0; }
 header.top h1 { margin: 0; font-size: 18px; letter-spacing: .12em; text-transform: uppercase; color: var(--gold); text-shadow: 0 2px 0 var(--shade); }
@@ -53,91 +58,130 @@ header.top .who { text-align: right; flex: none; font-size: 12px; color: var(--d
 header.top .who b { color: var(--green); font-size: 16px; }
 header.top .who .as { color: var(--ink); }
 
-.screen { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 14px; }
-@media (max-width: 860px) {
+/* The world browser, the screen's focus; chat beside it, narrower. */
+.screen { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) clamp(340px, 27vw, 520px); gap: 16px; }
+@media (max-width: 900px) {
   body { overflow: auto; }
-  main { height: auto; min-height: 100%; }
-  header.top .logo { width: 90px; }
-  .screen { grid-template-columns: minmax(0, 1fr); }
+  main { height: auto; min-height: 100%; padding: 10px; }
+  header.top .logo { width: 80px; }
   header.top .who { font-size: 11px; }
+  .screen { grid-template-columns: minmax(0, 1fr); }
+  .browser { min-height: 70vh; }
   .chat { min-height: 60vh; }
+  .wide { display: none; }
 }
+table.list td.name .lk { font-size: 11px; }
 .tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 8px 0; border-bottom: 2px solid var(--line); }
 .tabs button { font: 700 12px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--dim); background: var(--panel2); border: 0; padding: 6px 10px; cursor: pointer; box-shadow: inset 0 -2px 0 var(--line); }
 .tabs button.on { color: var(--shade); background: var(--gold); box-shadow: none; }
 .tabs button .n { margin-left: 6px; color: var(--red); }
 .tabs button.on .n { color: #6a1010; }
+.tabs.big button { font-size: 14px; padding: 8px 16px; }
+.tabs.big button .n { color: var(--green); }
+.tabs.big button.on .n { color: #2d4a0c; }
 
-.chat { display: flex; flex-direction: column; min-height: 0; }
-.log { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; text-shadow: 0 1px 0 var(--shade); overflow-wrap: anywhere; }
-.line { padding-left: 1.5em; text-indent: -1.5em; margin: 2px 0; }
-.line .t { color: #6f84a3; font-size: 11px; margin-right: .5em; }
-.line .ch { margin-right: .4em; }
-.line.lobby .ch, .line.lobby .tx { color: #ffc864; }
-.line.group .ch, .line.group .tx { color: var(--green); }
-.line.whisper .tx, .line.whisper .ch { color: var(--pink); }
-.line.note { color: var(--gold); font-style: italic; }
-.line.note.bad { color: var(--red); }
-.say { display: flex; gap: 8px; padding: 10px; border-top: 2px solid var(--line); }
-.say .to { flex: none; align-self: center; color: var(--dim); font-size: 12px; max-width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 input, select { font: 600 14px var(--mono); color: var(--ink); background: var(--shade); border: 0; outline: 0; padding: 8px 10px; box-shadow: 0 0 0 2px #2a3a57; min-width: 0; }
-input:focus { box-shadow: 0 0 0 2px var(--green), 0 0 10px rgba(163, 224, 72, .3); }
-.say input { flex: 1; }
-.btn { font: 800 12px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: #06210f; background: linear-gradient(#c4f06a 0 50%, var(--green) 50% 100%); border: 0; padding: 7px 12px; cursor: pointer; box-shadow: 0 var(--px) 0 0 #4f7d1c, 0 0 0 2px var(--shade); }
+input:focus, select:focus { box-shadow: 0 0 0 2px var(--green), 0 0 10px rgba(163, 224, 72, .3); }
+.btn { font: 800 12px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: #06210f; background: linear-gradient(#c4f06a 0 50%, var(--green) 50% 100%); border: 0; padding: 7px 14px; cursor: pointer; box-shadow: 0 var(--px) 0 0 #4f7d1c, 0 0 0 2px var(--shade); white-space: nowrap; }
 .btn:active { transform: translateY(var(--px)); box-shadow: 0 0 0 0 #4f7d1c, 0 0 0 2px var(--shade); }
 .btn.blue { color: #021a2c; background: linear-gradient(#5cc8ff 0 50%, var(--blue) 50% 100%); box-shadow: 0 var(--px) 0 0 #075a8a, 0 0 0 2px var(--shade); }
 .btn.dim { color: var(--ink); background: #22314d; box-shadow: 0 var(--px) 0 0 #121c30, 0 0 0 2px var(--shade); }
 .btn:disabled { opacity: .45; cursor: default; }
-
-.side { display: flex; flex-direction: column; min-height: 0; }
-.pane { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; }
-.pane[hidden] { display: none; }
-.item { padding: 8px 10px; margin-bottom: 6px; background: var(--panel2); box-shadow: inset 3px 0 0 var(--line); cursor: default; }
-.item.pick { cursor: pointer; }
-.item.pick:hover, .item.open { box-shadow: inset 3px 0 0 var(--blue); }
-.item .top { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; min-width: 0; }
-.item .name { font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.item .meta { margin-left: auto; color: var(--dim); font-size: 11px; white-space: nowrap; }
-.item .about { color: var(--dim); font-weight: 500; font-size: 12px; margin-top: 2px; }
-.item .tag { color: var(--blue); margin-right: 6px; font-size: 11px; }
-.item .acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-.dot { width: 8px; height: 8px; flex: none; background: var(--green); display: inline-block; }
-.dot.busy { background: var(--red); }
-.badge { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; padding: 0 5px; color: var(--shade); background: var(--green); }
-.badge.ask { background: var(--dim); }
-.badge.you { background: var(--gold); }
-.badge.kin { background: var(--blue); }
-.empty { color: var(--dim); font-weight: 500; padding: 6px 2px; }
-.hint { color: var(--dim); font-weight: 500; font-size: 12px; margin: 0 0 10px; }
-.form { display: grid; gap: 8px; padding: 10px; margin-bottom: 10px; background: var(--panel2); }
-.form label { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 12px; }
-.req { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
-.members { color: var(--dim); font-size: 12px; margin-top: 4px; font-weight: 500; }
-.members .on { color: var(--ink); }
-.members .m { display: inline-flex; align-items: center; gap: 4px; margin: 2px 8px 2px 0; }
 .mini { font: 700 11px var(--mono); color: var(--ink); background: #22314d; border: 0; padding: 1px 5px; cursor: pointer; }
 .mini:hover { background: var(--blue); color: var(--shade); }
-.inline { display: flex; gap: 8px; margin-top: 8px; }
-.inline input { flex: 1; padding: 5px 8px; }
-.badge.lock { background: var(--gold); }
-.badge.shut { background: var(--red); }
 
-/* Linking this browser: its code, big, and its pictures. */
-.code { font: 800 34px var(--mono); letter-spacing: .14em; color: var(--gold); text-shadow: 0 3px 0 var(--shade); margin: 10px 0 4px; user-select: all; }
-.pics { font-size: 30px; letter-spacing: .3em; margin: 2px 0 6px; }
-.join .small { font-size: 12px; }
-.join hr { border: 0; border-top: 2px dashed var(--line); margin: 16px 0 10px; }
-footer button { font: inherit; color: var(--blue); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
+/* The browser: its tabs, its bar (filter, access, sort), the list, and the row picked. */
+.browser { display: flex; flex-direction: column; min-height: 0; }
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 10px 12px; border-bottom: 2px solid var(--line); }
+.bar label { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+.bar #filter { width: min(320px, 100%); }
+.bar .grow { flex: 1; }
+.tablewrap { flex: 1; min-height: 160px; overflow: auto; padding: 0 12px 8px; }
+table.list { width: 100%; border-collapse: separate; border-spacing: 0 4px; }
+table.list th { position: sticky; top: 0; z-index: 1; background: rgba(12, 21, 40, .97); color: var(--gold); font: 800 12px var(--mono); letter-spacing: .12em; text-transform: uppercase; text-align: left; padding: 10px 10px 8px; white-space: nowrap; cursor: pointer; user-select: none; }
+table.list th.sorted::after { content: " ▾"; color: var(--green); }
+table.list th.num, table.list td.num { text-align: right; }
+table.list td { padding: 9px 10px; background: rgba(12, 21, 40, .85); border-top: 2px solid transparent; border-bottom: 2px solid transparent; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 0; }
+table.list tr.row { cursor: pointer; }
+table.list tr.row:hover td { background: rgba(26, 44, 78, .95); }
+table.list tr.row.sel td { background: rgba(8, 168, 255, .16); border-color: var(--blue); }
+table.list tr.row.sel td:first-child { box-shadow: inset 3px 0 0 var(--blue); }
+table.list td.flag { width: 2.2em; color: var(--dim); text-align: center; }
+table.list tr.mine td.flag { color: var(--gold); }
+table.list td.name { font-weight: 800; width: 22%; }
+table.list tr.mine td.name { color: var(--gold); }
+table.list td.about { color: var(--dim); font-weight: 500; width: 34%; }
+table.list td.online { width: 9%; }
+table.list td.cnt { width: 15%; }
+table.list td.acc { width: 10%; }
+table.list td.owner { color: var(--dim); width: 12%; }
+table.list td.empty { color: var(--dim); font-weight: 500; text-align: center; padding: 26px; white-space: normal; max-width: none; }
+.meter { display: inline-block; vertical-align: middle; width: 64px; height: 8px; margin-right: 8px; background: var(--shade); box-shadow: 0 0 0 1px #2a3a57; }
+.meter i { display: block; height: 100%; background: var(--green); }
+.badge { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; padding: 1px 6px; color: var(--shade); background: var(--green); font-weight: 800; }
+.badge.lock { background: var(--gold); } .badge.shut { background: var(--red); } .badge.you { background: var(--gold); } .badge.kin { background: var(--blue); }
+.dot { width: 8px; height: 8px; flex: none; background: var(--green); display: inline-block; margin-right: 8px; vertical-align: middle; }
+.dot.busy { background: var(--red); } .dot.off { background: #3a4a66; }
+.tag { color: var(--blue); margin-left: 6px; font-size: 11px; }
 
-/* Read only: how to take part. */
-.join { margin: auto; max-width: 520px; padding: 22px; text-align: center; }
+.detail { flex: none; max-height: 42%; overflow: auto; padding: 12px 16px 14px; border-top: 2px solid var(--line); background: rgba(9, 16, 31, .9); }
+.detail h2 { margin: 0 0 4px; font-size: 16px; color: var(--gold); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.detail .line { color: var(--dim); font-weight: 500; margin: 2px 0 6px; }
+.detail .meta { color: var(--dim); font-size: 12px; margin-bottom: 8px; }
+.detail .note { color: var(--green); font-size: 12px; font-weight: 500; margin: 6px 0; }
+.members { color: var(--dim); font-size: 12px; margin: 6px 0; font-weight: 500; }
+.members .on { color: var(--ink); }
+.members .m { display: inline-flex; align-items: center; gap: 4px; margin: 2px 10px 2px 0; }
+.acts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; }
+.inline { display: flex; gap: 8px; margin-top: 10px; max-width: 460px; }
+.inline input { flex: 1; padding: 6px 8px; }
+.form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr); gap: 10px; align-items: center; }
+.form .acts { grid-column: 1 / -1; margin-top: 2px; }
+@media (max-width: 900px) { .form { grid-template-columns: minmax(0, 1fr); } }
+.hint { color: var(--dim); font-weight: 500; font-size: 12px; margin: 0; }
+
+/* Chat, the column beside. */
+.chat { display: flex; flex-direction: column; min-height: 0; }
+.log { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; text-shadow: 0 1px 0 var(--shade); overflow-wrap: anywhere; font-size: 13px; }
+.log .line { padding-left: 1.5em; text-indent: -1.5em; margin: 2px 0; }
+.log .line .t { color: #6f84a3; font-size: 11px; margin-right: .5em; }
+.log .line .ch { margin-right: .4em; }
+.log .line.lobby .ch, .log .line.lobby .tx { color: #ffc864; }
+.log .line.group .ch, .log .line.group .tx { color: var(--green); }
+.log .line.whisper .tx, .log .line.whisper .ch { color: var(--pink); }
+.log .line.note { color: var(--gold); font-style: italic; }
+.log .line.note.bad { color: var(--red); }
+.say { display: flex; gap: 8px; padding: 10px; border-top: 2px solid var(--line); }
+.say .to { flex: none; align-self: center; color: var(--dim); font-size: 12px; max-width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.say input { flex: 1; }
+
+/* Unlinked: how to link this browser (in the chat's place). */
+.join { margin: auto; max-width: 460px; padding: 20px; text-align: center; }
 .join h2 { margin: 0 0 10px; color: var(--gold); font-size: 15px; letter-spacing: .14em; text-transform: uppercase; }
 .join h2::before, .join h2::after { content: "◆"; color: var(--blue); margin: 0 .7em; font-size: 10px; vertical-align: 2px; }
 .join p { margin: 8px 0; color: var(--dim); font-weight: 500; }
 .join code { color: var(--gold); background: var(--shade); padding: 2px 6px; overflow-wrap: anywhere; }
 .join .row { display: flex; gap: 10px; justify-content: center; align-items: center; flex-wrap: wrap; margin-top: 12px; }
 .join a { color: var(--blue); }
+.code { font: 800 34px var(--mono); letter-spacing: .14em; color: var(--gold); text-shadow: 0 3px 0 var(--shade); margin: 10px 0 4px; user-select: all; }
+.pics { font-size: 30px; letter-spacing: .3em; margin: 2px 0 6px; }
+.join .small { font-size: 12px; }
+.join hr { border: 0; border-top: 2px dashed var(--line); margin: 16px 0 10px; }
+.join .confirm { display: flex; gap: 10px; justify-content: center; margin: 12px 0 4px; }
+.join .confirm input { width: 9em; text-align: center; font-size: 22px; letter-spacing: .2em; }
+.join .bad { color: var(--red); }
 footer { color: #6f84a3; font-size: 11px; text-align: center; font-weight: 500; }
+footer button { font: inherit; color: var(--blue); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
+/* A phone: the list its names and numbers alone (these after the rules they change). */
+@media (max-width: 900px) {
+  .meter { display: none; }
+  .tablewrap { padding: 0 6px 8px; }
+  table.list td.flag { width: 1.6em; padding: 9px 2px; }
+  table.list td.name { width: 56%; }
+  table.list td.online { width: 18%; }
+  table.list td.cnt { width: 26%; }
+  table.list th { padding: 10px 6px 8px; }
+}
 </style>
 </head>
 <body>
@@ -149,9 +193,23 @@ footer { color: #6f84a3; font-size: 11px; text-align: center; font-weight: 500; 
     <div class="who"><div><b id="count">…</b> in the lobby</div><div id="as">read only</div></div>
   </header>
   <div class="screen">
+    <section class="browser panel">
+      <nav class="tabs big" id="btabs"><button data-v="worlds" class="on">Worlds <span class="n" id="nall"></span></button><button data-v="mine">Your worlds <span class="n" id="nmine"></span></button><button data-v="users">Users <span class="n" id="nusers"></span></button></nav>
+      <div class="bar">
+        <input id="filter" type="search" placeholder="Search names and lines" autocomplete="off">
+        <label class="wf">Access <select id="access"><option value="">All</option><option value="open">Public</option><option value="locked">🔒 Password</option></select></label>
+        <label class="wf">Sort by <select id="sort"><option value="online">Most online</option><option value="members">Most members</option><option value="name">Name</option></select></label>
+        <label class="wf"><input type="checkbox" id="hidefull"> Hide full</label>
+        <span class="grow"></span>
+        <button class="btn wf" id="newworld" type="button" hidden>New world</button>
+        <button class="btn dim" id="refresh" type="button">Refresh</button>
+      </div>
+      <div class="tablewrap"><table class="list"><thead id="lhead"></thead><tbody id="lbody"></tbody></table></div>
+      <div class="detail" id="detail"></div>
+    </section>
     <section class="chat panel">
       <nav class="tabs" id="ctabs"></nav>
-      <div class="log" id="log" aria-live="polite"></div>
+      <div class="log" id="log" aria-live="polite" hidden></div>
       <div class="join" id="join">
         <div id="link">
           <h2>Link your room</h2>
@@ -162,6 +220,11 @@ footer { color: #6f84a3; font-size: 11px; text-align: center; font-weight: 500; 
             <div class="pics" id="pics"></div>
             <p class="small">your room shows these pictures too: check they match. The code lasts 10 minutes.</p>
           </div>
+          <div id="confirming" hidden>
+            <p><b id="confwho">Your workroom</b> would link this browser. To prove it is you: <b>scan the QR code your room shows now</b> with this device's camera, or type its digits:</p>
+            <form class="confirm" id="confform"><input id="confdigits" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="000 000"><button class="btn" type="submit">Link</button></form>
+            <p class="small" id="confnote">it lasts 5 minutes</p>
+          </div>
           <p class="small">Or from your room: <b>🌐 Lobby</b> opens this page linked; <b>📱 Phone</b> shows a QR code for your phone's camera.</p>
           <div class="row" id="again" hidden><button class="btn blue" id="newcode" type="button">New code</button></div>
         </div>
@@ -171,11 +234,6 @@ footer { color: #6f84a3; font-size: 11px; text-align: center; font-weight: 500; 
       </div>
       <form class="say" id="say" hidden><span class="to" id="to"></span><input id="text" maxlength="200" autocomplete="off" placeholder="say something (/w name, /r, /g world)"><button class="btn" type="submit">Say</button></form>
     </section>
-    <aside class="side panel">
-      <nav class="tabs" id="stabs"><button data-p="users" class="on">Users</button><button data-p="worlds">Worlds</button></nav>
-      <div class="pane" id="users"></div>
-      <div class="pane" id="worlds" hidden></div>
-    </aside>
   </div>
   <footer id="foot">Basedverse lobby</footer>
 </main>
@@ -198,13 +256,15 @@ footer { color: #6f84a3; font-size: 11px; text-align: center; font-weight: 500; 
   const kept = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* not kept */ } return null; };
 
   const S = {
-    ws: null, me: null, offices: [], groups: new Map(), list: [], admin: false, code: null,
-    tab: "lobby", lines: [], unread: new Map(), lastWhisper: null, open: new Set(), making: false, joining: null, locking: null, retries: 0, pub: null,
+    ws: null, me: null, offices: [], groups: new Map(), list: [], admin: false, code: null, limits: null, listed: false,
+    tab: "lobby", lines: [], unread: new Map(), lastWhisper: null, retries: 0, pub: null,
+    view: "worlds", sel: { worlds: null, mine: null, users: null }, making: false, locking: null, joining: null,
   };
   const myKey = () => S.me && S.me.key;
   const kin = key => [...S.groups.values()].some(g => g.members.some(m => m.key === key));
   const nameOf = id => (S.offices.find(o => o.id === id) || {}).name || "";
   const nameByKey = key => (S.offices.find(o => o.key === key) || {}).name || "";
+  const here = key => key === myKey() || S.offices.some(o => o.key === key);
 
   // ---------- this browser's key (Ed25519, made here; its secret half never leaves it) ----------
   const hex = b => Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
@@ -232,12 +292,14 @@ footer { color: #6f84a3; font-size: 11px; text-align: center; font-weight: 500; 
       const b = el("button", k === S.tab ? "on" : "", label);
       const n = S.unread.get(k);
       if (n && k !== S.tab) b.append(el("span", "n", String(n)));
-      b.addEventListener("click", () => { S.tab = k; S.unread.delete(k); drawTabs(); drawLog(); $("text").focus(); });
+      b.addEventListener("click", () => chatTo(k));
       return b;
     }));
     const t = S.tab;
     $("to").textContent = t === "lobby" ? "to the lobby" : t === "whispers" ? (S.lastWhisper ? "to " + S.lastWhisper.name : "/w name") : "to ⚑ " + (S.groups.get(t.slice(2)) || {}).name;
   }
+  // The chat on this tab (the lobby's, a world's, whispers), its unread gone, the box ready.
+  function chatTo(k) { S.tab = k; S.unread.delete(k); drawTabs(); drawLog(); if (S.me) $("text").focus(); }
   function lineEl(l) {
     const d = el("div", "line " + l.kind + (l.bad ? " bad" : ""));
     d.append(el("span", "t", new Date(l.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })));
@@ -301,50 +363,107 @@ footer { color: #6f84a3; font-size: 11px; text-align: center; font-weight: 500; 
     drawTabs();
   }
 
-  // ---------- the side: users, worlds ----------
-  const side = name => {
-    document.querySelectorAll("#stabs button").forEach(x => x.classList.toggle("on", x.dataset.p === name));
-    for (const p of ["users", "worlds"]) $(p).hidden = p !== name;
-    if (name === "worlds" && S.me) send({ type: "groups" });
-  };
-  document.querySelectorAll("#stabs button").forEach(b => b.addEventListener("click", () => side(b.dataset.p)));
-  { const first = { rooms: "users", people: "users", groups: "worlds" }[new URLSearchParams(location.search).get("side")] || new URLSearchParams(location.search).get("side");
-    if (["users", "worlds"].includes(first)) side(first); }   // ?side=worlds: a link to the list
-  function knockActs(o) {
-    const acts = el("div", "acts");
-    if (!S.me || o.id === S.me.id) return acts;
-    const why = !o.ready ? "not ready" : o.status !== "available" ? o.status : "";
-    const go = (link, label, cls, title) => { const b = btn(label, cls, () => { send({ type: "knock", to: o.id, link }); }, title); if (why) { b.disabled = true; b.title = why; } return b; };
-    acts.append(go(false, "Knock", "", "they are asked; let in, you walk into their room, in your room's page"));
-    if (o.links) acts.append(go(true, "Link", "blue", "see their room in your room's corner, once they say yes"));
-    acts.append(btn("Whisper", "dim", () => { S.tab = "whispers"; S.lastWhisper = { id: o.id, name: o.name, key: o.key }; drawTabs(); drawLog(); $("text").focus(); }));
-    return acts;
-  }
-  function userItem(o) {
-    const d = el("div", "item" + (S.me ? " pick" : "") + (S.open.has(o.id) ? " open" : "")), top = el("div", "top");
-    const dot = el("span", "dot" + (o.status === "busy" ? " busy" : ""));
-    const name = el("span", "name", o.name); name.style.color = colorOf(o.key || o.name);
-    top.append(dot, name);
-    if (S.me && o.id === S.me.id) top.append(el("span", "badge you", "you"));
-    else if (o.key && kin(o.key)) top.append(el("span", "badge kin", "⚑ your world"));
-    top.append(el("span", "meta", `${o.visitors}/${o.max_visitors} in · ${(o.sim && o.sim.name) || ""}`));
-    d.append(top);
-    if (o.about && o.about.text) { const a = el("div", "about", o.about.text); for (const t of o.about.tags || []) a.append(" ", el("span", "tag", "#" + t)); d.append(a); }
-    if (S.me && S.open.has(o.id)) d.append(knockActs(o));
-    if (S.me) d.addEventListener("click", e => { if (e.target.closest("button")) return; if (!S.open.delete(o.id)) S.open.add(o.id); drawSide(); });
-    return d;
-  }
-  function drawUsers() {
-    const p = $("users");
-    if (!S.me) {
-      const list = ((S.pub && S.pub.users) || []).map(x => Object.assign({ id: "" }, x));
-      p.replaceChildren(el("p", "hint", "Who is here, with a line about them. Linked, you see everyone, and knock, link or whisper."),
-        ...(list.length ? list.map(userItem) : [el("p", "empty", "Nobody has written a line yet.")]));
-      return;
+  // ---------- the browser: the worlds (the screen's focus), yours, who is here ----------
+  // A list to pick from, as a game's server browser: filter, access, sort; a row picked shows below it, with what can
+  // be done (Join, Chat, Leave, its owner's tools); a row double-clicked joins it.
+  const F = { q: "", access: "", sort: "online", hideFull: false };
+  const worldSize = () => (S.limits && S.limits.group_members) || 50;
+  const memberName = (g, key) => (g.members.find(m => m.key === key) || {}).name || "";
+  // Every world, as the list has it; yours as you know them whole (their members, who of them is here).
+  function worldsAll() {
+    const base = S.me ? S.list : ((S.pub && S.pub.worlds) || []);
+    const by = new Map(base.map(w => [w.name.toLowerCase(), Object.assign({ owner: "" }, w, { mine: false })]));
+    for (const g of S.groups.values()) {
+      const k = g.name.toLowerCase(), w = by.get(k) || { name: g.name };
+      by.set(k, Object.assign(w, { about: g.about, open: g.open, locked: g.locked, members: g.members.length, online: g.members.filter(m => here(m.key)).length,
+        owner: g.owner === myKey() ? "you" : memberName(g, g.owner), mine: true }));
     }
-    const others = S.offices.filter(o => o.id !== S.me.id).sort((a, b) => (kin(b.key) - kin(a.key)) || a.name.localeCompare(b.name));
-    const me = S.offices.find(o => o.id === S.me.id);
-    p.replaceChildren(...(me ? [userItem(me)] : []), ...others.map(userItem), ...(others.length ? [] : [el("p", "empty", "Nobody else is here yet.")]));
+    return [...by.values()];
+  }
+  function worldsShown() {
+    const q = F.q.trim().toLowerCase();
+    const list = worldsAll().filter(w => (S.view !== "mine" || w.mine)
+      && (!q || w.name.toLowerCase().includes(q) || String(w.about || "").toLowerCase().includes(q))
+      && (!F.access || (F.access === "open" ? w.open : w.locked))
+      && (!F.hideFull || w.mine || (w.members || 0) < worldSize()));
+    const by = { online: (a, b) => (b.online - a.online) || (b.members - a.members), members: (a, b) => (b.members - a.members) || (b.online - a.online) }[F.sort];
+    return list.sort((a, b) => (by ? by(a, b) : 0) || a.name.localeCompare(b.name));
+  }
+  function users() {
+    if (!S.me) return ((S.pub && S.pub.users) || []).map(x => Object.assign({ id: "n:" + x.name, key: null }, x));
+    const q = F.q.trim().toLowerCase();
+    return S.offices.filter(o => !q || o.name.toLowerCase().includes(q) || String((o.about && o.about.text) || "").toLowerCase().includes(q))
+      .sort((a, b) => ((b.id === S.me.id) - (a.id === S.me.id)) || (kin(b.key) - kin(a.key)) || a.name.localeCompare(b.name));
+  }
+  const td = (cls, content, title) => { const c = el("td", cls); if (content instanceof Node) c.append(content); else c.textContent = content == null ? "" : String(content); if (title) c.title = title; return c; };
+  function head(cols) {
+    const tr = el("tr");
+    for (const [label, cls, sort] of cols) {
+      const th = el("th", cls + (sort && F.sort === sort ? " sorted" : ""), label);
+      if (sort) th.addEventListener("click", () => { F.sort = sort; $("sort").value = sort; drawList(); });
+      else th.style.cursor = "default";
+      tr.append(th);
+    }
+    $("lhead").replaceChildren(tr);
+  }
+  function drawCounts() {
+    const all = worldsAll();
+    $("nall").textContent = all.length ? String(all.length) : "";
+    $("nmine").textContent = S.me ? String(S.groups.size) : "";
+    $("nusers").textContent = S.me ? String(S.offices.length) : ((S.pub && S.pub.online) || "") + "";
+  }
+  function drawList() {
+    drawCounts();
+    document.querySelectorAll("#btabs button").forEach(b => b.classList.toggle("on", b.dataset.v === S.view));
+    const wv = S.view !== "users";
+    document.querySelectorAll(".bar .wf").forEach(x => { x.hidden = !wv; });
+    $("newworld").hidden = !wv || !S.me;
+    const body = $("lbody"), rows = [];
+    if (wv) {
+      head([["", "flag"], ["World", "name", "name"], ["About", "about wide"], ["Here now", "online", "online"], ["Members", "cnt", "members"], ["Access", "acc wide"], ["Owner", "owner wide"]]);
+      const list = worldsShown(), sel = S.sel[S.view];
+      for (const w of list) {
+        const k = w.name.toLowerCase(), tr = el("tr", "row" + (w.mine ? " mine" : "") + (k === sel ? " sel" : ""));
+        // How full it is (its members of the most it takes), as a server list's players of its slots; who is here now.
+        const meter = el("span", "meter"), fill = el("i"); fill.style.width = Math.min(100, Math.round(100 * (w.members || 0) / worldSize())) + "%"; meter.append(fill);
+        const full = el("span"); full.append(meter, document.createTextNode(`${w.members}/${worldSize()}`));
+        const online = el("span"); online.append(el("span", "dot" + (w.online ? "" : " off")), document.createTextNode(String(w.online)));
+        const acc = el("span", "badge " + (w.open ? "" : w.locked ? "lock" : "shut"), w.open ? "public" : w.locked ? "🔒 password" : "closed");
+        const name = el("span", "", w.name); if (w.locked) name.append(el("span", "lk", " 🔒"));
+        tr.append(td("flag", w.mine ? "★" : "⚑", w.mine ? "yours: your room is on its map" : ""), td("name", name, w.name), td("about wide", w.about || "", w.about || ""),
+          td("online", online, `${w.online} of its ${w.members} members here now`), td("cnt", full, `${w.members} members; it takes ${worldSize()}`), td("acc wide", acc), td("owner wide", w.owner || ""));
+        tr.addEventListener("click", () => { S.sel[S.view] = k; S.making = false; drawList(); drawDetail(); });
+        tr.addEventListener("dblclick", () => { S.sel[S.view] = k; joinWorld(w); });
+        rows.push(tr);
+      }
+      if (!list.length) {
+        const c = el("td", "empty", S.view === "mine" ? (S.me ? "You are in no world yet: pick one in Worlds, or make one (New world). Your room is on the map of every world you are in." : "Link your room to have worlds of your own.")
+          : F.q || F.access || F.hideFull ? "No world matches." : "No worlds in this lobby yet." + (S.me ? " Make the first: New world." : ""));
+        c.colSpan = 7; const tr = el("tr"); tr.append(c); rows.push(tr);
+      }
+    } else {
+      head([["", "flag"], ["Name", "name"], ["About", "about wide"], ["In their room", "cnt num"], ["Sim", "owner wide"], ["Worlds with you", "owner"]]);
+      const list = users(), sel = S.sel.users;
+      for (const o of list) {
+        const tr = el("tr", "row" + (o.id === sel ? " sel" : "") + (S.me && o.id === S.me.id ? " mine" : ""));
+        const name = el("span"); name.append(el("span", "dot" + (o.status === "busy" ? " busy" : "")), document.createTextNode(o.name)); name.style.color = colorOf(o.key || o.name);
+        const about = el("span", "", (o.about && o.about.text) || "");
+        for (const t of (o.about && o.about.tags) || []) about.append(el("span", "tag", "#" + t));
+        const shared = o.key ? [...S.groups.values()].filter(g => g.members.some(m => m.key === o.key)).map(g => g.name) : [];
+        tr.append(td("flag", S.me && o.id === S.me.id ? "★" : ""), td("name", name, o.name), td("about wide", about), td("cnt num", `${o.visitors}/${o.max_visitors}`),
+          td("owner wide", (o.sim && o.sim.name) || ""), td("owner", S.me && o.id === S.me.id ? "(you)" : shared.join(", ")));
+        tr.addEventListener("click", () => { S.sel.users = o.id; drawList(); drawDetail(); });
+        rows.push(tr);
+      }
+      if (!list.length) { const c = el("td", "empty", S.me ? "Nobody here matches." : "Nobody here has written a line yet. Linked, you see everyone."); c.colSpan = 6; const tr = el("tr"); tr.append(c); rows.push(tr); }
+    }
+    body.replaceChildren(...rows);
+  }
+  function joinWorld(w) {
+    if (!S.me) return note("Link your room to join worlds (the card beside).", true);
+    if (w.mine) return chatTo("g:" + w.name.toLowerCase());
+    if (w.open) { send({ type: "group_join", group: w.name }); setTimeout(() => send({ type: "groups" }), 400); }
+    else if (w.locked) { S.joining = w.name.toLowerCase(); drawDetail(); }
   }
   function inline(placeholder, label, go, type) {
     const f = el("form", "inline"), i = el("input");
@@ -355,87 +474,107 @@ footer { color: #6f84a3; font-size: 11px; text-align: center; font-weight: 500; 
     setTimeout(() => i.focus(), 0);
     return f;
   }
-  function worldItem(g) {
-    const w = S.me && S.groups.get(g.name.toLowerCase()), d = el("div", "item"), top = el("div", "top");
-    const locked = w ? w.locked : g.locked, open = w ? w.open : g.open;
-    top.append(el("span", "name", "⚑ " + g.name), el("span", "badge " + (open ? "" : locked ? "lock" : "shut"), open ? "public" : locked ? "🔒 password" : "closed"));
-    const online = w ? w.members.filter(m => S.offices.some(o => o.key === m.key)).length : g.online;
-    const size = w ? w.members.length : g.members;
-    top.append(el("span", "meta", `${online}/${size} here`));
-    d.append(top);
-    if (g.about) d.append(el("div", "about", g.about));
-    const k = g.name.toLowerCase();
-    if (w) {
-      const runs = S.admin || w.owner === myKey();
+  // The row picked, below the list: what it is, and what can be done.
+  function drawDetail() {
+    const d = $("detail");
+    if (d.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;   // never under a typing hand
+    d.replaceChildren(...(S.making ? newWorld() : S.view === "users" ? userDetail() : worldDetail()));
+  }
+  function newWorld() {
+    const f = el("form", "form"), n = el("input"), a = el("input"), pw = el("input");
+    n.placeholder = "its name"; n.maxLength = 24; a.placeholder = "what it is, in a line"; a.maxLength = 200; pw.placeholder = "a password (none: public)"; pw.maxLength = 64; pw.autocomplete = "new-password";
+    const row = el("div", "acts"); row.append(btn("Make it", "", () => f.requestSubmit()), btn("Never mind", "dim", () => { S.making = false; drawDetail(); }),
+      el("span", "hint", "You own it. Public: anyone joins. With a password: those you give it to. Its members' rooms sit round each other's."));
+    f.append(n, a, pw, row);
+    f.addEventListener("submit", e => {
+      e.preventDefault(); if (!n.value.trim()) return;
+      if (f.contains(document.activeElement)) document.activeElement.blur();
+      send(Object.assign({ type: "group_create", group: n.value.trim(), about: a.value.trim() }, pw.value ? { password: pw.value } : { open: true }));
+      S.sel.mine = S.sel.worlds = n.value.trim().toLowerCase(); S.making = false; drawDetail();
+    });
+    setTimeout(() => n.focus(), 0);
+    const h = el("h2", "", "A new world");
+    return [h, f];
+  }
+  function worldDetail() {
+    const k = S.sel[S.view], w = worldsAll().find(x => x.name.toLowerCase() === k);
+    if (!w) return [el("p", "hint", S.view === "mine" ? "Pick one of your worlds: its members, its chat, and (yours to run) its password and who is in it." : "Pick a world: who runs it, how many are in it, and Join. Double-click joins.")];
+    const g = S.groups.get(k), out = [];
+    const h = el("h2", "", "⚑ " + w.name);
+    h.append(el("span", "badge " + (w.open ? "" : w.locked ? "lock" : "shut"), w.open ? "public" : w.locked ? "🔒 password" : "closed"));
+    if (g && g.owner === myKey()) h.append(el("span", "badge you", "yours to run"));
+    else if (g) h.append(el("span", "badge kin", "you are in it"));
+    out.push(h);
+    if (w.about) out.push(el("p", "line", w.about));
+    out.push(el("div", "meta", `${w.online} here now of its ${w.members} members (it takes ${worldSize()})${w.owner ? ` · run by ${w.owner}` : ""}`));
+    if (!S.me) { out.push(el("p", "hint", "Link your room (the card beside) to join it.")); return out; }
+    if (g) {
+      out.push(el("p", "note", "Your room is on its map: its members see your plot while your door is open, and you theirs."));
+      const runs = S.admin || g.owner === myKey();
       const ms = el("div", "members");
-      for (const m of w.members) {
-        const here = S.offices.some(o => o.key === m.key), s = el("span", "m" + (here ? " on" : ""), (here ? "● " : "○ ") + (m.key === myKey() ? "you" : m.name) + (m.key === w.owner ? " ♛" : ""));
-        if (runs && m.key !== w.owner) s.append(
+      for (const m of g.members) {
+        const on = here(m.key), s = el("span", "m" + (on ? " on" : ""), (on ? "● " : "○ ") + (m.key === myKey() ? "you" : m.name) + (m.key === g.owner ? " ♛" : ""));
+        if (runs && m.key !== g.owner) s.append(
           mini("✕", () => send({ type: "group_remove", group: g.name, key: m.key }), `out of ${g.name} (they may join again)`),
           mini("⛔", () => { if (confirm(`Take ${m.name} out of ${g.name}, and keep them out?`)) send({ type: "group_remove", group: g.name, key: m.key, ban: true }); }, `out of ${g.name}, and kept out`),
-          mini("♛", () => { if (confirm(`Hand ${g.name} to ${m.name}? They own it then, not you.`)) send({ type: "group_owner", group: g.name, key: m.key }); }, `hand ${g.name} to them`));
+          mini("♛", () => { if (confirm(`Hand ${g.name} to ${m.name}? They run it then, not you.`)) send({ type: "group_owner", group: g.name, key: m.key }); }, `hand ${g.name} to them`));
         ms.append(s);
       }
-      d.append(ms);
-      if (runs && (w.bans || []).length) {
+      out.push(ms);
+      if (runs && (g.bans || []).length) {
         const b = el("div", "members", "kept out: ");
-        for (const key of w.bans) { const s = el("span", "m", nameByKey(key) || key.slice(0, 8)); s.append(mini("↺", () => send({ type: "group_unban", group: g.name, key }), "let them join again")); b.append(s); }
-        d.append(b);
+        for (const key of g.bans) { const s = el("span", "m", nameByKey(key) || key.slice(0, 8)); s.append(mini("↺", () => send({ type: "group_unban", group: g.name, key }), "let them join again")); b.append(s); }
+        out.push(b);
       }
       const acts = el("div", "acts");
-      acts.append(btn("Chat", "blue", () => { S.tab = "g:" + k; S.unread.delete(S.tab); drawTabs(); drawLog(); $("text").focus(); }));
+      acts.append(btn("Chat", "blue", () => chatTo("g:" + k)));
       if (runs) {
-        acts.append(btn(locked ? "🔒 Password" : "🔒 Lock", "dim", () => { S.locking = S.locking === k ? null : k; drawWorlds(); }, locked ? "a new password: its members stay" : "only those with its password join"));
-        if (!open) acts.append(btn("Make public", "dim", () => { if (confirm(`Make ${g.name} public? Anyone joins then, no password.`)) send({ type: "group_set", group: g.name, open: true }); }));
+        acts.append(btn(g.locked ? "🔒 New password" : "🔒 Give it a password", "dim", () => { S.locking = S.locking === k ? null : k; drawDetail(); }, g.locked ? "its members stay" : "only those with it join"));
+        if (!g.open) acts.append(btn("Make public", "dim", () => { if (confirm(`Make ${g.name} public? Anyone joins then, no password.`)) send({ type: "group_set", group: g.name, open: true }); }));
       }
       acts.append(btn("Leave", "dim", () => send({ type: "group_leave", group: g.name })));
       if (runs) acts.append(btn("End it", "dim", () => { if (confirm(`End ${g.name} for everyone in it?`)) send({ type: "group_delete", group: g.name }); }));
-      d.append(acts);
-      if (runs && S.locking === k) d.append(inline(locked ? "a new password" : "its password", "Set", pw => { send({ type: "group_set", group: g.name, password: pw }); S.locking = null; drawWorlds(); }, "new"));
-    } else if (S.me) {
-      const acts = el("div", "acts");
-      if (open) acts.append(btn("Join", "", () => { send({ type: "group_join", group: g.name }); setTimeout(() => send({ type: "groups" }), 400); }, "public: you are in at once"));
-      else if (locked) acts.append(btn("Join…", S.joining === k ? "" : "dim", () => { S.joining = S.joining === k ? null : k; drawWorlds(); }, "it takes its password: its members have it"));
-      else acts.append(el("span", "hint", "closed: its owner has not opened it"));
-      d.append(acts);
-      if (S.joining === k) d.append(inline(g.name + "'s password", "Join", pw => { send({ type: "group_join", group: g.name, password: pw }); S.joining = null; drawWorlds(); setTimeout(() => send({ type: "groups" }), 800); }));
+      out.push(acts);
+      if (runs && S.locking === k) out.push(inline(g.locked ? "a new password" : "its password", "Set", pw => { send({ type: "group_set", group: g.name, password: pw }); S.locking = null; drawDetail(); }, "new"));
+      return out;
     }
-    return d;
+    const acts = el("div", "acts");
+    if (w.open) acts.append(btn("Join", "", () => joinWorld(w), "public: you are in at once"), el("span", "hint", "Your room goes on its map, and its members' rooms on yours."));
+    else if (w.locked) acts.append(btn("Join…", S.joining === k ? "" : "dim", () => { S.joining = S.joining === k ? null : k; drawDetail(); }, "its members have its password"), el("span", "hint", "It takes a password: ask one of its members."));
+    else acts.append(el("span", "hint", "Closed: its owner has not opened it."));
+    out.push(acts);
+    if (w.locked && S.joining === k) out.push(inline(w.name + "'s password", "Join", pw => { send({ type: "group_join", group: w.name, password: pw }); S.joining = null; drawDetail(); setTimeout(() => send({ type: "groups" }), 800); }));
+    return out;
   }
-  function drawWorlds() {
-    const pane = $("worlds"), kids = [];
-    kids.push(el("p", "hint", "Worlds: their members' rooms sit round each other's, as neighbours on a map, and each has a chat. Public: anyone joins. 🔒: its members have the password."));
-    if (S.me) {
-      if (S.making) {
-        const f = el("form", "form"), n = el("input"), a = el("input"), pw = el("input");
-        n.placeholder = "its name"; n.maxLength = 24; a.placeholder = "what it is"; a.maxLength = 200; pw.placeholder = "a password (none: public)"; pw.maxLength = 64; pw.autocomplete = "new-password";
-        const row = el("div", "acts"); row.append(btn("Make it", "", () => f.requestSubmit()), btn("Never mind", "dim", () => { S.making = false; drawWorlds(); }));
-        f.append(n, a, pw, row);
-        f.addEventListener("submit", e => {
-          e.preventDefault(); if (!n.value.trim()) return;
-          if (f.contains(document.activeElement)) document.activeElement.blur();
-          send(Object.assign({ type: "group_create", group: n.value.trim(), about: a.value.trim() }, pw.value ? { password: pw.value } : { open: true }));
-          S.making = false; drawWorlds();
-        });
-        kids.push(f);
-        setTimeout(() => n.focus(), 0);
-      } else {
-        const acts = el("div", "acts"); acts.style.margin = "0 0 10px";
-        acts.append(btn("New world", "", () => { S.making = true; drawWorlds(); }), btn("Refresh", "dim", () => send({ type: "groups" })));
-        kids.push(acts);
-      }
-      const yours = [...S.groups.values()];
-      if (yours.length) kids.push(el("p", "hint", "Yours"), ...yours.map(worldItem));
-      const others = S.list.filter(g => !S.groups.has(g.name.toLowerCase()));
-      kids.push(el("p", "hint", yours.length ? "Others" : "In this lobby"), ...(others.length ? others.map(worldItem) : [el("p", "empty", "No other worlds yet.")]));
-    } else {
-      const list = (S.pub && S.pub.worlds) || [];
-      kids.push(...(list.length ? list.map(worldItem) : [el("p", "empty", "No worlds yet.")]));
-    }
-    if (pane.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;   // never under a typing hand
-    pane.replaceChildren(...kids);
+  function userDetail() {
+    const o = users().find(x => x.id === S.sel.users);
+    if (!o) return [el("p", "hint", S.me ? "Pick someone: knock to walk into their room, link to see it in your room's corner, or whisper." : "Who is here, with a line about them. Linked, you see everyone.")];
+    const h = el("h2", "", o.name); h.style.color = colorOf(o.key || o.name);
+    if (S.me && o.id === S.me.id) h.append(el("span", "badge you", "you"));
+    const out = [h];
+    if (o.about && o.about.text) { const a = el("p", "line", o.about.text); for (const t of o.about.tags || []) a.append(el("span", "tag", "#" + t)); out.push(a); }
+    const shared = o.key ? [...S.groups.values()].filter(g => g.members.some(m => m.key === o.key)).map(g => g.name) : [];
+    out.push(el("div", "meta", `${o.status || "available"} · ${o.visitors}/${o.max_visitors} in their room${(o.sim && o.sim.name) ? ` · ${o.sim.name}` : ""}${shared.length && !(S.me && o.id === S.me.id) ? ` · in ${shared.join(", ")} with you` : ""}`));
+    if (!S.me || o.id === S.me.id) return out;
+    const acts = el("div", "acts"), why = !o.ready ? "not ready" : o.status !== "available" ? o.status : "";
+    const go = (link, label, cls, title) => { const b = btn(label, cls, () => send({ type: "knock", to: o.id, link }), title); if (why) { b.disabled = true; b.title = why; } return b; };
+    acts.append(go(false, "Knock", "", "they are asked; let in, you walk into their room, in your room's page"));
+    if (o.links) acts.append(go(true, "Link", "blue", "see their room in your room's corner, once they say yes"));
+    acts.append(btn("Whisper", "dim", () => { S.lastWhisper = { id: o.id, name: o.name, key: o.key }; chatTo("whispers"); }));
+    out.push(acts, el("p", "hint", "The visit opens in your room's page, not here."));
+    return out;
   }
-  function drawSide() { drawUsers(); drawWorlds(); }
+  function drawSide() { drawList(); drawDetail(); }
+  document.querySelectorAll("#btabs button").forEach(b => b.addEventListener("click", () => { S.view = b.dataset.v; S.making = false; drawSide(); if (S.view !== "users" && S.me) send({ type: "groups" }); }));
+  $("filter").addEventListener("input", e => { F.q = e.target.value; drawList(); });
+  $("access").addEventListener("change", e => { F.access = e.target.value; drawList(); });
+  $("sort").addEventListener("change", e => { F.sort = e.target.value; drawList(); });
+  $("hidefull").addEventListener("change", e => { F.hideFull = e.target.checked; drawList(); });
+  $("newworld").addEventListener("click", () => { S.making = !S.making; drawDetail(); });
+  $("refresh").addEventListener("click", () => { if (S.me) send({ type: "groups" }); else pub(); });
+  { const v = new URLSearchParams(location.search).get("side"), to = { rooms: "users", people: "users", groups: "worlds", users: "users", worlds: "worlds", mine: "mine" }[v];
+    if (to) S.view = to; }   // ?side=users: a link to that list
+  setInterval(() => { if (S.me && document.visibilityState === "visible" && S.view !== "users") send({ type: "groups" }); }, 15000);   // the list, kept fresh
   function drawTop(title, motd, count) {
     $("title").textContent = title || "Basedverse"; document.title = (title || "Lobby") + " · Basedverse";
     $("motd").textContent = motd || "";
@@ -444,6 +583,7 @@ footer { color: #6f84a3; font-size: 11px; text-align: center; font-weight: 500; 
   // The card in place of the chat, unlinked: why, and its code (or why there is none).
   function linkCard(why, code, pics, again) {
     $("linkwhy").textContent = why;
+    $("confirming").hidden = true;
     $("pairing").hidden = !code;
     if (code) { $("code").textContent = code.slice(0, 4) + "-" + code.slice(4); $("pics").textContent = pics || ""; }
     $("again").hidden = !again;
@@ -452,14 +592,14 @@ footer { color: #6f84a3; font-size: 11px; text-align: center; font-weight: 500; 
   // ---------- connecting: this browser's key proved; linked, or a code to link it ----------
   let retry = null;
   const later = (ms, pass) => { clearTimeout(retry); retry = setTimeout(() => connect(pass), ms); };
-  async function connect(pass, sw) {
+  async function connect(pass, sw, verify) {
     clearTimeout(retry);
     let k;
     try { k = await browserKey(); }
     catch (e) { linkCard("This browser cannot keep a key of its own (Ed25519, in its Web Crypto), so it cannot be linked: a recent Chrome, Firefox or Safari can.", null, null, false); return; }
     if (S.ws) { const old = S.ws; S.ws = null; old.close(); }
     const ws = S.ws = new WebSocket(lobbyUrl);
-    ws.onopen = () => ws.send(JSON.stringify(Object.assign({ type: "hello", proto: P4, browser: k.pub }, pass ? { pass } : {}, sw ? { switch: true } : {})));
+    ws.onopen = () => ws.send(JSON.stringify(Object.assign({ type: "hello", proto: P4, browser: k.pub }, pass ? { pass } : {}, sw ? { switch: true } : {}, verify ? { verify } : {})));
     ws.onmessage = async e => {
       let m; try { m = JSON.parse(e.data); } catch (x) { return; }
       if (m.type === "challenge") { ws.send(JSON.stringify({ type: "prove", signature: await sign(`${P4} browser\n${host}\n${m.nonce}\n${k.pub}`) })); return; }
@@ -483,6 +623,10 @@ footer { color: #6f84a3; font-size: 11px; text-align: center; font-weight: 500; 
         return yes ? connect(pass, true) : connect();
       }
       if (e.code === 4401 && pass) return later(500);   // that link was spent, or old: as this browser alone
+      if (e.code === 4401 && verify) {   // a room's QR code, opened in a browser not the one waiting for it
+        linkCard(S.confirmWhy || "That QR code is for the browser waiting with a code: scan it with that device's camera, or type its digits there.", null, null, false);
+        return later(4000);
+      }
       if (e.code === 4429) { linkCard("Your workroom has as many browsers in the lobby as it may: close one.", null, null, true); return; }
       S.retries++;
       if (S.retries < 30) later(Math.min(20000, 1000 * S.retries));
@@ -490,14 +634,28 @@ footer { color: #6f84a3; font-size: 11px; text-align: center; font-weight: 500; 
     };
   }
   $("newcode").addEventListener("click", () => { S.retries = 0; connect(); });
+  // 3.2: the room's confirmation, typed (a device with no camera, or none to hand).
+  $("confform").addEventListener("submit", e => {
+    e.preventDefault();
+    const d = $("confdigits").value.replace(/\D/g, "");
+    if (d.length !== 6) { $("confnote").textContent = "six digits, as your room shows them"; $("confnote").className = "small bad"; return; }
+    send({ type: "browser_verify", confirm: d });
+  });
   function on(m) {
     switch (m.type) {
       case "browser_code":
         S.code = m.code; S.retries = 0;
         linkCard("This browser is not linked to a workroom yet.", m.code, m.pictures, false);
         break;
+      case "browser_confirming":   // 3.2: a room typed our code; we show its confirmation (its QR code scanned here, or typed)
+        $("pairing").hidden = true; $("again").hidden = true; $("confirming").hidden = false;
+        $("confwho").textContent = m.office || "Your workroom";
+        $("confnote").textContent = `it lasts ${Math.round((m.expires_in || 300) / 60)} minutes`; $("confnote").className = "small";
+        $("linkwhy").textContent = "Your room has this browser's code.";
+        $("confdigits").value = ""; $("confdigits").focus();
+        break;
       case "web_welcome":
-        S.me = { id: m.id, name: m.name, key: m.key }; S.admin = m.admin === true; S.retries = 0; S.code = null;
+        S.me = { id: m.id, name: m.name, key: m.key }; S.admin = m.admin === true; S.retries = 0; S.code = null; S.limits = m.limits || null;
         kept("lobby:name", m.name);
         $("join").hidden = true; $("log").hidden = false; $("say").hidden = false;
         $("as").replaceChildren(document.createTextNode("as "), el("span", "as", m.name));
@@ -508,7 +666,7 @@ footer { color: #6f84a3; font-size: 11px; text-align: center; font-weight: 500; 
         drawTop(m.title, m.motd, "…");
         if (!S.lines.some(l => l.kind === "note" && l.welcome)) add({ kind: "note", welcome: true, text: `In ${m.title || "the lobby"} as ${m.name}${m.motd ? `: ${m.motd}` : ""}` });
         send({ type: "groups" });
-        drawTabs(); drawLog();
+        drawTabs(); drawLog(); drawSide();
         break;
       case "lobby": S.offices = m.offices || []; $("count").textContent = String(S.offices.length); drawSide(); break;
       case "lobby_chat": add({ kind: "lobby", name: m.from.name, key: m.from.key, text: m.text, mine: S.me && m.from.id === S.me.id }); break;
@@ -524,13 +682,15 @@ footer { color: #6f84a3; font-size: 11px; text-align: center; font-weight: 500; 
         if (S.tab === "g:" + String(m.group).toLowerCase()) S.tab = "lobby";
         note(m.reason === "removed" ? `Taken out of ${m.group}` : m.reason === "banned" ? `Taken out of ${m.group}, and kept out` : m.reason === "deleted" ? `${m.group} has ended` : `You left ${m.group}`);
         drawTabs(); drawLog(); drawSide(); send({ type: "groups" }); break;
-      case "groups": S.list = m.groups || []; S.listed = true; drawWorlds(); break;
+      case "groups": S.list = m.groups || []; S.listed = true; drawSide(); break;
       case "knock": note(`${m.from.name} ${m.link ? "wants to link" : m.watch ? "" : "is knocking"}${m.message ? `: “${m.message}”` : ""}: answer in your room`); break;
       case "knock_sent": if (!m.watch) note(`Knocking on ${nameOf(m.to) || "them"}…`); break;
       case "answered": if (!m.watch) note(m.accept ? `${m.link ? "Linked" : "In"}: your room's page has it` : `Not let in${m.reason && m.reason !== "declined" ? ` (${m.reason})` : ""}`, !m.accept); break;
       case "error":
         if (S.me) note(m.message || m.code, true);
         else if (m.code === "linked_elsewhere") S.elsewhere = m.message;
+        else if (m.code === "bad_confirm" && !$("confirming").hidden) { $("confnote").textContent = m.message; $("confnote").className = "small bad"; }
+        else if (m.code === "no_confirm" || m.code === "bad_confirm") S.confirmWhy = m.message;
         else if (m.code !== "not_in_lobby") linkCard(m.message || m.code, null, null, true);
         break;
     }
@@ -557,9 +717,10 @@ footer { color: #6f84a3; font-size: 11px; text-align: center; font-weight: 500; 
   // A pass in the address (#pass=key.expires.nonce.signature), from your room: it links this browser, once; then gone
   // from the address (and history). Without one: this browser's key alone (linked already, or a code to link it).
   const hash = /^#pass=([0-9a-f]{64})\.(\d{1,12})\.([0-9a-f]{32})\.([0-9a-f]{128})$/.exec(location.hash);
+  const verify = /^#verify=(\d{6})$/.exec(location.hash);   // 3.2: a room's QR code, scanned by this device's camera
   if (location.hash) history.replaceState(null, "", location.pathname + location.search);
   readOnly();
-  connect(hash ? { key: hash[1], expires: Number(hash[2]), nonce: hash[3], signature: hash[4] } : null);
+  connect(hash ? { key: hash[1], expires: Number(hash[2]), nonce: hash[3], signature: hash[4] } : null, false, verify ? verify[1] : null);
 })();
 
 // ---------- the world behind it ----------

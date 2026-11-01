@@ -10,6 +10,28 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v3.2.0 — 2026-11-01 — the lobby's page as a world browser; linking a browser by its code, confirmed both ways
+
+- **A code typed in your room no longer links the browser by itself** ([visit/SPEC.md](visit/SPEC.md) 6.11, 3,
+  point 15). After **Link it**, your room shows a QR code and 6 digits for that browser alone (5 minutes): scan the
+  QR code with that device's camera (it opens the lobby's page in the same browser, which finishes the link), or type
+  the digits on its page. So linking proves both ways: your room saw the browser's code, and the browser saw your
+  room's screen. Someone who talks you into typing their code gets nothing without your screen. Five wrong tries call
+  it off. 🌐 Lobby and 📱 Phone are as they were (the room's own link, opened where you are).
+- **The lobby's page, a world browser** (SPEC 6.9): the whole width of the screen, the worlds its focus, as a game's
+  server list: filter by name, public or 🔒, hide full; sort by most here, most members, name; tabs for **Worlds**,
+  **Your worlds** (what your room is on the map of) and **Users**; the row picked shown below (Join, a password,
+  Chat, Leave, the owner's tools; Knock, Link, Whisper), a double-click joins; chat in a narrower column beside it.
+  Each world says its owner.
+- **The lobby** (`lobby` 3.2.0): `browser_allow` answers with `browser_confirm` (the room's) and `browser_confirming`
+  (the browser's); `browser_verify`, and a browser's `hello` with `verify`, confirm it. A 3.1 room's **Link it** no
+  longer links: update it with the lobby. Deploy it (`bin/deploy-lobby`).
+- **Visit**: `v.allowBrowser(code)` is a Promise of the confirmation to show (`v.browserConfirm`: its QR code and
+  digits); the panel shows them until the browser is linked.
+
+**What an integration does:** nothing, with Visit's panel. A room with its own UI: show `allowBrowser`'s confirmation
+(the QR code as an image, the digits) until `"browsers"` has that browser.
+
 ## v3.1.0 — 2026-11-01 — users and worlds: public or with a password; the lobby's page in a browser your workroom linked
 
 - **Users and worlds, nothing else** ([LOBBY.md](LOBBY.md) 2, rule 10; [visit/SPEC.md](visit/SPEC.md) 6.6). A world

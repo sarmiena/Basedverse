@@ -2568,6 +2568,18 @@ impl Core {
             // The rest of what a lobby says, for the page as it is. Only these: a page's own answers (a pass, history,
             // ready...) never come from a lobby, which could make them up (a lobby is anyone's to run).
             "knock_sent" | "answered" | "error" | "groups" | "lobby_bans" | "browser_pending" | "browsers" => self.to_page(m),
+            // 3.2: a browser this office allowed waits to show the room's confirmation. Its QR code: the lobby's page
+            // with it (`#verify=`), for that browser's camera to open in that browser; and its digits, to type there.
+            "browser_confirm" => {
+                let s = |k: &str| m.get(k).and_then(Value::as_str).map(str::to_string);
+                let (Some(code), Some(key), Some(confirm), Some(url)) = (s("code"), s("key"), s("confirm").and_then(|c| lobby_proto::confirm_of(&c)), self.lobby_url.clone()) else {
+                    return debug!("a browser_confirm not as it should be");
+                };
+                let host = lobby_proto::authority(&url);
+                let page = format!("{}://{host}/#verify={confirm}", if url.starts_with("wss://") { "https" } else { "http" });
+                let expires_in = m.get("expires_in").and_then(Value::as_u64).unwrap_or(lobby_proto::CONFIRM_TTL).min(lobby_proto::CONFIRM_TTL);
+                self.to_page(json!({ "type": "browser_confirm", "code": code, "key": key, "confirm": confirm, "url": page, "qr": qr_svg(&page), "expires_in": expires_in }));
+            }
             _ => debug!(t, "a lobby message no page takes: dropped"),
         }
     }
@@ -3320,7 +3332,7 @@ fn page_for(v: &Value) -> PageRole {
         | "voice_near" | "room_voice" | "voice_members" | "user" | "banned" | "seen" | "layout" | "landscape"
         | "plot_forgotten" | "knock" | "knock_sent" | "knock_cancelled" | "answered" | "link_stats" | "scene"
         | "scene_lost" | "host_paused" | "host_resumed" | "enter_refused" | "body" | "call" | "phone" | "lobby_pass" | "browser_pending"
-        | "browsers" => PageRole::User,
+        | "browser_confirm" | "browsers" => PageRole::User,
         _ => PageRole::Both,
     }
 }

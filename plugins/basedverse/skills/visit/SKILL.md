@@ -140,6 +140,7 @@ feature in a workroom's code. If the changelog has something newer than the tabl
 | the lobby in Rust (`basedverse-lobby/4`): in it only while signed in; worlds (members' rooms round each other's, a world's chat `/g`); your line in the lobby's list; basedverse's at `wss://basedverse.app/` | 3.0 | step 7, step 9 | the sign-in on (`AUTH_TOKEN_FILE`); `VISIT_LOBBY`; the panel, or `visit.groups`, `visit.createGroup(`, `visit.joinGroup(`, `visit.say(text, { group`, `visit.setAbout(` |
 | users and worlds: a world public or with a password, its owner's ✕ ⛔ ♛; no door open to anyone (`visit.setPublic` does nothing) | 3.1 | vanilla (the panel) | `visit.createGroup(name, { password`, `visit.joinGroup(name, password`; no `visit.setPublic(` |
 | the lobby's page in a browser your workroom linked (🌐 Lobby, 📱 Phone's QR code, Link a browser's code) | 3.1 | vanilla (the panel) | `visit.openLobby(` from a click, `visit.lobbyQr(`, `visit.linkBrowser(`, or the panel |
+| linking by code confirmed both ways: the room's QR code (or digits) shown back by the browser | 3.2 | vanilla (the panel) | `visit.allowBrowser(` (a Promise of `{ qr, confirm }`: show them), or the panel |
 
 ## List
 

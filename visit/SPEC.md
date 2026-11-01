@@ -148,7 +148,10 @@ program listening on their machine.
     The office links it, at its signed-in user's asking only (the person's page): by a web pass (signed by the
     office's key, for one lobby, good once and for 10 minutes, travelling in a URL's fragment, never sent to a server
     and taken out of the address as the page reads it), or by the pairing code the browser shows, typed in the room
-    (its three pictures shown on both, so a code someone sends you shows theirs, not your screen's). A linked browser
+    (its three pictures shown on both, so a code someone sends you shows theirs, not your screen's) and then (3.2)
+    confirmed by the browser: it shows the room's confirmation (its QR code, scanned by the browser's own device, or
+    its 6 digits typed there). So linking by code proves both ways: the room saw the browser's screen, the browser the
+    room's; a code someone talks you into typing links nothing without your screen. A linked browser
     speaks for the office while the office is in the lobby, until the office unlinks it or it unlinks itself: it
     may talk, whisper, run the office's worlds, list who is here and knock (to walk into another's room: the visit
     happens in the office's own room); never answer a knock, open the door, link another browser or touch a visit:
@@ -399,7 +402,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `door` | `open` (bool) | open the door (guests come in without knocking, and its worlds' members see its plot) or close it (everyone knocks). Kept in the state file. (3.0's `public` is gone: a public world, 6.6) |
 | `about` | `about` {`text` (≤ 200), `tags` (≤ 5, each 1–20 lower-case letters, digits and `-`)} \| null | this office's line in the lobby's list of who is here (6.6), and on its public page; null: none. Kept in the state file, told to the lobby (and in each new `hello`). `about` back |
 | `group_create`, `group_join`, `group_leave`, `group_remove`, `group_unban`, `group_set`, `group_owner`, `group_delete`, `groups` | as 6.2's | worlds (6.6), passed to the lobby (the user's: ../../engine/SPEC.md 3.3); what comes back, as 5.3 has it |
-| `browser_code`, `browser_allow`, `browsers`, `browser_revoke` | as 6.2's | linked browsers (3.1, 6.11), passed to the lobby (the user's); `browser_pending` and `browsers` back |
+| `browser_code`, `browser_allow`, `browsers`, `browser_revoke` | as 6.2's | linked browsers (3.1, 6.11), passed to the lobby (the user's); `browser_pending`, `browser_confirm` (3.2) and `browsers` back |
 | `admin` | as 6.2's | the lobby's operators' (6.7) |
 | `lobby_pass` | `req`, `qr`? (bool) | a web pass for the lobby's page (3.1, 6.11), the person's to ask: `lobby_pass` back with `req`, `url` (the lobby's page, the pass in its fragment), `expires`, and with `qr`, `qr` (that URL as a QR code: an SVG); `offline` when not in the lobby, `no_lobby` without one |
 | `guest_add` | `key`, `name`? (≤ 24) | a guest: an office's key, as the lobby lists it (6.3) or a visit's peer has it (5.3), and the name it is known by; again for a key already there renames it. At most 256 (`too_many_guests`); not this office's own key |
@@ -455,6 +458,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `signed_in` | `signed_in` (bool) | someone signed in on this workroom, or nobody any more (3, point 13): in the lobby only while someone is. `ready` has `signed_in` |
 | `about` | `about` \| null | after `about`. `ready` has `about` |
 | `group` | `name`, `about`, `open`, `locked`, `owner` (a key), `members` [{`key`, `name`, `since`}], `bans`? [keys] (its owner's only) | one of this office's worlds, whole (6.6): after joining the lobby, and as it changes. `ready` has `groups` [the same] |
+| `browser_confirm` | `code`, `key` (the browser's), `confirm` (6 digits), `url` (the lobby's page, `#verify=` them), `qr` (that URL as a QR code: an SVG), `expires_in` (s) | 3.2: after `browser_allow`, what the browser must show to be linked (6.11): show the QR code (as an image) for its camera, and the digits |
 | `group_left` / `groups` / `lobby_bans` / `browser_pending` / `browsers` | as 6.3's | the lobby's, passed on: these, `knock_sent`, `answered`, `error`, and what 5.3 says of the lobby's chat, knocks and visits; nothing else a lobby says reaches a page |
 | `lobby_pass` | `req`, `url`, `expires`, `qr` | the web pass asked for (3.1, 6.11) |
 | `layout` | `layout`: [{`key`, `x`, `z`, `turn`}] | after a change |
@@ -583,7 +587,7 @@ nobody has taken it meanwhile. Who someone is, is their key.
 | type | fields | effect |
 |---|---|---|
 | `hello` | `proto`: `"basedverse-lobby/4"`, `name`, `key`, `sim`?, `status`?, `max_visitors`? (default 3), `resume`?, `about`? (6.6) | join, or resume a dropped session (6.1) |
-| `hello` (a browser, 3.1) | `proto`, `browser` (its own key: Ed25519, 64 hex), `pass`? {`key`, `expires`, `nonce`, `signature`} (a web pass), `switch`? (true: the page's person agreed that the pass moves this browser from the office it is linked to) | a browser, to speak for the office it is linked to (6.11); `challenge` back, as for an office |
+| `hello` (a browser, 3.1) | `proto`, `browser` (its own key: Ed25519, 64 hex), `pass`? {`key`, `expires`, `nonce`, `signature`} (a web pass), `switch`? (true: the page's person agreed that the pass moves this browser from the office it is linked to), `verify`? (3.2: a room's confirmation, 6 digits: a tab its QR code opened) | a browser, to speak for the office it is linked to (6.11); `challenge` back, as for an office |
 | `prove` | `signature` | the challenge signed (6.1) |
 | `link` | `endpoint` (its key), `addr` (an object, ≤ 2 KiB as JSON, passed through untouched: how to reach it); or both null | publish or update how to reach this office; both null: withdraw it (not ready, until published again) |
 | `status` | `status`: `"available"` \| `"busy"` | busy: no knocks to visit or link (watches go on) |
@@ -607,10 +611,11 @@ nobody has taken it meanwhile. Who someone is, is their key.
 | `group_say` | `group`, `text` | a line for everyone in one of this office's worlds, online, the sayer too (`not_found`: in no world of that name). Checked and counted as `chat` is. Nothing is kept |
 | `groups` | — | the lobby's worlds, please (`groups` back) |
 | `browser_code` | `code` (8 letters and digits, any case, a dash or not) | 3.1, the office's own: the browser waiting with this code (`browser_pending` back; `not_found`) |
-| `browser_allow` | `code` | link that browser to this office: it is in, as this office (`browsers` back) |
+| `browser_allow` | `code` | 3.2: a confirmation for that browser to show (`browser_confirm` back; the browser hears `browser_confirming`); once it does, it is linked to this office, and in (`browsers` back) |
 | `browsers` | — | this office's linked browsers, please (`browsers` back) |
 | `browser_revoke` | `key` (a browser's) | unlink it: it is told (`unlinked`) and closed (4403) |
 | `browser_forget` | — | a linked browser's own: unlink this browser (closed 1000, `unlinked`) |
+| `browser_verify` | `confirm` (6 digits; spaces or a dash anywhere) | 3.2, a waiting browser's own: the confirmation its room shows, typed (`bad_confirm`: not one that waits for it) |
 | `admin` | `action` (`"ban"`, `"unban"`, `"bans"`), `key`?, `minutes`? (none: for good), `text`? (why) | the lobby's operators (6.7); anyone else: `not_admin`. `lobby_bans` back |
 | `bye` | — | leave the lobby now: the session ends at once, not held for resuming (a visit-client stopping) |
 
@@ -621,6 +626,7 @@ nobody has taken it meanwhile. Who someone is, is their key.
 | `challenge` | `nonce` (32 hex) | after `hello`: sign it (6.1) |
 | `web_welcome` | `proto`, `id`, `name`, `key` (the office's), `limits`, `admin`?, `title`?, `motd`? | to a linked browser, its key proved (6.11) |
 | `browser_code` | `code` (8), `pictures` (3 emoji), `expires_in` (s) | to a browser not linked: the code its office types in its room (6.11) |
+| `browser_confirming` | `office` (its name), `expires_in` (s) | 3.2, to a waiting browser: that office would link it, once it shows its room's confirmation |
 | `welcome` | `proto`, `id`, `name`, `key`, `relays`: [url], `resume` (32 hex), `resumed` (bool), `visits`: [id], `knocking`: [{`id`, `to`}], `limits` (6.10), `chat`: true, `admin`? (true: this key is one of the lobby's operators), `title`?, `motd`? | after a good `hello` and `prove` |
 | `lobby` | `offices`: [{`id`, `name`, `status`, `sim`, `max_visitors`, `visitors` (count), `visiting` (version 4: always `null`, nobody's whereabouts being everyone's; version 3: the host's office id, or `null`), `ready`, `key`, `watchers` (count), `world`, `links`, `whisper` (true), `about` ({`text`, `tags`} or null)}], you included | on any change |
 | `knock` | `id`, `from` {`id`, `name`, `sim`, `key`}, `message`, `expires_in`, `watch`?, `link`? | someone knocked (to watch, with `watch`; to link, with `link`) |
@@ -634,8 +640,9 @@ nobody has taken it meanwhile. Who someone is, is their key.
 | `group` | `name`, `about`, `open` (public), `locked` (a password), `owner`, `ops` (always `[]`: 3.0's), `members` [{`key`, `name`, `since`}], `bans`? [keys] | one of this office's worlds, whole (6.6): after its welcome, and whenever it changes (its bans to its owner alone) |
 | `group_left` | `group`, `reason` (`"left"`, `"removed"`, `"banned"`, `"deleted"`) | no longer in a world |
 | `group_chat` | `group`, `from` {`id`, `name`, `key`}, `text` | a line said in one of this office's worlds |
-| `groups` | `groups` [{`name`, `about`, `open`, `locked`, `members`, `online`}] | the lobby's worlds, after `groups` (neither `open` nor `locked`: closed, 6.6) |
+| `groups` | `groups` [{`name`, `about`, `open`, `locked`, `members`, `online`, `owner` (3.2: its owner's name)}] | the lobby's worlds, after `groups` (neither `open` nor `locked`: closed, 6.6) |
 | `browser_pending` | `code`, `key` (the browser's), `agent` ("Firefox on Mac"), `pictures` | the browser waiting with the code typed (3.1, 6.11) |
+| `browser_confirm` | `code`, `key`, `confirm` (6 digits), `expires_in` | 3.2, after `browser_allow`: what that browser must show to be linked |
 | `browsers` | `browsers` [{`key`, `agent`, `pictures`, `created`, `used`, `online`}] | this office's linked browsers: on asking, and as one is linked, unlinked, comes or goes |
 | `lobby_bans` | `bans` [{`key`, `until` (seconds since 1970, or null: for good), `reason`}] | to an operator, after `admin` |
 | `error` | `code`, `message`, `ref`? | a refusal (section 11) |
@@ -732,7 +739,11 @@ directly and need the relay only when that fails. At most 4 MiB a second from ea
 and message of the day, how many offices are in it, its worlds (name, line, public or 🔒, size, how many online),
 and the users with a line (name, sim, line, tags, visitors). Never a key, nor where anyone is; read from
 `GET /api/lobby`. In a browser its workroom linked (6.11), it is that workroom's: its chat, who is here, its worlds.
-`?side=worlds` (or `users`) opens on that list. `GET /health` answers `ok <n> online`.
+Laid out as a game's server browser (3.2): the worlds the screen's focus, a list to filter (a name, public or
+password, not full) and sort (most here, most members, name), in tabs (Worlds, Your worlds, Users); the row picked
+shown below it with what can be done (Join, a password, Chat, Leave, its owner's tools; Knock, Link, Whisper); a row
+double-clicked joins; chat in a column beside it. Each world in the list says its owner's name (`groups`' `owner`).
+`?side=worlds` (or `mine`, `users`) opens on that list. `GET /health` answers `ok <n> online`.
 
 **One connection's share** (3.0.0). A connection may send 20 messages a second, in bursts of 60 (a visit-client
 sends a few a minute); more, and it is closed (`rate_limited`; its session held, as for any drop). One that cannot
@@ -766,8 +777,15 @@ own to come back by.
   and three pictures (from its key), for 10 minutes (then `code_expired`, closed 4408: a new one on asking); at most 4
   browsers wait with codes from one address (an IPv6 one: its /64), 5000 in all (`busy`, 1013). Typed in
   the room (the panel's Link a browser: `browser_code`), the lobby says which browser waits with it
-  (`browser_pending`: what it is, its pictures, the same as on its screen); allowed (`browser_allow`), it is linked,
-  and in at once.
+  (`browser_pending`: what it is, its pictures, the same as on its screen). Allowed (`browser_allow`), it is not
+  linked yet (3.2): the room gets a **confirmation** (`browser_confirm`: 6 digits, good 5 minutes, that browser's
+  alone) and shows it as a QR code of the lobby's page with it (`https://<lobby>/#verify=<digits>`) and as digits; the
+  browser hears who would link it (`browser_confirming`). It shows the confirmation one of two ways: its device's
+  camera scans the QR code, which opens the lobby's page in it (the same browser: the same key), and that tab says
+  `hello` with `verify`; or the digits are typed on its page (`browser_verify`). Then it is linked, and in (the
+  waiting tab and the QR code's both). Another browser's tab with them is refused (`no_confirm`, 4401); a wrong one
+  is counted (`bad_confirm`), and at 5 every confirmation of that browser is off (its rooms ask again). A browser has
+  at most 3 rooms' confirmations waiting (a code is anyone's who sees it: the confirmation decides).
 - **What the browser does** is the office's: `chat`, `whisper`, `group_say`, every `group_*`, `groups`, `about`,
   `admin` (an operator's), and `knock` (to visit or link: the office knocks, and its visit-client takes the visit,
   in its room, as for any knock); and `browser_forget`. Nothing else (`not_from_web`): never `answer`, `door`,
@@ -1532,7 +1550,9 @@ v.lobbyBan(key, { minutes, reason }); v.lobbyUnban(key); v.lobbyBansList()   // 
 v.lobbyPass()      // a Promise of the lobby's page's URL with a web pass; v.openLobby() opens it in a tab (call it from a
                    //   click), as the panel's 🌐 Lobby does; v.lobbyQr(): { url, qr (an SVG), expires }, for a phone (📱)
 v.linkBrowser(code)     // a Promise of the browser waiting with the code it shows: { code, key, agent, pictures }
-v.allowBrowser(code); v.listBrowsers(); v.unlinkBrowser(key)   // link it; v.browsers, asked; one unlinked
+v.allowBrowser(code)    // 3.2: a Promise of the confirmation it must show ({ code, key, confirm, url, qr, until }; v.browserConfirm):
+                        //   show the QR code (as an image) and the digits; linked once it does ("browsers" says so)
+v.listBrowsers(); v.unlinkBrowser(key)   // v.browsers, asked; one unlinked
 v.addGuest(key, name); v.removeGuest(key); v.isGuest(key)   // a key from v.offices, or (proved by the link) a visit's
                    //   peer.key; "visit_started" says guest: true for one let in through the open door
 
@@ -1677,7 +1697,7 @@ slowly while its tab is hidden.
 | knock wait | 60 s |
 | watches | 8 watchers of a plot, 8 plots watched; 30 knocks to watch a minute; one declined tried again after 20 s |
 | worlds | 20 a key, 50 members each (the lobby's `--world-size`), a password 4 to 64 characters, 5 passwords tried a minute (6.10) |
-| linked browsers | 10 an office, 4 in the lobby at once; a pass or a code good 10 minutes, once (6.11) |
+| linked browsers | 10 an office, 4 in the lobby at once; a pass or a code good 10 minutes, once; a room's confirmation 5 minutes, 5 wrong tries (6.11) |
 | world | a plot not said: what its scene covers, at most 200 units a side; 4 units between plots in a ring; out of a plot 0.3 units past it; stepping in answered within 3 s |
 | layout, seen | 256 each |
 | chat | a line at most 200 characters; 5 lines every 10 s, from a page and from each visitor, whatever the scope (the lobby counts its own, lobby lines and whispers, too); shown over a head 4 to 12 s, by its length; the chat window keeps 100 lines, and fades 20 s after the last |
@@ -1700,7 +1720,8 @@ the page hosts its scene, 4.2), `no_such_visit` (`end`, `keyframe` or `scene_res
 in), `offline` (an action while the lobby is down), `away` (an action
 while the office is out of the lobby on purpose: `join_lobby` first), `signed_out` (an action while nobody is signed
 in on the workroom), `bad_message`; from worlds (6.6): `already_member`, `password_required`, `wrong_password`, `bad_password`,
-`banned`, `closed`, `full`, `not_owner`, `rate_limited`, `busy`; from linked browsers (6.11): `not_found`, `rate_limited`; from the lobby's
+`banned`, `closed`, `full`, `not_owner`, `rate_limited`, `busy`; from linked browsers (6.11): `not_found`, `rate_limited`,
+`bad_confirm`; from the lobby's
 operators (6.7): `not_admin`, and `banned`. The lobby's own, before a session: `bad_proof` (closed 4401), `banned`
 (closed 4403), `proto_unsupported`, `hello_first`, `hello_timeout`, `too_many_connections`.
 

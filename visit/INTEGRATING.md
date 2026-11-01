@@ -606,8 +606,9 @@ it are online, 🔒 a password); opened, its members and **Leave**, and for its 
 public one) or **Join…** with its password; **New** makes one of your own (a password, or none: public). Your **line
 in the lobby's list** (what you are, a few tags; on the lobby's public page too). And **the lobby in a browser**
 (3.1): **🌐 Lobby** opens the lobby's page in a tab, as your workroom; **📱 Phone** shows a QR code that does the same
-on a phone; **Link a browser** takes the code a browser at the lobby's page shows (its pictures shown to check), and
-lists the browsers linked, each to **Unlink**. A linked browser talks, runs your worlds and knocks as your workroom;
+on a phone; **Link a browser** takes the code a browser at the lobby's page shows (its pictures shown to check),
+then (3.2) shows a QR code and 6 digits that browser must show back (its camera scans the QR code, or its person
+types the digits there) before it is linked; and lists the browsers linked, each to **Unlink**. A linked browser talks, runs your worlds and knocks as your workroom;
 it never answers a knock or opens your door.
 
 Or build your own from the state and actions: `visit.offices`, `visit.knocks`, `visit.visiting`,
@@ -638,7 +639,8 @@ and the events `"group"`, `"group_left"`, `"groups"`, `"browsers"`, `"browser_pe
 - Say plainly what joining a world means: its members see your room through your open door, as guests do, and you
   theirs; a public one is anyone's to join. Never show a world's password once typed.
 - Linking a browser: show the browser waiting (`agent`) and its `pictures`, and ask your user to check they match the
-  ones on the browser's screen before allowing it.
+  ones on the browser's screen before allowing it; then show `allowBrowser`'s confirmation (its QR code as an image,
+  never as markup, and its digits) until `"browsers"` has that browser.
 - Give your user a way to **go offline and back** (`leaveLobby()` / `joinLobby()`), and show when they
   are: `visit.state === "away"`. Away, nobody sees them or can link, and their visits end; they stay away
   until they come back, restarts included (its state file keeps it). Do not stop `visit` for this: it keeps
