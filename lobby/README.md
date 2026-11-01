@@ -63,16 +63,16 @@ LOBBY_URL=wss://lobby.example.org/
 
 Each workroom gives that as its lobby (`VISIT_LOBBY` in its `.env`). Its page is `https://lobby.example.org/`.
 
-**Its settings**, each given as a variable to `bin/deploy-lobby` (or kept in this repository's `.env`), and kept
-on the server once given:
+**Its settings**: none need giving (each has a default below). Any given as a variable to `bin/deploy-lobby` (or
+kept in this repository's `.env`) is kept on the server:
 
 | variable | |
 |---|---|
 | `LOBBY_DOMAIN` | its DNS name (default `basedverse.app`) |
-| `LOBBY_TITLE`, `LOBBY_MOTD` | its name and message of the day: on its page, and said to each workroom as it joins |
+| `LOBBY_TITLE`, `LOBBY_MOTD` | its name and message of the day: on its page, and said to each workroom as it joins (defaults: basedverse, or the domain; a welcome) |
 | `LOBBY_ADMINS` | its operators: keys, comma-separated (a workroom's key: `ready.key`, `v.key`). They ban keys and run every group |
-| `LOBBY_V3` | `1`: let Visit 0.5 to 2.x workrooms in too, a lobby of their own, while they upgrade |
-| `LOBBY_IP` | the server's IPv4, served as well (`wss://<ip>/`, a 6-day certificate Caddy renews), for workrooms that still name the lobby by it |
+| `LOBBY_V3` | `1` (the default, for now): Visit 0.5 to 2.x workrooms meet too, a lobby of their own, while they upgrade; `0`: Visit 3 only |
+| `LOBBY_IP` | the server's IPv4, served as well (`wss://<ip>/`, a 6-day certificate Caddy renews), for workrooms that still name the lobby by it. Default: found by itself; `none`: the name alone |
 
 **Running it**, from your machine (the server is remembered: `LOBBY_DEPLOY` in this repository's `.env`):
 

@@ -5,13 +5,17 @@
 #   bin/deploy-lobby user@server      from your machine: copies the lobby and this directory here, and runs this
 #   sudo LOBBY_DOMAIN=lobby.example.org ./setup.sh /path/to/lobby      on the server itself
 #
-# Its settings, each kept in /etc/basedverse-lobby/env once given (a later run keeps what it is not given again):
+# Nothing needs setting: each has a default. Any given is kept in /etc/basedverse-lobby/env (a later run keeps
+# what it is not given again):
 #   LOBBY_DOMAIN     the lobby's DNS name, pointing at this server (default basedverse.app): its certificate's, the
 #                    name every hello signs, its relay's
-#   LOBBY_TITLE, LOBBY_MOTD, LOBBY_ADMINS (operators' keys, comma-separated), LOBBY_V3 (1: Visit 2.x too): the
-#                    lobby's own (lobby --help)
-#   LOBBY_IP         this server's public IPv4, served as well (a 6-day certificate for it, renewed by Caddy), for
-#                    workrooms that still name the lobby by it (a lobby of before); none: the name alone
+#   LOBBY_IP         this server's public IPv4, served as well (a 6-day certificate, renewed by Caddy), for workrooms
+#                    that still name the lobby by it (a lobby of before). Default: found (the EC2 instance's, else as
+#                    checkip.amazonaws.com sees it); none: the name alone
+#   LOBBY_V3         1 (the default, for now): Visit 0.5 to 2.x workrooms meet too, in a lobby of their own, while
+#                    they upgrade; 0: Visit 3 only
+#   LOBBY_TITLE, LOBBY_MOTD   its name (default: basedverse for basedverse.app, else the domain) and its message of
+#                    the day (default: a welcome); LOBBY_ADMINS, operators' keys (default: none)
 #
 # 1. Stops a lobby of before (Visit 2.x's: Python, Caddy and coturn in Docker), if there is one.
 # 2. Installs the lobby (/usr/local/bin/basedverse-lobby) and Caddy (/usr/local/bin/basedverse-caddy, a pinned
@@ -44,9 +48,18 @@ fi
 pick() { local k="$1" d="${2:-}"; local v="${!k:-}"; [ -n "$v" ] || v="${was[$k]:-}"; [ -n "$v" ] || v="$d"; printf '%s' "$v"; }
 domain="$(pick LOBBY_DOMAIN basedverse.app)"
 [[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die "LOBBY_DOMAIN $domain is not a DNS name"
-title="$(pick LOBBY_TITLE)" motd="$(pick LOBBY_MOTD)" admins="$(pick LOBBY_ADMINS)" v3="$(pick LOBBY_V3 0)" ip="$(pick LOBBY_IP)"
+[ "$domain" = basedverse.app ] && name=basedverse || name="$domain"
+title="$(pick LOBBY_TITLE "$name")" admins="$(pick LOBBY_ADMINS)" v3="$(pick LOBBY_V3 1)" ip="$(pick LOBBY_IP auto)"
+motd="$(pick LOBBY_MOTD "Welcome. Find a world group in your panel (Find), or make one of your own (New): the rooms of its members sit round yours.")"
 for x in "$title" "$motd" "$admins" "$v3"; do case "$x" in *$'\n'*) die "a setting is one line" ;; esac; done
-[ -z "$ip" ] || [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "LOBBY_IP $ip is not an IPv4 address"
+if [ "$ip" = auto ]; then   # this server's public IPv4: the EC2 instance's own word, else what the internet sees
+  tok=$(curl -fsS -m 2 -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 60" 2>/dev/null || true)
+  ip=$(curl -fsS -m 2 -H "X-aws-ec2-metadata-token: $tok" http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)
+  [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || ip=$(curl -fsS -m 5 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)
+  [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { echo "setup: this server's public address could not be found: its name alone" >&2; ip=none; }
+fi
+[ "$ip" = none ] && ip=""
+[ -z "$ip" ] || [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "LOBBY_IP $ip is not an IPv4 address (or none)"
 
 # -- 1. a lobby of before (Docker: the Python lobby, Caddy, coturn): stopped, its files gone
 old="$(dirname "$here")"
@@ -83,7 +96,7 @@ LOBBY_TITLE=$title
 LOBBY_MOTD=$motd
 LOBBY_ADMINS=$admins
 LOBBY_V3=$v3
-LOBBY_IP=$ip
+LOBBY_IP=${ip:-none}
 LOBBY_HOSTS=$domain${ip:+,$ip}
 LOBBY_LISTEN=127.0.0.1
 LOBBY_PORT=8765
