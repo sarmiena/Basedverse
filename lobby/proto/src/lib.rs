@@ -7,7 +7,7 @@ use serde_json::Value;
 
 /// Visit 0.5 to 2.x: a lobby of its own, behind the lobby's `--v3`.
 pub const PROTO3: &str = "basedverse-lobby/3";
-/// Visit 3.0 on: the key proved at hello, world groups, the directory.
+/// Visit 3.0 on: the key proved at hello, worlds (the protocol's groups), the directory; 3.1: linked browsers.
 pub const PROTO4: &str = "basedverse-lobby/4";
 
 /// The limits, sent in `welcome` so a client can keep to them before it sends.
@@ -42,12 +42,18 @@ pub struct Limits {
     /// Version 4: the groups a key may be in (its own among them).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub groups: Option<usize>,
-    /// Version 4: the members a group may have.
+    /// Version 4: the members a world may have (the lobby's `--world-size`).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub group_members: Option<usize>,
-    /// Version 4: the requests to join a group that may wait at once.
+    /// Version 4 before 3.1: requests to join a world waiting at once (worlds take a password now: none).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub group_pending: Option<usize>,
+    /// 3.1: characters in a world's password, at least and at most.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub password: Option<(usize, usize)>,
+    /// 3.1: browsers one office may have linked.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub browsers: Option<usize>,
     /// Version 4: characters in a room's or a group's `about`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub about: Option<usize>,
@@ -64,17 +70,23 @@ impl Limits {
         Limits {
             name: 24, message: 280, frame: 64 * 1024, knocks_per_minute: 6, knock_ttl, max_visitors: 8, max_watchers: 8,
             max_watching: 8, watch_knocks_per_minute: 30, link_addr: 2048, connections_per_ip: 8, resume: 30, chat: 200,
-            chats_per_10s: 5, groups: None, group_members: None, group_pending: None, about: None, tags: None, tag: None,
+            chats_per_10s: 5, groups: None, group_members: None, group_pending: None, password: None, browsers: None, about: None, tags: None,
+            tag: None,
         }
     }
 
-    /// Version 4's: version 3's, and world groups' and the directory's.
+    /// Version 4's: version 3's, and worlds', linked browsers' and the directory's.
     pub fn v4(knock_ttl: u64) -> Limits {
-        Limits { groups: Some(20), group_members: Some(64), group_pending: Some(50), about: Some(200), tags: Some(5), tag: Some(20), ..Limits::v3(knock_ttl) }
+        Limits { groups: Some(20), group_members: Some(WORLD_SIZE), password: Some((4, 64)), browsers: Some(10), about: Some(200), tags: Some(5), tag: Some(20),
+                 ..Limits::v3(knock_ttl) }
     }
 }
 
-/// A name: an office's, or a group's. 1-24 letters, digits, space, `_ . -`, starting and ending with a letter or
+/// The members a world takes, unless its lobby says otherwise (`--world-size`): each member's plot is in every other
+/// member's world, so a world is a neighbourhood, not a crowd.
+pub const WORLD_SIZE: usize = 50;
+
+/// A name: an office's, or a world's. 1-24 letters, digits, space, `_ . -`, starting and ending with a letter or
 /// digit. Two names are the same name whatever their case.
 pub fn name_ok(n: &str) -> bool {
     let b = n.as_bytes();
@@ -130,7 +142,33 @@ pub fn pass_message(host: &str, key: &str, expires: u64, nonce: &str) -> String 
     format!("{PROTO4} pass\n{host}\n{key}\n{expires}\n{nonce}")
 }
 
-/// A web pass, as a browser hands it to the lobby (`hello` with `web`).
+/// What a linked browser's `prove` signs (3.1, ../../../visit/SPEC.md 6.11), with its own key (one it made, kept in
+/// it): the lobby dialled, the lobby's challenge, the browser's key. Not what an office's hello signs (`browser`, not
+/// `hello`), so neither passes for the other.
+pub fn browser_message(host: &str, nonce: &str, key: &str) -> String {
+    format!("{PROTO4} browser\n{host}\n{nonce}\n{key}")
+}
+
+/// A browser's pairing code, as the lobby makes it: 8 of these (no 0, 1, I, O), shown as `ABCD-EFGH`.
+pub const CODE_ALPHABET: &[u8; 32] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+
+/// A pairing code as typed (any case, with or without its dash or spaces), as the lobby keeps it: `ABCDEFGH`.
+pub fn code_of(typed: &str) -> Option<String> {
+    let c: String = typed.chars().filter(|c| !c.is_whitespace() && *c != '-').map(|c| c.to_ascii_uppercase()).collect();
+    (c.len() == 8 && c.bytes().all(|b| CODE_ALPHABET.contains(&b))).then_some(c)
+}
+
+const EMOJI: [&str; 64] = ["🐙", "🌵", "🎈", "🍋", "🚀", "🎸", "🐢", "🌙", "🍄", "🦊", "🐝", "🍉", "🎲", "🔑", "🌻", "🐳", "🍩", "🎧", "🧲", "🦉",
+    "🌈", "🍀", "🐸", "🎯", "🍒", "🦄", "🔥", "🍕", "🐧", "🎁", "🌽", "🐌", "🦋", "🍪", "🎺", "🐠", "🌋", "🍎", "🐞", "🎨", "🦀", "🍓", "🐼", "🎻",
+    "🌲", "🍦", "🐬", "🧀", "🦒", "🍇", "🐯", "🥕", "🦜", "🧩", "🐨", "🍌", "🐘", "🎃", "🦔", "🍔", "🦖", "🍿", "🐷", "🎮"];
+
+/// Three pictures for a browser's key, shown both on the browser waiting to be linked and in the room that links it:
+/// the same three, the same browser (a code someone sent you shows theirs, not your screen's).
+pub fn pictures(key: &str) -> String {
+    (0..3).map(|i| key.get(2 * i..2 * i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()).map_or("?", |b| EMOJI[(b % 64) as usize])).collect()
+}
+
+/// A web pass, as a browser hands it to the lobby (`hello` with `browser` and `pass`): it links that browser.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct WebPass {
     pub key: String,
@@ -140,7 +178,7 @@ pub struct WebPass {
     pub signature: String,
 }
 
-/// How long a web pass is good for, at most, in seconds.
+/// How long a web pass is good for, at most, in seconds; and a pairing code.
 pub const PASS_TTL: u64 = 600;
 
 /// A flag that is true only when it is `true` (anything else, or none, is false), as the lobby has always read them.
@@ -194,11 +232,9 @@ pub enum ToLobby {
         chat: bool,
         #[serde(default, skip_serializing_if = "is_false", deserialize_with = "truthy")]
         whisper: bool,
-        /// Version 4: the directory's line about the room, and its door open to anyone.
+        /// Version 4: the room's line, in the lobby's list of who is here.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         about: Option<About>,
-        #[serde(default, skip_serializing_if = "is_false", deserialize_with = "truthy")]
-        public: bool,
     },
     /// Version 4: the challenge signed (`proof_message`), 128 hex characters.
     Prove { signature: String },
@@ -237,33 +273,59 @@ pub enum ToLobby {
         text: Option<String>,
     },
     Bye,
-    /// Version 4: the directory.
+    /// Version 4: the room's line in the list of who is here.
     About { about: Option<About> },
+    /// 3.0's door open to anyone: taken, and nothing done (3.1 has public worlds instead).
     Door { public: Option<bool> },
-    /// Version 4: world groups.
+    /// Version 4: worlds (the protocol calls them groups). Public (`open`: anyone joins) or with a password; neither is
+    /// refused.
     GroupCreate {
         group: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         about: Option<String>,
         #[serde(default, skip_serializing_if = "is_false", deserialize_with = "truthy")]
         open: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
     },
-    GroupJoin { group: Option<String> },
+    GroupJoin {
+        group: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
+    },
     GroupLeave { group: Option<String> },
-    GroupAnswer { group: Option<String>, key: Option<String>, accept: Option<bool> },
-    GroupRemove { group: Option<String>, key: Option<String> },
+    /// Its owner's: a member out (and, `ban`, kept out: the key need not be a member).
+    GroupRemove {
+        group: Option<String>,
+        key: Option<String>,
+        #[serde(default, skip_serializing_if = "is_false", deserialize_with = "truthy")]
+        ban: bool,
+    },
+    GroupUnban { group: Option<String>, key: Option<String> },
+    /// Its owner's: its line; public (`open: true`), or a password (a new one: members stay).
     GroupSet {
         group: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         about: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         open: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
     },
-    GroupOp { group: Option<String>, key: Option<String>, op: Option<bool> },
+    /// Its owner's: handed to another member.
+    GroupOwner { group: Option<String>, key: Option<String> },
     GroupDelete { group: Option<String> },
     GroupSay { group: Option<String>, text: Option<String> },
-    /// The groups' directory (`groups` answers).
+    /// The worlds' directory (`groups` answers).
     Groups,
+    /// 3.1, an office's own (never a browser's): the browser waiting with this pairing code (`browser_pending`
+    /// answers); link it; its linked browsers (`browsers` answers); one unlinked.
+    BrowserCode { code: Option<String> },
+    BrowserAllow { code: Option<String> },
+    Browsers,
+    BrowserRevoke { key: Option<String> },
+    /// 3.1, a linked browser's: unlink this browser.
+    BrowserForget,
     /// Version 4, the lobby's own operators: ban or unban a key, the message of the day, the bans.
     Admin {
         action: Option<String>,
@@ -317,11 +379,9 @@ pub struct Office {
     pub world: bool,
     pub links: bool,
     pub whisper: bool,
-    /// Version 4: its line in the directory, and its door open to anyone.
+    /// Version 4: its line, in the list of who is here.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub about: Option<About>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub public: Option<bool>,
 }
 
 /// Who knocked.
@@ -355,7 +415,7 @@ pub struct Knocking {
     pub to: String,
 }
 
-/// A group's member, as its `group` says.
+/// A world's member, as its `group` says.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Member {
     pub key: String,
@@ -365,22 +425,35 @@ pub struct Member {
     pub since: u64,
 }
 
-/// A request to join a group, waiting for an op.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct Request {
-    pub key: String,
-    pub name: String,
-}
-
-/// A group in the directory.
+/// A world in the directory.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Listed {
     pub name: String,
     pub about: String,
+    /// Public: anyone joins.
     pub open: bool,
+    /// 3.1: it takes a password. Neither open nor locked: closed (a 3.0 world that took requests, until its owner sets a
+    /// password or makes it public).
+    #[serde(default)]
+    pub locked: bool,
     pub members: usize,
     /// Members in the lobby now.
     pub online: usize,
+}
+
+/// A browser linked to an office (3.1), as its office hears the list.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Linked {
+    /// The browser's own key.
+    pub key: String,
+    /// What it said it was ("Firefox on Mac"), and its pictures (`pictures`).
+    pub agent: String,
+    pub pictures: String,
+    /// When it was linked, and last came in, in seconds since 1970.
+    pub created: u64,
+    pub used: u64,
+    /// In the lobby as this office now.
+    pub online: bool,
 }
 
 /// A ban on a key, lobby-wide.
@@ -466,13 +539,12 @@ pub enum FromLobby {
     VisitEnded { id: String, reason: String },
     LobbyChat { from: Sayer, text: String },
     Whisper { from: Sayer, text: String },
-    /// 3.1: to a browser let in by a web pass (or its `resume`): whose it speaks for, and how to come back after a reload.
+    /// 3.1: to a linked browser: whose it speaks for (the office's id, name and key).
     WebWelcome {
         proto: String,
         id: String,
         name: String,
         key: String,
-        resume: String,
         limits: Limits,
         #[serde(skip_serializing_if = "is_false", default)]
         admin: bool,
@@ -481,29 +553,31 @@ pub enum FromLobby {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         motd: Option<String>,
     },
-    /// Version 4: one of this office's groups, whole: on welcome, and whenever it changes. `pending` for its ops.
+    /// Version 4: one of this office's worlds, whole: on welcome, and whenever it changes. `bans` for its owner.
     Group {
         name: String,
         about: String,
         open: bool,
+        #[serde(default)]
+        locked: bool,
         owner: String,
+        /// 3.0's ops: none since 3.1 (its owner runs a world), kept for 3.0's visit-clients.
+        #[serde(default)]
         ops: Vec<String>,
         members: Vec<Member>,
         #[serde(skip_serializing_if = "Option::is_none", default)]
-        pending: Option<Vec<Request>>,
+        bans: Option<Vec<String>>,
     },
-    /// Version 4: no longer in a group (`left`, `removed`, `deleted`).
+    /// Version 4: no longer in a world (`left`, `removed`, `banned`, `deleted`).
     GroupLeft { group: String, reason: String },
-    /// Version 4: a request to join a group, to its ops.
-    GroupRequest { group: String, from: Request },
-    /// Version 4: a request to join is waiting (`accept` absent), or was answered.
-    GroupAnswered {
-        group: String,
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        accept: Option<bool>,
-    },
     GroupChat { group: String, from: Sayer, text: String },
     Groups { groups: Vec<Listed> },
+    /// 3.1, to a browser not linked yet: the code its office types in its room, and the pictures it shows there too.
+    BrowserCode { code: String, pictures: String, expires_in: u64 },
+    /// 3.1, to an office that typed a code: the browser waiting with it, for its user to allow (`browser_allow`).
+    BrowserPending { code: String, key: String, agent: String, pictures: String },
+    /// 3.1, to an office: its linked browsers (on asking, and as one is linked, unlinked, comes or goes).
+    Browsers { browsers: Vec<Linked> },
     /// Version 4, to an operator: the lobby's bans (not a room's: Visit's own `bans` are those).
     LobbyBans { bans: Vec<Ban> },
     Error {
@@ -550,6 +624,16 @@ mod tests {
     }
 
     #[test]
+    fn codes_and_pictures() {
+        assert_eq!(code_of("abcd-efgh"), Some("ABCDEFGH".into()));
+        assert_eq!(code_of(" ABCD EFGH "), Some("ABCDEFGH".into()));
+        assert_eq!(code_of("ABCD-EFG0"), None, "no 0, 1, I or O");
+        assert_eq!(code_of("ABCDEFG"), None);
+        assert_eq!(pictures("000140ff"), "🐙🌵🐙");
+        assert_eq!(pictures(""), "???");
+    }
+
+    #[test]
     fn plain_lines() {
         assert_eq!(plain("  hi\nthere\u{7}  ", 200), "hi there");
         assert_eq!(plain("abcdef", 3), "abc");
@@ -559,6 +643,8 @@ mod tests {
 
     #[test]
     fn messages_round_trip() {
+        let j: ToLobby = serde_json::from_value(serde_json::json!({ "type": "group_join", "group": "Hollow" })).unwrap();
+        assert_eq!(j, ToLobby::GroupJoin { group: Some("Hollow".into()), password: None });
         let k = ToLobby::Knock { to: Some("o1".into()), message: None, watch: true, link: false };
         assert_eq!(k.to_json(), serde_json::json!({ "type": "knock", "to": "o1", "watch": true }));
         let m: ToLobby = serde_json::from_value(serde_json::json!({ "type": "knock", "to": "o1", "watch": "yes" })).unwrap();

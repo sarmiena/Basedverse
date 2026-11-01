@@ -1,10 +1,11 @@
 # The lobby: where workrooms meet
 
-`lobby` is one program: who is online, knocks between rooms, visits and links, **world groups** (whose members put
-each other's rooms round their own), the lobby's chat and whispers, a list of rooms, its own **relay** for links
-that cannot go direct, and its **page**: read only for anyone with a browser, and, opened from a workroom's room
-(its Visit panel's 🌐 Lobby), that workroom's own lobby, Battle.net style: its chat, who is here, the rooms, its
-groups, knocking. Workrooms join it with Visit
+`lobby` is one program: **users and worlds**. Users are the workrooms in it (who is online, a line about each);
+worlds are groups of them whose members put each other's rooms round their own, public or with a password. Knocks
+between rooms, visits and links, the lobby's chat and whispers, each world's chat, its own **relay** for links that
+cannot go direct, and its **page**: read only for anyone with a browser, and, in a browser a workroom linked (its
+Visit panel's 🌐 Lobby, 📱 Phone, or Link a browser and the code the page shows), that workroom's own lobby,
+Battle.net style: its chat, who is here, its worlds, knocking. Workrooms join it with Visit
 (`VISIT_LOBBY`), and only while someone is signed in on them. What rooms show each other never passes through it.
 [../LOBBY.md](../LOBBY.md) says why it is as it is; [../visit/SPEC.md](../visit/SPEC.md) section 6 is its protocol,
 `basedverse-lobby/4`.
@@ -14,7 +15,7 @@ their own: it is one file and a few settings.
 
 | | |
 |---|---|
-| [src/](src/) | the lobby: `core.rs` (all its state, one task), `conn.rs` (a connection, its key proved), `groups.rs` (what it keeps: world groups and bans), `relay.rs` (its iroh relay), `web.rs` (HTTP: the WebSocket, `/health`, the page) |
+| [src/](src/) | the lobby: `core.rs` (all its state, one task), `conn.rs` (a connection, its key proved), `groups.rs` (what it keeps: worlds, linked browsers, bans), `relay.rs` (its iroh relay), `web.rs` (HTTP: the WebSocket, `/health`, the page) |
 | [proto/](proto/) | `lobby-proto`: what it and `visit` agree on (messages, limits, what a hello signs), built into both |
 | [web/index.html](web/index.html) | its public page |
 | [tests/](tests/) | `test_lobby.py` (the binary, from outside: `tests/run.sh`), `relay.rs` (its relay, with iroh endpoints) |
@@ -72,7 +73,8 @@ on the server once given:
 |---|---|
 | `LOBBY_DOMAIN` | its DNS name (default `basedverse.app`) |
 | `LOBBY_TITLE`, `LOBBY_MOTD` | its name and message of the day: on its page, and said to each workroom as it joins |
-| `LOBBY_ADMINS` | its operators: keys, comma-separated (a workroom's key: `ready.key`, `v.key`). They ban keys and run every group |
+| `LOBBY_ADMINS` | its operators: keys, comma-separated (a workroom's key: `ready.key`, `v.key`). They ban keys and run every world |
+| `LOBBY_WORLD_SIZE` | the members a world takes, at most (50): each member's plot is on every other member's map |
 | `LOBBY_V3` | `1`: let Visit 0.5 to 2.x workrooms in too, a lobby of their own, while they upgrade |
 | `LOBBY_IP` | the server's IPv4, served as well (`wss://<ip>/`, a 6-day certificate Caddy renews), for workrooms that still name the lobby by it |
 
@@ -80,13 +82,13 @@ on the server once given:
 
 | command | what it does |
 |---|---|
-| `bin/deploy-lobby` | update it: a new lobby, the same settings; its groups and bans kept |
+| `bin/deploy-lobby` | update it: a new lobby, the same settings; its worlds, linked browsers and bans kept |
 | `bin/deploy-lobby --status` | its services, and whether `wss://…/health` answers from here |
 | `bin/deploy-lobby --logs` | the lobby's and Caddy's logs, followed (Ctrl-C stops) |
 | `bin/deploy-lobby --down` | stop it |
 
 On the server: `systemctl status basedverse-lobby basedverse-caddy`, `journalctl -u basedverse-lobby`. What it
-keeps (its groups and bans) is in `/var/lib/basedverse-lobby/data`; Caddy's certificate in
+keeps (its worlds, linked browsers and bans) is in `/var/lib/basedverse-lobby/data`; Caddy's certificate in
 `/var/lib/basedverse-lobby/caddy`. A restart keeps both; workrooms reconnect by themselves.
 
 **Without bin/deploy-lobby** (another init system, a proxy of your own): run `lobby` behind any TLS proxy that
@@ -102,9 +104,13 @@ only when they cannot does the relay carry them (at most 4 MiB a second each way
 - **Taking part takes Visit, signed in.** A workroom joins only while someone is signed in on it, and proves its
   key at every hello: a key cannot be taken, and a name is just a name (first come, first served).
 - **Nothing of your room is visible until you let someone in.** A knock asks your page; a guest (★) walks in through
-  your open door; a public door lets anyone's knock in. Whoever is let in gets your room's scene, all of it.
-- **A world group's members are the lobby's word.** They see your plot through your open door, as guests do. Join
-  groups in lobbies you trust; your guests stay proved by the link itself.
-- **The lobby keeps no words.** Its chat, whispers and group lines pass through and are gone. It keeps its groups
-  (who is in which, by key) and its bans.
-- **Its page shows** its groups, and the rooms that describe themselves (by name: never a key, nor where anyone is).
+  your open door. Whoever is let in gets your room's scene, all of it.
+- **A world's members are the lobby's word.** They see your plot through your open door, as guests do; a public
+  world is anyone's to join. Join worlds in lobbies you trust; your guests stay proved by the link itself.
+- **A world's password** is kept as an Argon2id hash, and an office tries at most 5 a minute.
+- **A linked browser** speaks for its workroom only after the workroom linked it (a pass it signed, or the code the
+  browser shows, typed in its room), only while the workroom is in the lobby, and never lets anyone in: answering
+  knocks and the door stay in the room. The browser's key never leaves it; the workroom unlinks it from its panel.
+- **The lobby keeps no words.** Its chat, whispers and world lines pass through and are gone. It keeps its worlds
+  (who is in which, by key), its linked browsers (their keys, their workrooms') and its bans.
+- **Its page shows** its worlds, and who is here with a line (by name: never a key, nor where anyone is).

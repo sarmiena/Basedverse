@@ -1,7 +1,7 @@
 # The lobby, in Rust: a place to meet
 
-Branch: `lobby-4`. Release: Visit 3.0.0 with the lobby's protocol `basedverse-lobby/4`. Nothing of it reaches
-`main` until all of it is built and tested; then one pull request.
+Release: Visit 3.0.0 with the lobby's protocol `basedverse-lobby/4`; 3.1.0: users and worlds (public, or with a
+password), and the lobby's page in a browser your workroom linked.
 
 ## 1. What it is
 
@@ -9,16 +9,16 @@ The lobby was a Python program that introduced visit-clients to each other: who 
 links, one lobby-wide chat, whispers. It becomes **one Rust program, `lobby`**, in the workspace beside `visit`,
 and **a place to meet**, the way a game's lobby was (Battle.net in its Diablo II days):
 
-- **world groups**: a group's members may each put the others' plots in their worlds (SPEC 8.4), as if each
-  were everyone's guest, for worlds only. Whoever makes a group owns it and names its ops; ops let people in
-  (or the group is open: anyone joins). Someone in several groups may place anyone of any of them, together, in
-  their own world. A link (SPEC 8.5) still reaches anyone outside your groups. Each group has its own chat;
+- **users and worlds**, nothing else: the users are the workrooms in the lobby (each signed in, by its key), with
+  a line about them if they wrote one; a world is a group of them whose members put each other's plots round their
+  own (SPEC 8.4), as if each were everyone's guest, for worlds only. A world is public (anyone joins) or takes a
+  password; whoever makes one owns it. Someone in several worlds places anyone of any of them, together, round
+  their own room. A link (SPEC 8.5) still reaches anyone outside your worlds, and a knock still walks anyone into a
+  room its user lets them into. Each world has its own chat;
 - **the lobby-wide chat and whispers**, as before;
-- **a room directory**: rooms describe themselves (a line and a few tags) and say whether anyone may walk in
-  (a public door) or knocks, as today;
 - **friends**: Visit's guests, by key, shown online and where they are;
-- **a public page**: the lobby's address in a browser shows its channels and its directory, read only, and how
-  to join it with Visit;
+- **its page**: the lobby's address in a browser shows its worlds and who is here, read only; in a browser your
+  workroom linked (3.1), it is your workroom's lobby: its chat, who is here, its worlds, knocking;
 - **its own relay**: the iroh relay for links that cannot go direct runs inside `lobby`, for offices in the lobby
   only, in place of iroh's public relays (and of coturn, which only the browser sims of version 1 used);
 - **anyone can host one**: one file, a few flags, and Caddy in front for its certificate. A workroom joins the
@@ -38,8 +38,8 @@ visit-clients, directly or through the relay, which cannot read them.
    it. `hello` names the key, the lobby answers with a challenge, and the visit-client signs it with the key's
    secret half. The lobby checks the signature before anything else. What is signed names the lobby the
    visit-client dialled, so a lobby cannot pass a challenge on to another and come in as its visitor. A link's
-   endpoint must then be the proven key. A lobby has no accounts and keeps no passwords, so one key is the same
-   office in every lobby it joins, self-hosted or not.
+   endpoint must then be the proven key. A lobby has no accounts (the only passwords it holds are its worlds', as
+   Argon2id hashes), so one key is the same office in every lobby it joins, self-hosted or not.
 3. **Signed in to take part.** A visit-client joins a lobby only while its workroom has someone signed in: a
    live session of its sign-in (../auth/SPEC.md 4: made by `/v1/login`, not yet ended by signing out, a revoke
    or its idle and total limits). API keys (scripts, the engine) do not count. A workroom without the sign-in
@@ -48,27 +48,36 @@ visit-clients, directly or through the relay, which cannot read them.
    it checks.
 4. **Names** stay first come, first served, in each lobby. A key coming back finds its name if nobody has taken
    it. Who someone is to you is their key: Visit marks friends (guests) by key, never by name.
-5. **The lobby keeps nothing** of what is said. What it keeps, in its data directory, is its world groups (who
-   is in which, by key) and its bans: the operator's, never anyone's words.
+5. **The lobby keeps nothing** of what is said. What it keeps, in its data directory, is its worlds (who is in
+   which, by key; a password's hash; the keys kept out), its linked browsers (a browser's key, its workroom's) and
+   its bans: the operator's, never anyone's words.
 6. **Operators** (`--admin <key>`, the lobby's own owners) ban keys lobby-wide (for a while, or for good), set
-   its message of the day, and run every group.
-7. **A group's members are as the lobby says.** A host's visit-client lets a co-member watch its plot (its door
-   open) on the lobby's word for who is in the group: join groups in lobbies you trust. Guests stay as they were,
-   proved by the link (SPEC 3, point 9). Later: member lists signed by the group's owner, which a lobby could not
+   its message of the day, and run every world.
+7. **A world's members are as the lobby says.** A host's visit-client lets a co-member watch its plot (its door
+   open) on the lobby's word for who is in the world: join worlds in lobbies you trust. Guests stay as they were,
+   proved by the link (SPEC 3, point 9). Later: member lists signed by the world's owner, which a lobby could not
    forge.
-8. **Group chat is text.** Voice stays as it is (SPEC 8.7): by who is near in a room, and across a plot's side
-   where both worlds agree. Anyone on a plot is in that room, however they came (a knock, a guest, a group, a
+8. **World chat is text.** Voice stays as it is (SPEC 8.7): by who is near in a room, and across a plot's side
+   where both worlds agree. Anyone on a plot is in that room, however they came (a knock, a guest, a world, a
    link): they see and hear each other there, linked or not.
-9. **Visit draws the lobby.** The chat window gets each group's chat (`/g <group>`), the panel gets the groups
-   and the directory. Rooms may draw their own from the API, as for everything else.
-10. **The public page is read only.** Taking part takes a visit-client (rule 3). A browser without one has no key,
-   so it can watch, and that is all. A room appears in the directory, on the page and in Visit, only once it has
-   described itself (`about`). Offices that have not are counted, not named. Groups show with their size.
-11. **The page as a workroom (3.1).** A browser at the lobby's page has no key and no sign-in: the workroom has both.
-    So the workroom vouches for it: its room's 🌐 Lobby has its visit-client sign a web pass (its key, this lobby, 10
-    minutes, once), and the page that has it speaks for the workroom while the workroom is in the lobby. Talk,
-    groups, the list, knocking, yes; letting anyone in, never: that stays in the room. Lobby chat shows only to such
-    a page: it is said to the workrooms in the lobby, not to the web.
+9. **Visit draws the lobby.** The chat window gets each world's chat (`/g <world>`), the panel gets the worlds,
+   who is here, and the browsers linked. Rooms may draw their own from the API, as for everything else.
+10. **Users and worlds, nothing else (3.1).** 3.0 had world groups that took requests, with ops, and beside them
+    rooms open to anyone (a public door) in a list of rooms: two ways to be open. Now a room is not open by itself;
+    a world is. Public: anyone in the lobby joins with a click. A password: anyone who has it; nobody need be online
+    to let them in, as requests needed. Its owner keeps keys out, gives a new password (its members stay), hands it
+    on. A public world takes at most `--world-size` members (50): each member's plot is on every other's map. Your
+    door stays yours: a world puts your plot on its members' maps; walking into your room is a knock you answer.
+    Worlds with a password are listed with a 🔒 (Diablo II hid its password games; worlds are meant to be found).
+11. **A browser your workroom linked (3.1).** A browser at the lobby's page has no sign-in: the workroom has that,
+    and its key. So the browser makes a key of its own (never leaving it), and the workroom vouches for it, once:
+    its room's 🌐 Lobby (or 📱 Phone: a QR code) has its visit-client sign a web pass (its key, this lobby, 10
+    minutes, once) that links the browser that opens it; or the page shows a code, typed in the room (Link a
+    browser) with the same three pictures on both screens. Linked, the browser comes back by its key alone, and
+    speaks for the workroom while the workroom is in the lobby, until either unlinks it. Talk, worlds, the list,
+    knocking, yes; letting anyone in, never: that stays in the room. Signatures, not a shared secret: the lobby
+    needs proof that the room vouches for this browser, not a channel the two share. The page, unlinked, is read
+    only: lobby chat is said to the workrooms in the lobby, not to the web.
 12. **One protocol crate.** `lobby/proto` (the `lobby-proto` crate) has what both ends must agree on: the
     messages a visit-client sends, as types; the limits; the name rule; what is signed. `lobby` and `visit` are
     both built with it, so they cannot drift apart.
@@ -78,13 +87,14 @@ visit-clients, directly or through the relay, which cannot read them.
 What it did well, and what Visit's panel and chat window take from it:
 
 - **Lists to browse, not names to know.** Its channel list was "so lovely and useful"; Diablo II Resurrected's
-  `/channel join <name>`, with nothing to browse, was panned. The panel lists the groups (with their size, how many
-  are online, open or by request) and the rooms that describe themselves; commands are a shortcut, never the way.
+  `/channel join <name>`, with nothing to browse, was panned. The panel and the page list the worlds (their size,
+  how many are online, public or 🔒) and who is here; commands are a shortcut, never the way.
 - **Chat beside the lists.** Its chat stayed on screen while the game list was open beside it. The chat window
   stays where it is while the panel browses.
-- **A game's details: who is in it.** Picking a game showed its players, its description, its limits. A room's
-  entry in the panel shows its line, its tags, how many are inside out of how many it takes, and Walk in (a public
-  door) or Knock.
+- **A game's details: who is in it.** Picking a game showed its players, its description, its limits. A world's
+  entry shows its line, its members (online or not, its owner ♛), and Join, or Join… with its password, as a
+  password game asked for one. Someone's entry shows their line, their tags, how many are in their room out of how
+  many it takes, and Knock or Link.
 - **Who is online, for friends.** Its friends list said what each friend was doing, and which game only to mutual
   friends. Visit marks guests (★) and co-members (⚑) among those online. Where anyone is, the lobby tells nobody
   (its list has no `visiting` in version 4): those they visit know.
@@ -106,3 +116,5 @@ What it did well, and what Visit's panel and chat window take from it:
 | 6 | the relay inside `lobby` | done: lobby/tests/relay.rs (two in the lobby link through it, no direct path; a stranger kept off; QUIC address discovery up) |
 | 7 | hosting one: the release's `lobby` files, `lobby/deploy` without Docker, the README | done: setup.sh dry-run under systemd in a container (all but Let's Encrypt) |
 | 8 | the specs, the changelog, every test (ci.yml's steps, here), the pull request | done: every ci.yml step here (unit 45, lobby 153, e2e 290, browser 302 checks); an independent review's findings fixed (the Host a hello may sign, bounded queues and rates, group limits, a reconnect's groups) |
+| 9 | 3.1: users and worlds (public, or a password; owner's kick, ban, hand on; `--world-size`), no public door | done: the lobby's tests (worlds, a 3.0 world kept closed until opened), e2e (a password world through visit-client) |
+| 10 | 3.1: linked browsers (a key of their own; a pass, a QR code, or a code typed in the room), the page as a workroom | done: the lobby's tests, e2e (a pass and a code through visit-client), the browser test (the panel: 📱, a code, allow, unlink), the page in Chrome (linked by its code, a reload) |

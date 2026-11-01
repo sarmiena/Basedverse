@@ -750,7 +750,7 @@ impl Core {
         let mut m = json!({
             "type": "ready", "version": VERSION, "office": self.office, "online": self.online, "lobby_chat": self.lobby_chat, "away": self.saved.away, "status": self.status,
             "signed_in": self.signed_in, "lobby_info": self.lobby_info, "groups": self.groups.values().cloned().collect::<Vec<_>>(),
-            "about": self.saved.about, "public": self.saved.public,
+            "about": self.saved.about,
             "max_visitors": self.max_visitors, "visits": visits, "key": self.key, "door": self.door(), "guests": self.guests(),
             "layout": self.saved.layout_json(), "avatars": self.saved.avatars_json(), "voice_range": VOICE_RANGE, "kept": self.lands.kept_json(),
             "seen": self.seen_in.iter().map(|(k, (name, at))| json!({ "key": k, "name": name, "at": at })).collect::<Vec<_>>(),
@@ -841,28 +841,19 @@ impl Core {
                 None => self.page_error("bad_message", "n must be 0 to 8", Some("max_visitors")),
             },
             "leave_lobby" => self.set_away(true),
-            // The door, and who walks in through it without knocking (kept in the state file).
-            // The door: open (guests walk in), and public too (anyone does: the lobby's directory says so), or shut.
-            "door" => match (m.get("open").and_then(Value::as_bool), m.get("public").and_then(Value::as_bool)) {
-                (None, None) => self.page_error("bad_message", "open (and public) must be true or false", Some("door")),
-                (open, public) => {
-                    if let Some(open) = open {
-                        self.saved.door_open = open;
-                    }
-                    if let Some(p) = public {
-                        if p != self.saved.public {
-                            self.saved.public = p;   // to the lobby now, or with the next hello
-                            let _ = self.lobby.send(LobbyOut::Msg(ToLobby::Door { public: Some(p) }));
-                        }
-                    }
+            // The door: open (guests walk in, and its worlds' members watch its plot), or shut (kept in the state file).
+            "door" => match m.get("open").and_then(Value::as_bool) {
+                None => self.page_error("bad_message", "open must be true or false", Some("door")),
+                Some(open) => {
+                    self.saved.door_open = open;
                     self.save_state();
                     self.tell_guests();
-                    if open == Some(false) {
+                    if !open {
                         self.end_watchers(|_| true);   // the door shut: no guest watches this plot any more
                     }
                 }
             },
-            // The room's line in the lobby's directory: kept, and told to the lobby (null: out of the directory).
+            // The room's line in the lobby's list of who is here: kept, and told to the lobby (null: none).
             "about" => {
                 let about = match m.get("about") {
                     None | Some(Value::Null) => None,
@@ -874,10 +865,11 @@ impl Core {
                 self.saved.about = about.clone();
                 self.save_state();
                 let _ = self.lobby.send(LobbyOut::Msg(ToLobby::About { about: about.clone() }));   // now, or with the next hello
-                self.to_page(json!({ "type": "about", "about": about, "public": self.saved.public }));
+                self.to_page(json!({ "type": "about", "about": about }));
             }
-            // A web pass (3.1, SPEC 6.11): the lobby's page, opened in a browser, speaks for this office while it is in the
-            // lobby. Signed with its key, for its lobby, good once within PASS_TTL: asked by its signed-in user's page.
+            // A web pass (3.1, SPEC 6.11): links the browser that opens it to this office (that browser then speaks for
+            // it in the lobby, while it is in the lobby). Signed with its key, for its lobby, good once within PASS_TTL:
+            // asked by its signed-in user's page; `qr`: as a QR code too (an SVG), for a phone to scan.
             "lobby_pass" => {
                 let req = m.get("req").cloned().unwrap_or(Value::Null);
                 let Some(url) = self.lobby_url.clone() else {
@@ -887,15 +879,20 @@ impl Core {
                     return self.page_error("offline", "this workroom is not in the lobby now", Some("lobby_pass"));
                 }
                 let host = lobby_proto::authority(&url);
-                let expires = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) + lobby_proto::PASS_TTL;
+                // A QR code is shown on a screen anyone near may see: 2 minutes, not 10.
+                let qr = m.get("qr") == Some(&json!(true));
+                let ttl = if qr { 120 } else { lobby_proto::PASS_TTL };
+                let expires = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) + ttl;
                 let nonce = auth::secret::hex(&auth::secret::random(16));
                 let signature = auth::secret::hex(&self.saved.key.sign(lobby_proto::pass_message(&host, &self.key, expires, &nonce).as_bytes()).to_bytes());
                 let scheme = if url.starts_with("wss://") { "https" } else { "http" };
                 let page = format!("{scheme}://{host}/#pass={}.{expires}.{nonce}.{signature}", self.key);
-                self.to_page(json!({ "type": "lobby_pass", "req": req, "url": page, "expires": expires }));
+                let qr = qr.then(|| qr_svg(&page)).flatten();
+                self.to_page(json!({ "type": "lobby_pass", "req": req, "url": page, "expires": expires, "qr": qr }));
             }
-            // World groups and the lobby's operators (../../LOBBY.md): the lobby decides, and says.
-            "group_create" | "group_join" | "group_leave" | "group_answer" | "group_remove" | "group_set" | "group_op" | "group_delete" | "groups" | "admin" => {
+            // Worlds, linked browsers (3.1) and the lobby's operators (../../LOBBY.md): the lobby decides, and says.
+            "group_create" | "group_join" | "group_leave" | "group_remove" | "group_unban" | "group_set" | "group_owner" | "group_delete" | "groups" | "admin"
+            | "browser_code" | "browser_allow" | "browsers" | "browser_revoke" => {
                 match serde_json::from_value::<ToLobby>(m) {
                     Ok(x) => self.to_lobby(x),
                     Err(_) => self.page_error("bad_message", &format!("{t} is not as it should be (../SPEC.md 5.2)"), Some(&t)),
@@ -2384,7 +2381,7 @@ impl Core {
 
     fn tell_guests(&mut self) {
         let (door, guests) = (self.door(), self.guests());
-        self.to_page(json!({ "type": "guests", "door": door, "guests": guests, "public": self.saved.public }));
+        self.to_page(json!({ "type": "guests", "door": door, "guests": guests }));
     }
 
     /// Its link to the lobby, so others can visit: only while its page hosts its scene.
@@ -2568,15 +2565,17 @@ impl Core {
                 let reason = m.get("reason").and_then(Value::as_str).unwrap_or("gone").to_string();
                 self.end_visit(&id, &reason);
             }
-            _ => self.to_page(m),
+            // The rest of what a lobby says, for the page as it is. Only these: a page's own answers (a pass, history,
+            // ready...) never come from a lobby, which could make them up (a lobby is anyone's to run).
+            "knock_sent" | "answered" | "error" | "groups" | "lobby_bans" | "browser_pending" | "browsers" => self.to_page(m),
+            _ => debug!(t, "a lobby message no page takes: dropped"),
         }
     }
 
     /// A knock from a guest, with the door open and the room hosted: answered yes here, at once, without the
     /// page (which hears the visit start). The knocker's key is the lobby's word until the visit is agreed: then
     /// the visitor's link must be that key (visit_agreed), and the link makes it prove it.
-    /// Through the open door: a guest, always; to watch, someone in one of this office's world groups too; to visit (or
-    /// link), anyone, when the door is public as well.
+    /// Through the open door: a guest, always; to watch, someone in one of this office's worlds too.
     fn let_guest_in(&mut self, m: &Value) -> bool {
         let from = m.get("from");
         let (Some(kid), Some(fid), Some(fkey)) = (
@@ -2587,7 +2586,7 @@ impl Core {
             return false;
         };
         let watch = m.get("watch") == Some(&json!(true));
-        let welcome = if watch { self.may_watch(fkey) } else { self.saved.public || self.saved.guests.iter().any(|g| g.key == fkey) };
+        let welcome = if watch { self.may_watch(fkey) } else { self.saved.guests.iter().any(|g| g.key == fkey) };
         if !self.saved.door_open || self.hosting.is_none() || !welcome {
             return false;
         }
@@ -3302,6 +3301,12 @@ fn visit_for(v: &Visit) -> Option<PageRole> {
 }
 
 /// Which page a message is for (../../engine/SPEC.md 3.4), by its type: the room's, the person's, or both.
+/// A URL as a QR code, an SVG (black on white, a quiet zone round it), for a phone's camera: the lobby's page, linked.
+fn qr_svg(url: &str) -> Option<String> {
+    let code = qrcode::QrCode::with_error_correction_level(url.as_bytes(), qrcode::EcLevel::L).ok()?;
+    Some(code.render::<qrcode::render::svg::Color>().min_dimensions(240, 240).quiet_zone(true).build())
+}
+
 fn page_for(v: &Value) -> PageRole {
     match v.get("type").and_then(Value::as_str).unwrap_or("") {
         "visit_started" | "visit_ended" => {
@@ -3314,7 +3319,8 @@ fn page_for(v: &Value) -> PageRole {
         "chat" | "chat_log" | "unseen" | "held" | "held_sent" | "media_none" | "preview" | "history" | "shared"
         | "voice_near" | "room_voice" | "voice_members" | "user" | "banned" | "seen" | "layout" | "landscape"
         | "plot_forgotten" | "knock" | "knock_sent" | "knock_cancelled" | "answered" | "link_stats" | "scene"
-        | "scene_lost" | "host_paused" | "host_resumed" | "enter_refused" | "body" | "call" | "phone" | "lobby_pass" => PageRole::User,
+        | "scene_lost" | "host_paused" | "host_resumed" | "enter_refused" | "body" | "call" | "phone" | "lobby_pass" | "browser_pending"
+        | "browsers" => PageRole::User,
         _ => PageRole::Both,
     }
 }
@@ -3326,8 +3332,8 @@ fn role_may(role: PageRole, t: &str) -> bool {
     const USER: &[&str] = &["input", "point", "keyframe", "scene_resync", "avatar_clear", "possessions", "user", "say", "attention", "read",
         "unhold", "media_get", "preview", "history", "shared", "voice_join", "call", "speaker", "world", "enter", "exit", "place", "unplace",
         "seen", "plot_keep", "plot_load", "plot_forget", "link_where", "knock", "answer", "leave_lobby", "join_lobby", "status", "rename",
-        "group_create", "group_join", "group_leave", "group_answer", "group_remove", "group_set", "group_op", "group_delete", "groups", "admin",
-        "lobby_pass"];
+        "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set", "group_owner", "group_delete", "groups", "admin",
+        "lobby_pass", "browser_code", "browser_allow", "browsers", "browser_revoke"];
     match role {
         PageRole::Both => true,
         PageRole::Host => !USER.contains(&t),

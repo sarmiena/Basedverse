@@ -10,21 +10,38 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
-## v3.1.0 — 2026-11-01 — the lobby's page as your workroom: Battle.net-style chat, rooms and groups in a browser tab
+## v3.1.0 — 2026-11-01 — users and worlds: public or with a password; the lobby's page in a browser your workroom linked
 
-- **The lobby's page, as you** ([visit/SPEC.md](visit/SPEC.md) 6.11, 3, point 15). The panel's new **🌐 Lobby**
-  (`v.openLobby()`, `v.lobbyPass()`) opens the lobby's page in a tab, as your workroom: your `visit` signs a web pass
-  with your office's key (this lobby, 10 minutes, once), and the page that has it speaks for your workroom while it
-  is in the lobby. There: the lobby's chat, your groups' and whispers (tabs; `/w`, `/r`, `/g`), who is here, the
-  rooms (Walk in, Knock, Link: the visit opens in your room), your groups (requests to let in, Find, New). Never
-  your door, nor letting anyone in: those stay in your room. A reload keeps the tab in, while your workroom is.
-- **The page, redrawn** in basedverse's pixel-art world (the sign-in page's). Read only without a pass: its groups,
-  the rooms that list themselves, how many are here, how to join. Chat shows only to a workroom's tab.
-- **The lobby** (`lobby` 3.1.0) takes web passes (`hello` with `web`, `web_welcome`), and answers what a browser or an
-  office asks (the group list, the bans) to it alone; deploy it (`bin/deploy-lobby`).
+- **Users and worlds, nothing else** ([LOBBY.md](LOBBY.md) 2, rule 10; [visit/SPEC.md](visit/SPEC.md) 6.6). A world
+  is **public** (anyone joins, at once) or takes a **password** (anyone who has it; nobody need be online to let them
+  in). Its owner takes members out (✕) and keeps keys out (⛔), gives it a new password (its members stay) or makes it
+  public, hands it on (♛). A world takes at most 50 members (the lobby's `--world-size`). 3.0's requests to join, its
+  ops, the door open to anyone and the list of rooms are gone: a room is not open by itself, a world is. A 3.0 world
+  that took requests is closed until its owner opens it. Your line (`v.setAbout`) shows in the list of who is here.
+  The protocol and the API keep the name group (`group_*`, `v.createGroup(name, { password })`,
+  `v.joinGroup(name, password)`, `v.removeFromGroup(name, key, { ban })`, `v.unbanFromGroup`, `v.handGroup`);
+  `v.setPublic`, `v.answerGroup` and `v.setGroupOp` do nothing now.
+- **The lobby's page, as your workroom** (SPEC 6.11, 3, point 15). The browser keeps a key of its own (never leaving
+  it), and your workroom links it once: the panel's **🌐 Lobby** (`v.openLobby()`) opens the page linked; **📱 Phone**
+  (`v.lobbyQr()`) shows that as a QR code for a phone's camera; or the page shows a code, typed in the panel's **Link
+  a browser** (the same three pictures on both screens). Linked, it comes back by its key alone, as your workroom,
+  while your workroom is in the lobby: the lobby's chat, your worlds' and whispers (tabs; `/w`, `/r`, `/g`), who is
+  here (Knock, Link, Whisper: the visit opens in your room), your worlds (Join, Join… with a password, New, and the
+  owner's tools). Never your door, nor letting anyone in. The panel lists the browsers linked, each to unlink; the
+  page unlinks itself too.
+- **The page, redrawn** in basedverse's pixel-art world (the sign-in page's). Read only until linked: its worlds, who
+  is here with a line, how many, its code to link it. Chat shows only to a linked browser.
+- **The lobby** (`lobby` 3.1.0): worlds with passwords (Argon2id hashes; 5 tries a minute an office, 30 wrong an hour
+  a world, 4 hashed at once), `--world-size`, linked browsers (`browsers.json`: kept across restarts; 10 an office;
+  unused 90 days, unlinked; a link never moves a browser from another workroom unasked; unlinking is at once, every
+  tab); it answers what is asked (the world list, the bans) to whoever asked alone, and a ban's notice to the banned.
+  Its `groups.json` stays readable by a 3.0 lobby (a rollback).
+- **Visit** passes a page only the lobby messages a page takes from a lobby (a page's own answers are never a
+  lobby's to make up); a 📱 QR code's pass lasts 2 minutes; the panel says when a browser is linked to you. Deploy it (`bin/deploy-lobby`): 3.0's visit-clients still take
+  part (public worlds; their by-asking worlds refused).
 
-**What an integration does:** nothing, with Visit's panel (its 🌐 Lobby is there). A room with its own UI may offer
-`v.openLobby()` from a click.
+**What an integration does:** nothing, with Visit's panel. A room with its own UI: `v.openLobby()` from a click,
+worlds with `password`, and drop `v.setPublic`.
 
 ## v3.0.1 — 2026-11-01 — the owner's visit kept through the lobby's sessions
 

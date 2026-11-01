@@ -8,8 +8,8 @@
 # Its settings, each kept in /etc/basedverse-lobby/env once given (a later run keeps what it is not given again):
 #   LOBBY_DOMAIN     the lobby's DNS name, pointing at this server (default basedverse.app): its certificate's, the
 #                    name every hello signs, its relay's
-#   LOBBY_TITLE, LOBBY_MOTD, LOBBY_ADMINS (operators' keys, comma-separated), LOBBY_V3 (1: Visit 2.x too): the
-#                    lobby's own (lobby --help)
+#   LOBBY_TITLE, LOBBY_MOTD, LOBBY_ADMINS (operators' keys, comma-separated), LOBBY_V3 (1: Visit 2.x too),
+#   LOBBY_WORLD_SIZE (the members a world takes; 50): the lobby's own (lobby --help)
 #   LOBBY_IP         this server's public IPv4, served as well (a 6-day certificate for it, renewed by Caddy), for
 #                    workrooms that still name the lobby by it (a lobby of before); none: the name alone
 #
@@ -45,6 +45,8 @@ pick() { local k="$1" d="${2:-}"; local v="${!k:-}"; [ -n "$v" ] || v="${was[$k]
 domain="$(pick LOBBY_DOMAIN basedverse.app)"
 [[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die "LOBBY_DOMAIN $domain is not a DNS name"
 title="$(pick LOBBY_TITLE)" motd="$(pick LOBBY_MOTD)" admins="$(pick LOBBY_ADMINS)" v3="$(pick LOBBY_V3 0)" ip="$(pick LOBBY_IP)"
+world="$(pick LOBBY_WORLD_SIZE)"
+[ -z "$world" ] || { [[ "$world" =~ ^[0-9]{1,4}$ ]] && [ "$world" -ge 2 ] && [ "$world" -le 1000 ]; } || die "LOBBY_WORLD_SIZE $world: 2 to 1000"
 for x in "$title" "$motd" "$admins" "$v3"; do case "$x" in *$'\n'*) die "a setting is one line" ;; esac; done
 [ -z "$ip" ] || [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "LOBBY_IP $ip is not an IPv4 address"
 
@@ -94,6 +96,7 @@ LOBBY_RELAY_URL=https://$domain/
 LOBBY_RELAY_CERT=$cert_dir/$domain.crt
 LOBBY_RELAY_KEY=$cert_dir/$domain.key
 EOF
+[ -z "$world" ] || echo "LOBBY_WORLD_SIZE=$world" >> "$ETC/env"   # (none: the lobby's own, 50; a blank one would not parse)
 chgrp "$USER_NAME" "$ETC/env"
 umask 022
 # Caddy: TLS for the lobby's name (a free Let's Encrypt certificate, renewed by Caddy, kept where the relay reads it

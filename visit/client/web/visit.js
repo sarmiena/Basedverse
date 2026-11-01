@@ -246,13 +246,18 @@
   const BLANK = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
   const MAX_SIDE = 4096, MAX_VERTICES = 4e6, MAX_OBJECTS = 1e5;
   const isObj = x => !!x && typeof x === "object" && !Array.isArray(x);
-  // A world group, as the lobby says it (LOBBY.md); null if it is not one.
+  // A world, as the lobby says it (LOBBY.md; the protocol's group); null if it is not one. Public (open), or it takes a
+  // password (locked); neither: closed (made before 3.1, until its owner opens it). Its bans, its owner's alone to see.
   function groupFrom(g) {
     if (!isObj(g) || typeof g.name !== "string") return null;
     const keys = x => (Array.isArray(x) ? x : []).filter(k => typeof k === "string");
-    return { name: g.name, about: String(g.about || ""), open: g.open === true, owner: String(g.owner || ""), ops: keys(g.ops),
+    return { name: g.name, about: String(g.about || ""), open: g.open === true, locked: g.locked === true, owner: String(g.owner || ""),
       members: (Array.isArray(g.members) ? g.members : []).filter(x => isObj(x) && typeof x.key === "string").map(x => ({ key: x.key, name: String(x.name || ""), since: Number(x.since) || 0 })),
-      pending: (Array.isArray(g.pending) ? g.pending : []).filter(x => isObj(x) && typeof x.key === "string").map(x => ({ key: x.key, name: String(x.name || "") })) };
+      bans: keys(g.bans) };
+  }
+  // A browser linked to your office (3.1), as the lobby lists it.
+  function linkedFrom(b) {
+    return { key: String(b.key), agent: String(b.agent || "A browser"), pictures: String(b.pictures || ""), created: Number(b.created) || 0, used: Number(b.used) || 0, online: b.online === true };
   }
   // A room's line in the directory: { text, tags }, or null.
   function aboutFrom(a) {
@@ -753,11 +758,12 @@
       this.lobbyChat = false;  // the lobby relays chat (8.9): say(text, "lobby") goes to everyone in it
       this.signedIn = false;   // someone is signed in on this workroom: only then is it in the lobby (LOBBY.md 2, rule 3)
       this.lobbyInfo = { title: null, motd: null, admin: false };   // the lobby's name, its message of the day, you one of its operators
-      this.groups = [];        // your world groups (LOBBY.md): [{ name, about, open, owner, ops, members: [{ key, name, since }], pending }]
-      this.groupList = [];     // the lobby's groups, as findGroups() last had them: [{ name, about, open, members, online }]
+      this.groups = [];        // your worlds (LOBBY.md): [{ name, about, open, locked, owner, members: [{ key, name, since }], bans }]
+      this.groupList = [];     // the lobby's worlds, as findGroups() last had them: [{ name, about, open, locked, members, online }]
       this.lobbyBans = [];     // an operator's: the lobby's bans, [{ key, until, reason }]
-      this.about = null;       // your room's line in the lobby's directory: { text, tags }, or null (not in it)
-      this.publicDoor = false; // your door open to anyone (not only guests): the directory says so
+      this.about = null;       // your line in the lobby's list of who is here: { text, tags }, or null (none)
+      this.browsers = [];      // browsers linked to your office (3.1): [{ key, agent, pictures, created, used, online }]
+      this.browserPending = null;   // the browser whose code you typed, to allow: { code, key, agent, pictures }
       this.unseen = { count: 0, conversations: [], lines: [] };   // the mailbox (8.9): lines meant for you, not read yet
       this.held = [];          // whispers you left for someone away, still with your visit-client: [{ id, key, name, text, at }]
       this._attention = false; // someone looking at this page's chat (Visit.chat says), as last told
@@ -866,7 +872,7 @@
       this.signedIn = m.signed_in === true;
       this.lobbyInfo = lobbyInfoFrom(m.lobby_info);
       this.groups = (Array.isArray(m.groups) ? m.groups : []).map(groupFrom).filter(Boolean);
-      this.about = aboutFrom(m.about); this.publicDoor = m.public === true;
+      this.about = aboutFrom(m.about);
       this.unseen = { count: 0, conversations: [], lines: [] }; this.held = [];   // (said again after, if any)
       if (this._attention) this._send({ type: "attention", on: true });
       this._guests(m);
@@ -930,19 +936,20 @@
           this.groups = this.groups.filter(x => x.name.toLowerCase() !== g.name.toLowerCase()).concat([g]).sort((a, b) => a.name.localeCompare(b.name));
           this._emit("group", g); break;
         }
-        case "group_left":   // out of a group: left, removed, or ended
+        case "group_left":   // out of a world: left, removed, banned, or ended
           this.groups = this.groups.filter(x => x.name.toLowerCase() !== String(m.group).toLowerCase());
           this._emit("group_left", { group: String(m.group), reason: String(m.reason) }); break;
-        case "group_request": this._emit("group_request", { group: String(m.group), from: isObj(m.from) ? { key: String(m.from.key), name: String(m.from.name || "") } : null }); break;
-        case "group_answered": this._emit("group_answered", { group: String(m.group), accept: typeof m.accept === "boolean" ? m.accept : null }); break;
         case "groups": this.groupList = (Array.isArray(m.groups) ? m.groups : []).filter(isObj).map(g => ({ name: String(g.name), about: String(g.about || ""), open: g.open === true,
-          members: Number(g.members) || 0, online: Number(g.online) || 0 })); this._emit("groups", this.groupList); break;
+          locked: g.locked === true, members: Number(g.members) || 0, online: Number(g.online) || 0 })); this._emit("groups", this.groupList); break;
+        case "browsers": this.browsers = (Array.isArray(m.browsers) ? m.browsers : []).filter(isObj).map(linkedFrom); this._emit("browsers", this.browsers); break;
+        case "browser_pending": this.browserPending = { code: String(m.code), key: String(m.key), agent: String(m.agent || "A browser"), pictures: String(m.pictures || "") };
+          this._emit("browser_pending", this.browserPending); break;
         case "lobby_bans": this.lobbyBans = (Array.isArray(m.bans) ? m.bans : []).filter(isObj).map(b => ({ key: String(b.key), until: b.until == null ? null : Number(b.until), reason: String(b.reason || "") })); break;
-        case "about": this.about = aboutFrom(m.about); this.publicDoor = m.public === true; break;
+        case "about": this.about = aboutFrom(m.about); break;
         case "lobby":
           this.offices = (m.offices || []).map(o => ({ id: String(o.id), name: String(o.name), status: String(o.status), sim: o.sim || {},
             maxVisitors: Number(o.max_visitors) || 0, visitors: Number(o.visitors) || 0, visiting: o.visiting || null, ready: o.ready === true,
-            key: typeof o.key === "string" ? o.key : null, links: o.links === true, whisper: o.whisper === true, about: aboutFrom(o.about), public: o.public === true }));
+            key: typeof o.key === "string" ? o.key : null, links: o.links === true, whisper: o.whisper === true, about: aboutFrom(o.about) }));
           { const me = this.offices.find(o => this.office && o.id === this.office.id); if (me) { this.status = me.status; this.maxVisitors = me.maxVisitors; } }
           break;
         case "knock":
@@ -1358,42 +1365,57 @@
     joinLobby() { this._send({ type: "join_lobby" }); }
     kick(visitId) { this._send({ type: "end", visit: visitId }); }
     // Your door and your guests (kept by visit-client, with its state file): while the door is open, a guest's
-    // knock lets them in at once, without asking you. A guest is a key, as v.offices lists it (or, surer, as a
-    // visit's peer has it: its link proved it), with the name you knew them by.
+    // knock lets them in at once, without asking you, and your worlds' members see your plot. A guest is a key, as
+    // v.offices lists it (or, surer, as a visit's peer has it: its link proved it), with the name you knew them by.
     setDoor(open) { this._send({ type: "door", open: !!open }); }
-    // Your door open to anyone, not only your guests (it opens it too): anyone's knock lets them in at once, and the
-    // lobby's directory says so ("walk in"). Off: guests only again. Watching your plot stays for guests and groups.
-    setPublic(on) { this._send({ type: "door", ...(on ? { open: true } : {}), public: !!on }); }
-    // Your room's line in the lobby's directory (LOBBY.md): a sentence, and up to 5 tags (lower-case letters, digits
-    // and -); null takes it out. Rooms with one are listed on the lobby's public page too (by name, never by key).
+    // 3.0's door open to anyone: gone in 3.1 (a public world is how anyone comes round). Does nothing.
+    setPublic() { console.warn("visit.setPublic: gone in Visit 3.1: make a public world (createGroup) instead"); }
+    // Your line in the lobby's list of who is here (LOBBY.md): a sentence, and up to 5 tags (lower-case letters,
+    // digits and -); null takes it back. Shown on the lobby's public page too (by name, never by key).
     setAbout(text, tags = []) { this._send({ type: "about", about: text == null ? null : { text: String(text), tags: (tags || []).map(String) } }); }
 
-    // ---------- world groups (LOBBY.md) ----------
-    // A group's members may each put the others' rooms in their worlds, as if each were everyone's guest, for worlds
-    // only (their doors open). Whoever makes one owns it and names its ops; ops let people in (or it is open: anyone
-    // joins). v.groups, yours; "group" as one changes, "group_left" as you leave one (left, removed, deleted);
-    // "group_request" (to its ops) as someone asks; "group_answered" as yours is answered (accept null: waiting).
+    // ---------- worlds (LOBBY.md; the protocol calls them groups) ----------
+    // A world's members each put the others' rooms round their own, as if each were everyone's guest, for worlds
+    // only (their doors open). A world is public (anyone joins) or takes a password; whoever makes one owns it: its
+    // line, its password (a new one keeps its members), taking members out and keeping keys out, handing it on.
+    // v.groups, yours; "group" as one changes, "group_left" as you are out of one (left, removed, banned, deleted).
     // The lobby refuses what may not be (error, its ref the message's type: group_create, group_join...).
-    createGroup(name, { about = "", open = false } = {}) { this._as("user", "createGroup"); this._send({ type: "group_create", group: String(name), about: String(about), open: !!open }); }
-    joinGroup(name) { this._as("user", "joinGroup"); this._send({ type: "group_join", group: String(name) }); }
+    createGroup(name, { about = "", password = null, open } = {}) {
+      this._as("user", "createGroup");
+      const how = password ? { password: String(password) } : open === false ? {} : { open: true };   // (open: false, no password: the lobby refuses it)
+      this._send({ type: "group_create", group: String(name), about: String(about), ...how });
+    }
+    joinGroup(name, password = null) { this._as("user", "joinGroup"); this._send({ type: "group_join", group: String(name), ...(password ? { password: String(password) } : {}) }); }
     leaveGroup(name) { this._as("user", "leaveGroup"); this._send({ type: "group_leave", group: String(name) }); }
-    answerGroup(name, key, accept) { this._as("user", "answerGroup"); this._send({ type: "group_answer", group: String(name), key: String(key), accept: !!accept }); }
-    removeFromGroup(name, key) { this._as("user", "removeFromGroup"); this._send({ type: "group_remove", group: String(name), key: String(key) }); }
-    setGroup(name, { about, open } = {}) { this._as("user", "setGroup"); this._send({ type: "group_set", group: String(name), ...(about != null ? { about: String(about) } : {}), ...(open != null ? { open: !!open } : {}) }); }
-    setGroupOp(name, key, op) { this._as("user", "setGroupOp"); this._send({ type: "group_op", group: String(name), key: String(key), op: !!op }); }
+    // Its owner's: a member out; ban: kept out (the key need not be a member), until unbanned.
+    removeFromGroup(name, key, { ban = false } = {}) { this._as("user", "removeFromGroup"); this._send({ type: "group_remove", group: String(name), key: String(key), ...(ban ? { ban: true } : {}) }); }
+    unbanFromGroup(name, key) { this._as("user", "unbanFromGroup"); this._send({ type: "group_unban", group: String(name), key: String(key) }); }
+    // Its owner's: its line; a password (a new one: its members stay); or public again (open: true, its password gone).
+    setGroup(name, { about, password, open } = {}) {
+      this._as("user", "setGroup");
+      this._send({ type: "group_set", group: String(name), ...(about != null ? { about: String(about) } : {}), ...(password ? { password: String(password) } : open === true ? { open: true } : {}) });
+    }
+    // Its owner's: handed to another of its members.
+    handGroup(name, key) { this._as("user", "handGroup"); this._send({ type: "group_owner", group: String(name), key: String(key) }); }
     deleteGroup(name) { this._as("user", "deleteGroup"); this._send({ type: "group_delete", group: String(name) }); }
-    // The lobby's groups: v.groupList, and "groups", once it answers.
+    // 3.0's requests and ops: gone in 3.1 (a world takes a password; its owner runs it). They do nothing.
+    answerGroup() { console.warn("visit.answerGroup: gone in Visit 3.1: worlds take a password instead of requests"); }
+    setGroupOp() { console.warn("visit.setGroupOp: gone in Visit 3.1: a world's owner runs it"); }
+    // The lobby's worlds: v.groupList, and "groups", once it answers.
     findGroups() { this._send({ type: "groups" }); }
     // The lobby's page, as yours (3.1, SPEC 6.11): a web pass your visit-client signs with your office's key, for its
-    // lobby, good once and for 10 minutes: its URL (the lobby's page, the pass in its fragment). Opened in a browser, that
-    // page speaks for your office while it is in the lobby: chat, whispers, groups, the list of rooms, knocking (the
-    // visit itself opens here, in your room). Never your door, nor letting anyone in. Rejects when not in the lobby.
-    lobbyPass() {
+    // lobby, good once and for 10 minutes: its URL (the lobby's page, the pass in its fragment). The browser that opens
+    // it is linked to your office, for good (until you unlink it: v.browsers), and speaks for it while it is in the
+    // lobby: chat, whispers, worlds, who is here, knocking (the visit itself opens here, in your room). Never your door,
+    // nor letting anyone in. Rejects when not in the lobby. lobbyQr(): the same, and as a QR code (an SVG) for a phone.
+    lobbyPass() { return this._pass(false).then(m => String(m.url)); }
+    lobbyQr() { return this._pass(true).then(m => ({ url: String(m.url), qr: typeof m.qr === "string" ? m.qr : null, expires: Number(m.expires) || 0 })); }
+    _pass(qr) {
       this._as("user", "lobbyPass");
       return new Promise((resolve, reject) => {
         const no = e => { if (e && e.ref === "lobby_pass") { this.off("error", no); reject(new Error(e.message || e.code)); } };
         this.on("error", no);
-        this._ask("lobby_pass", {}).then(m => { this.off("error", no); resolve(String(m.url)); }, e => { this.off("error", no); reject(e); });
+        this._ask("lobby_pass", qr ? { qr: true } : {}).then(m => { this.off("error", no); resolve(m); }, e => { this.off("error", no); reject(e); });
       });
     }
     // The lobby's page in a new tab, as yours (lobbyPass). Call it from a click: the tab opens at once, and goes to the
@@ -1405,13 +1427,32 @@
         return url;
       }, e => { if (w) w.close(); throw e; });
     }
-    // The groups you are in that `key` is in too (their names).
-    groupsWith(key) { return key ? this.groups.filter(g => g.members.some(m => m.key === key)).map(g => g.name) : []; }
-    // Whether you run a group (its owner, an op, or one of the lobby's operators).
-    isGroupOp(name) {
-      const g = this.groups.find(x => x.name.toLowerCase() === String(name).toLowerCase());
-      return !!g && (this.lobbyInfo.admin || g.owner === this.key || g.ops.includes(this.key));
+    // Browsers linked to your office (3.1). A browser at the lobby's page that is not linked shows a code: typed here,
+    // linkBrowser(code) is a Promise of the browser waiting with it ({ code, key, agent, pictures }: the same pictures
+    // show on its screen); allowBrowser(code) links it, and it is in as you. v.browsers (listBrowsers() asks; the lobby
+    // says it again as one comes, goes, is linked or unlinked); unlinkBrowser(key): out, and its key forgotten.
+    linkBrowser(code) {
+      this._as("user", "linkBrowser");
+      return new Promise((resolve, reject) => {
+        const done = () => { clearTimeout(t); this.off("browser_pending", yes); this.off("error", no); };
+        const yes = p => { done(); resolve(p); };
+        const no = e => { if (e && e.ref === "browser_code") { done(); reject(new Error(e.message || e.code)); } };
+        const t = setTimeout(() => { done(); reject(new Error("the lobby did not answer")); }, 15000);
+        this.on("browser_pending", yes); this.on("error", no);
+        this._send({ type: "browser_code", code: String(code) });
+      });
     }
+    allowBrowser(code) { this._as("user", "allowBrowser"); this.browserPending = null; this._send({ type: "browser_allow", code: String(code) }); }
+    listBrowsers() { this._send({ type: "browsers" }); }
+    unlinkBrowser(key) { this._as("user", "unlinkBrowser"); this._send({ type: "browser_revoke", key: String(key) }); }
+    // The worlds you are in that `key` is in too (their names).
+    groupsWith(key) { return key ? this.groups.filter(g => g.members.some(m => m.key === key)).map(g => g.name) : []; }
+    // Whether you run a world (its owner, or one of the lobby's operators).
+    isGroupOwner(name) {
+      const g = this.groups.find(x => x.name.toLowerCase() === String(name).toLowerCase());
+      return !!g && (this.lobbyInfo.admin || g.owner === this.key);
+    }
+    isGroupOp(name) { return this.isGroupOwner(name); }
     // The lobby's operators (lobbyInfo.admin): a key banned lobby-wide (minutes: for a while; none, for good), or no
     // longer; the bans (v.lobbyBans, once the lobby answers).
     lobbyBan(key, { minutes = null, reason = "" } = {}) { this._send({ type: "admin", action: "ban", key: String(key), ...(minutes ? { minutes: Number(minutes) } : {}), text: String(reason) }); }
@@ -1441,7 +1482,6 @@
     world(opts = {}) { this._as("user", "world"); if (this._world) this._world.release(); return new World(this, opts); }
     _guests(m) {
       this.door = m.door === "closed" ? "closed" : "open";
-      if (typeof m.public === "boolean") this.publicDoor = m.public;
       this.guests = (Array.isArray(m.guests) ? m.guests : []).map(g => ({ key: String(g.key), name: String(g.name || "") }));
       this._guestLinksToWorld();
     }
@@ -4210,7 +4250,9 @@
 .visit-panel .seg { display: inline-flex; } .visit-panel .seg button { border-radius: 0; } .visit-panel .seg button + button { border-left: 0; }
 .visit-panel .seg button:first-child { border-radius: 6px 0 0 6px; } .visit-panel .seg button:last-child { border-radius: 0 6px 6px 0; }
 .visit-panel .seg button.on2 { background: #1f6feb; border-color: #1f6feb; color: #fff; }
-.visit-panel .hd button.caret { padding: 0 2px 0 0; } .visit-panel .ver { padding-top: 3px; padding-bottom: 3px; font-size: 11px; }`;
+.visit-panel .hd button.caret { padding: 0 2px 0 0; } .visit-panel .ver { padding-top: 3px; padding-bottom: 3px; font-size: 11px; }
+.visit-panel .qr { background: #fff; padding: 6px; border-radius: 6px; width: 232px; max-width: 100%; margin-bottom: 4px; } .visit-panel .qr img { display: block; width: 100%; height: auto; image-rendering: pixelated; }
+.visit-panel .pics { letter-spacing: 2px; } .visit-panel .sub form { display: flex; gap: 6px; margin-top: 4px; }`;
 
   // Where a friend's world has put your room (8.4, `seen`), said plainly: which way from theirs (north is -z), and how
   // far apart the two plots' edges are.
@@ -4238,8 +4280,10 @@
     let folded = false;
     try { folded = localStorage.getItem("visit:panel") === "folded"; } catch (e) { /* not kept */ }
     const opened = new Set();   // the people (key, else office id) shown opened
-    const groupsOpen = new Set();   // your groups shown opened (lower-case names)
-    let finding = false, making = false, describing = false;   // the lobby's groups shown; a new group's form; your room's line's
+    const groupsOpen = new Set();   // your worlds shown opened (lower-case names)
+    let finding = false, making = false, describing = false;   // the lobby's worlds shown; a new world's form; your line's
+    let joining = null, passwording = null;   // a locked world's password asked (to join it; yours, to change it)
+    let linking = false, qr = null;   // linked browsers shown, with a code's box; a QR code shown for your phone ({ svg, until })
     const cw = withChat ? chat(v) : null;   // the chat window (8.9), bottom left (chat: false, none: your page has its own)
     // M, anywhere but a box of the page's own: on your mount, or off (8.11).
     const mountChosen = () => v._mountOf(v.mount) ? v.mount : v.mounts[0].id;
@@ -4271,12 +4315,20 @@
     const modelSaid = new Set();
     const onModel = e => { if (e.problems.length && !modelSaid.has(e.what + e.problems[0])) { modelSaid.add(e.what + e.problems[0]); note(`${e.what}: ${e.problems[0]}${e.problems.length > 1 ? ` (and ${e.problems.length - 1} more: see the console)` : ""}`); } };
     const onBody = e => { if (e.problem && !modelSaid.has(e.channel + e.problem)) { modelSaid.add(e.channel + e.problem); note(`In ${e.name || "their"} room you look like their model: yours can't be shown (${e.problem})`); } };
-    v.on("seen", onSeen); v.on("call", onCall); v.on("model", onModel); v.on("body", onBody);
+    // A browser linked to you just now (by your 🌐 Lobby, 📱 Phone, or a code): said, so one you did not mean is seen.
+    const browsersKnown = new Set(v.browsers.map(b => b.key));
+    const onBrowsers = list => {
+      for (const b of list) if (!browsersKnown.has(b.key)) {
+        browsersKnown.add(b.key);
+        if (Date.now() / 1000 - b.created < 120) note(`🌐 ${b.agent} ${b.pictures} is linked to you now: in the lobby as you (not yours? Link a browser: Unlink)`);
+      }
+    };
+    v.on("seen", onSeen); v.on("call", onCall); v.on("model", onModel); v.on("body", onBody); v.on("browsers", onBrowsers);
     function draw() {
       if (root.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;   // never under a typing hand
       const me = v.office, rows = [];
       root.classList.toggle("folded", folded); element.classList.toggle("visit-folded", folded);
-      rows.push(`<div class="row hd"><button class="caret" data-v="fold" title="${folded ? "open the panel" : "fold the panel: its first line, and what asks you (a knock, a call)"} · Visit ${VERSION}">${folded ? "▸" : "▾"}</button><span class="dot ${v.state === "online" ? esc(v.status) : ""}"></span><span class="grow">Visit${me ? " · " + esc(me.name) : ""}</span><span class="muted">${esc(v.state)}</span><button data-v="perf" class="${v._perf ? "go" : ""}" title="how this page is doing: frames, stalls, and what Visit does (on or off)">⏱</button>${v.state === "online" ? `<button data-v="lobby" title="the lobby in a browser tab, as you: its chat, groups and rooms (your door stays here)">🌐 Lobby</button>` : ""}${v.state === "online" ? `<button data-v="away" title="leave the lobby: nobody sees you or can link until you come back">Go offline</button>` : ""}</div>`);
+      rows.push(`<div class="row hd"><button class="caret" data-v="fold" title="${folded ? "open the panel" : "fold the panel: its first line, and what asks you (a knock, a call)"} · Visit ${VERSION}">${folded ? "▸" : "▾"}</button><span class="dot ${v.state === "online" ? esc(v.status) : ""}"></span><span class="grow">Visit${me ? " · " + esc(me.name) : ""}</span><span class="muted">${esc(v.state)}</span><button data-v="perf" class="${v._perf ? "go" : ""}" title="how this page is doing: frames, stalls, and what Visit does (on or off)">⏱</button>${v.state === "online" ? `<button data-v="lobby" title="the lobby in a browser tab, as you: its chat, who is here, worlds (your door stays here)">🌐 Lobby</button>` : ""}${v.state === "online" ? `<button data-v="away" title="leave the lobby: nobody sees you or can link until you come back">Go offline</button>` : ""}</div>`);
       if (folded) {
         for (const k of v.knocks) rows.push(`<div class="row knock"><b>${esc(k.from.name)}</b> ${k.link ? "wants to link" : "is knocking"}${k.message ? `: “${esc(k.message)}”` : ""}
           <div class="btns"><button class="go" data-v="in" data-k="${esc(k.id)}">${k.link ? "Link" : "Let in"}</button><button data-v="out" data-k="${esc(k.id)}">Not now</button>
@@ -4291,13 +4343,24 @@
       if (v.state === "online") {
         rows.push(`<div class="row"><span class="grow">you are</span><select data-v="status">${["available", "busy"].map(s => `<option${s === v.status ? " selected" : ""}>${s}</option>`).join("")}</select>
           <select data-v="max" title="how many visitors at once">${[0, 1, 2, 3, 4, 5, 6, 7, 8].map(n => `<option value="${n}"${n === v.maxVisitors ? " selected" : ""}>${n} visitors</option>`).join("")}</select></div>`);
-        const doorIs = v.door === "closed" ? "closed" : v.publicDoor ? "public" : "open";
-        rows.push(`<div class="row"><span class="grow">your door</span><select data-v="door" title="open: your guests (★) link and walk in without asking; to anyone: everyone does (the lobby's list says Walk in)">
-          <option value="open"${doorIs === "open" ? " selected" : ""}>open to guests</option><option value="public"${doorIs === "public" ? " selected" : ""}>open to anyone</option><option value="closed"${doorIs === "closed" ? " selected" : ""}>closed: everyone asks</option></select>
+        rows.push(`<div class="row"><span class="grow">your door</span><select data-v="door" title="open: your guests (★) link and walk in without asking, and your worlds' members see your plot; closed: everyone asks">
+          <option value="open"${v.door !== "closed" ? " selected" : ""}>open to guests</option><option value="closed"${v.door === "closed" ? " selected" : ""}>closed: everyone asks</option></select>
           <span class="muted">${v.guests.length} ★</span></div>`);
-        // Your room's line in the lobby's list of rooms (and on its public page): what it is, a few tags.
-        if (describing) rows.push(`<form class="row" data-f="about"><input name="text" maxlength="200" placeholder="your room, in a line" value="${esc(v.about ? v.about.text : "")}"><input name="tags" maxlength="110" placeholder="tags, comma-separated" value="${esc(v.about ? v.about.tags.join(", ") : "")}" style="max-width:9em"><button class="go">Save</button>${v.about ? `<button type="button" data-v="unlist" title="out of the lobby's list of rooms">Unlist</button>` : ""}</form>`);
-        else rows.push(`<div class="row"><span class="grow">${v.about ? `listed: <span class="muted">${esc(v.about.text || "(no line)")}${v.about.tags.length ? " · " + v.about.tags.map(t => "#" + esc(t)).join(" ") : ""}</span>` : `<span class="muted">your room is not in the lobby's list of rooms</span>`}</span><button data-v="describe" title="your room's line in the lobby's list (and on its public page)">${v.about ? "Edit" : "List it"}</button></div>`);
+        // Your line in the lobby's list of who is here (and on its public page): what you are, a few tags.
+        if (describing) rows.push(`<form class="row" data-f="about"><input name="text" maxlength="200" placeholder="you, in a line" value="${esc(v.about ? v.about.text : "")}"><input name="tags" maxlength="110" placeholder="tags, comma-separated" value="${esc(v.about ? v.about.tags.join(", ") : "")}" style="max-width:9em"><button class="go">Save</button>${v.about ? `<button type="button" data-v="unlist" title="no line">Clear</button>` : ""}</form>`);
+        else rows.push(`<div class="row"><span class="grow">${v.about ? `your line: <span class="muted">${esc(v.about.text || "(none)")}${v.about.tags.length ? " · " + v.about.tags.map(t => "#" + esc(t)).join(" ") : ""}</span>` : `<span class="muted">no line about you in the lobby</span>`}</span><button data-v="describe" title="your line in the lobby's list of who is here (and on its public page)">${v.about ? "Edit" : "Write one"}</button></div>`);
+        // The lobby in a browser (3.1): on your phone (a QR code to scan), or a browser that shows a code (typed here,
+        // allowed); the browsers linked, each to unlink.
+        const on = v.browsers.filter(b => b.online).length;
+        rows.push(`<div class="row"><span class="grow" title="the lobby's page in a browser, as you: its chat, who is here, your worlds">browsers <span class="muted">· ${v.browsers.length ? `${v.browsers.length} linked${on ? `, ${on} in` : ""}` : "the lobby, as you"}</span></span><button data-v="qr" class="${qr ? "go" : ""}" title="a QR code: your phone's camera opens the lobby there, as you (once, within 10 minutes)">📱 Phone</button><button data-v="browsers" class="${linking ? "go" : ""}" title="a browser at the lobby's page shows a code: type it here; and the browsers linked to you">Link a browser</button></div>`);
+        // (An image of the SVG, never the SVG itself in the page: an image runs no script, whoever made it.)
+        if (qr && qr.until > Date.now()) rows.push(`<div class="row sub"><div class="qr"><img alt="a QR code: the lobby, as you" src="data:image/svg+xml;charset=utf-8,${esc(encodeURIComponent(qr.svg))}"></div><div class="muted">scan it with your phone's camera: the lobby opens there as you, linked (good once, for ${Math.max(1, Math.round((qr.until - Date.now()) / 60000))} more minutes)</div></div>`);
+        if (linking) {
+          const p = v.browserPending;
+          if (p) rows.push(`<div class="row knock"><b>${esc(p.agent)}</b> <span class="pics">${esc(p.pictures)}</span> waits with ${esc(p.code.slice(0, 4))}-${esc(p.code.slice(4))}: the same pictures on its screen? <div class="btns"><button class="go" data-v="b_allow" data-code="${esc(p.code)}">Link it</button><button data-v="b_not">Not that one</button></div></div>`);
+          else rows.push(`<form class="row" data-f="code"><input name="code" maxlength="12" placeholder="the code it shows: ABCD-EFGH" autocomplete="off"><button class="go">Find it</button></form>`);
+          for (const b of v.browsers) rows.push(`<div class="row sub"><span class="grow">${b.online ? "●" : "○"} ${esc(b.agent)} <span class="pics">${esc(b.pictures)}</span> <span class="muted">· ${b.online ? "in now" : `last in ${new Date(b.used * 1000).toLocaleDateString()}`}</span></span><button data-v="b_unlink" data-key="${esc(b.key)}" title="this browser no longer speaks for you">Unlink</button></div>`);
+        }
         rows.push(`<div class="row"><span class="grow">visitors look like</span><select data-v="looks" title="in your room: the look each one brings (their model), or your own (our model); one can be set apart (click them below)">
           <option value="theirs"${v.avatars.default === "theirs" ? " selected" : ""}>their model</option><option value="mine"${v.avatars.default === "mine" ? " selected" : ""}>our model</option></select></div>`);
       }
@@ -4328,30 +4391,39 @@
         `<option value="${esc(m.id)}"${m.id === v.mount ? " selected" : ""}>${esc(m.name)}${m.fly ? " (flies)" : ""}</option>`).join("")}</select><button data-v="ride" class="${v.riding ? "go" : ""}" title="M: on your mount, or off">${v.riding ? "Get off" : "Ride"}</button></div>`);
       const roundYours = v._world ? v._world.plots.filter(p => !p.home) : [];   // (a user page's own room is a plot too)
       if (v._world && v.state === "online") rows.push(`<div class="row"><span class="grow">your world: ${roundYours.length} ${roundYours.length === 1 ? "room" : "rooms"} round yours${(n => n ? ` (${n} offline)` : "")(roundYours.filter(p => p.offline).length)}</span><button data-v="map" title="where your friends' rooms sit round yours, from above">Map</button></div>`);
-      // Your world groups (LOBBY.md): each a row (how many of it are online); opened, its members, its requests (for its
-      // ops), Leave; the lobby's groups to join (Find), a new one (New).
+      // Your worlds (LOBBY.md): each a row (how many of it are online, 🔒 a password); opened, its members, Leave, and for
+      // its owner: take one out (✕) or keep them out (⛔), hand it on (♛), its password, public, End it; the lobby's
+      // worlds to join (Find: a locked one asks its password), a new one (New: public, or with a password).
       if (v.state === "online") {
         const here = new Set(v.offices.map(o => o.key).filter(Boolean));
-        rows.push(`<div class="row"><span class="grow">groups <span class="muted">· ${v.groups.length ? `you are in ${v.groups.length}` : "members may put each other's rooms in their worlds"}</span></span><button data-v="find" class="${finding ? "go" : ""}" title="the lobby's groups">Find</button><button data-v="new" class="${making ? "go" : ""}" title="a group of your own">New</button></div>`);
-        if (making) rows.push(`<form class="row" data-f="group"><input name="name" maxlength="24" placeholder="its name"><input name="about" maxlength="200" placeholder="what it is" style="max-width:9em"><label title="anyone may join, unasked"><input type="checkbox" name="open">open</label><button class="go">Make</button></form>`);
+        rows.push(`<div class="row"><span class="grow">worlds <span class="muted">· ${v.groups.length ? `you are in ${v.groups.length}` : "members' rooms sit round each other's"}</span></span><button data-v="find" class="${finding ? "go" : ""}" title="the lobby's worlds">Find</button><button data-v="new" class="${making ? "go" : ""}" title="a world of your own">New</button></div>`);
+        if (making) rows.push(`<form class="row" data-f="group"><input name="name" maxlength="24" placeholder="its name"><input name="about" maxlength="200" placeholder="what it is" style="max-width:8em"><input name="password" maxlength="64" placeholder="password (none: public)" style="max-width:9em" autocomplete="new-password"><button class="go">Make</button></form>`);
         for (const g of v.groups) {
-          const k = g.name.toLowerCase(), op = v.isGroupOp(g.name), online = g.members.filter(m => here.has(m.key) || m.key === v.key).length, open = groupsOpen.has(k);
-          rows.push(`<div class="row"><button class="who grow" data-v="group" data-g="${esc(k)}"><b>⚑ ${esc(g.name)}</b> <span class="muted">· ${online}/${g.members.length} online${g.pending.length && op ? ` · ${g.pending.length} asking` : ""}</span></button><button class="caret" data-v="group" data-g="${esc(k)}">${open ? "▾" : "▸"}</button></div>`);
+          const k = g.name.toLowerCase(), runs = v.isGroupOwner(g.name), online = g.members.filter(m => here.has(m.key) || m.key === v.key).length, open = groupsOpen.has(k);
+          const how = g.locked ? " 🔒" : !g.open ? " · closed" : "";
+          rows.push(`<div class="row"><button class="who grow" data-v="group" data-g="${esc(k)}"><b>⚑ ${esc(g.name)}</b>${how} <span class="muted">· ${online}/${g.members.length} online</span></button><button class="caret" data-v="group" data-g="${esc(k)}">${open ? "▾" : "▸"}</button></div>`);
           if (!open) continue;
-          const who = m => `${here.has(m.key) || m.key === v.key ? "●" : "○"} ${esc(m.key === v.key ? "you" : (v.userOf(m.key) || m.name))}${m.key === g.owner ? " ♛" : g.ops.includes(m.key) ? " ⚔" : ""}`;
+          const who = m => `${here.has(m.key) || m.key === v.key ? "●" : "○"} ${esc(m.key === v.key ? "you" : (v.userOf(m.key) || m.name))}${m.key === g.owner ? " ♛" : ""}`;
           const subs = [];
           if (g.about) subs.push(`<div class="muted">${esc(g.about)}</div>`);
-          subs.push(`<div>${g.members.map(m => op && m.key !== v.key && m.key !== g.owner
-            ? `<span class="seg">${who(m)} <button data-v="g_out" data-g="${esc(g.name)}" data-key="${esc(m.key)}" title="out of ${esc(g.name)}">✕</button>${g.owner === v.key || v.lobbyInfo.admin ? `<button data-v="g_op" data-g="${esc(g.name)}" data-key="${esc(m.key)}" data-op="${g.ops.includes(m.key) ? "" : "1"}" title="${g.ops.includes(m.key) ? "no longer an op" : "an op: lets people in, takes them out"}">${g.ops.includes(m.key) ? "−⚔" : "+⚔"}</button>` : ""}</span>`
+          subs.push(`<div>${g.members.map(m => runs && m.key !== g.owner
+            ? `<span class="seg">${who(m)} <button data-v="g_out" data-g="${esc(g.name)}" data-key="${esc(m.key)}" title="out of ${esc(g.name)} (they may join again)">✕</button><button data-v="g_ban" data-g="${esc(g.name)}" data-key="${esc(m.key)}" title="out of ${esc(g.name)}, and kept out">⛔</button><button data-v="g_owner" data-g="${esc(g.name)}" data-key="${esc(m.key)}" data-name="${esc(m.name)}" title="hand ${esc(g.name)} to them: its owner">♛</button></span>`
             : who(m)).join(" · ")}</div>`);
-          if (op) for (const r of g.pending) subs.push(`<div>${esc(r.name)} asks to join <button class="go" data-v="g_yes" data-g="${esc(g.name)}" data-key="${esc(r.key)}">Let in</button><button data-v="g_no" data-g="${esc(g.name)}" data-key="${esc(r.key)}">No</button></div>`);
-          subs.push(`<div class="btns">${op ? `<button data-v="g_open" data-g="${esc(g.name)}" data-open="${g.open ? "" : "1"}" title="${g.open ? "open: anyone joins (click: by asking)" : "by asking: its ops let people in (click: open)"}">${g.open ? "open" : "by asking"}</button>` : ""}<button data-v="g_leave" data-g="${esc(g.name)}">Leave</button>${g.owner === v.key || v.lobbyInfo.admin ? `<button data-v="g_end" data-g="${esc(g.name)}" title="ends it for everyone in it">End it</button>` : ""}</div>`);
+          if (runs && g.bans.length) subs.push(`<div class="muted">kept out: ${g.bans.map(key => `<span class="seg">${esc(v.userOf(key) || (v.offices.find(o => o.key === key) || {}).name || key.slice(0, 8))} <button data-v="g_unban" data-g="${esc(g.name)}" data-key="${esc(key)}" title="let them join again">↺</button></span>`).join(" ")}</div>`);
+          if (runs && passwording === k) subs.push(`<form data-f="g_pw" data-g="${esc(g.name)}"><input name="password" maxlength="64" placeholder="${g.locked ? "a new password (its members stay)" : "a password for it"}" autocomplete="new-password"><button class="go">Set</button></form>`);
+          subs.push(`<div class="btns">${runs ? `<button data-v="g_pw" data-g="${esc(k)}" class="${passwording === k ? "go" : ""}" title="${g.locked ? "change its password (its members stay)" : "give it a password: only those who have it join"}">${g.locked ? "🔒 Password…" : "🔒 Lock…"}</button>${!g.open ? `<button data-v="g_public" data-g="${esc(g.name)}" title="anyone joins, no password">Make public</button>` : ""}` : ""}<button data-v="g_leave" data-g="${esc(g.name)}">Leave</button>${runs ? `<button data-v="g_end" data-g="${esc(g.name)}" title="ends it for everyone in it">End it</button>` : ""}</div>`);
           rows.push(`<div class="row sub">${subs.join("")}</div>`);
         }
         if (finding) {
           const mine = new Set(v.groups.map(g => g.name.toLowerCase())), list = v.groupList.filter(g => !mine.has(g.name.toLowerCase()));
-          for (const g of list) rows.push(`<div class="row"><span class="grow">⚑ ${esc(g.name)} <span class="muted">${g.about ? `· ${esc(g.about)} ` : ""}· ${g.online}/${g.members} online</span></span><button class="${g.open ? "go" : ""}" data-v="g_join" data-g="${esc(g.name)}" title="${g.open ? "open: you are in at once" : "its ops are asked"}">${g.open ? "Join" : "Ask"}</button></div>`);
-          if (!list.length) rows.push(`<div class="row muted">no other groups in this lobby yet</div>`);
+          for (const g of list) {
+            const k = g.name.toLowerCase();
+            rows.push(`<div class="row"><span class="grow">⚑ ${esc(g.name)}${g.locked ? " 🔒" : ""} <span class="muted">${g.about ? `· ${esc(g.about)} ` : ""}· ${g.online}/${g.members} online</span></span>${g.open
+              ? `<button class="go" data-v="g_join" data-g="${esc(g.name)}" title="public: you are in at once">Join</button>`
+              : g.locked ? `<button data-v="g_ask" data-g="${esc(k)}" class="${joining === k ? "go" : ""}" title="it takes a password: its members have it">Join…</button>` : `<button disabled title="closed: its owner has not opened it">closed</button>`}</div>`);
+            if (joining === k) rows.push(`<form class="row" data-f="g_join" data-g="${esc(g.name)}"><input name="password" maxlength="64" placeholder="${esc(g.name)}'s password" autocomplete="off"><button class="go">Join</button></form>`);
+          }
+          if (!list.length) rows.push(`<div class="row muted">no other worlds in this lobby yet</div>`);
         }
       }
       // People: one row each, whoever is in the lobby and whoever you are linked with, either way, linked first. A
@@ -4419,12 +4491,12 @@
           continue;
         }
         if (!o) continue;
-        const word = o.public ? "Walk in" : o.links ? "Link" : "Knock", asking = v.knocking.some(k => k.to === o.id);
+        const word = o.links ? "Link" : "Knock", asking = v.knocking.some(k => k.to === o.id);
         const why = !o.ready ? "not ready" : o.status !== "available" ? o.status : !o.links && o.visitors >= o.maxVisitors ? "full" : asking ? "asking…" : "";
         const ou = o.key && v.userOf(o.key);
         const kin = v.groupsWith(o.key);
         rows.push(`<div class="row">${dot}${star(o.key, o.name)}<span class="grow" title="${esc(o.name)}${kin.length ? ` · in ${esc(kin.join(", "))} with you` : ""}">${ou ? `<b>${esc(ou)}</b> <span class="muted">(${esc(o.name)})</span>` : esc(o.name)}${kin.length ? " ⚑" : ""} <span class="muted">${esc(o.sim.name || "")} ${o.visitors}/${o.maxVisitors}</span>${o.about && o.about.text ? `<br><span class="muted">${esc(o.about.text)}${o.about.tags.length ? " · " + o.about.tags.map(t => "#" + esc(t)).join(" ") : ""}</span>` : ""}</span>
-          <button data-v="${o.public ? "walk" : "knock"}" data-o="${esc(o.id)}" ${why ? `disabled title="${esc(why)}"` : `title="${o.public ? "their door is open to anyone: in at once" : o.links ? "see their room in a corner, once they say yes: then go there, or put it in your world" : "an older Visit: you walk into their room once they say yes"}"`}>${asking ? (o.public ? "Walking in…" : `${word}ing…`) : word}</button></div>`);
+          <button data-v="knock" data-o="${esc(o.id)}" ${why ? `disabled title="${esc(why)}"` : `title="${o.links ? "see their room in a corner, once they say yes: then go there, or put it in your world" : "an older Visit: you walk into their room once they say yes"}"`}>${asking ? `${word}ing…` : word}</button></div>`);
         if (composing === o.id) rows.push(`<form class="row" data-o="${esc(o.id)}"><input maxlength="280" placeholder="a message for ${esc(o.name)}"><button class="go">${word}</button></form>`);
       }
       if (v.state === "online" && v.offices.length < 2) rows.push(`<div class="row muted">nobody else is here yet</div>`);
@@ -4436,7 +4508,9 @@
       if (html === drawn) return;   // nothing new: an open menu stays open, a click lands
       drawn = html;
       root.innerHTML = html;
-      const input = root.querySelector("form[data-o] input, form[data-f] input");   // a knock's message, a group's name, your room's line
+      // A knock's message, a world's name or password, your line: the box just opened takes the keys. Never a browser's
+      // code box: it stays while the list of browsers under it changes, and the panel redraws only when no box is typed in.
+      const input = root.querySelector("form[data-o] input, form[data-f]:not([data-f=code]) input");
       if (input && !root.contains(document.activeElement)) input.focus();
     }
     root.addEventListener("click", e => {
@@ -4445,20 +4519,31 @@
       const act = b.dataset.v;
       if (act === "fold") { folded = !folded; try { localStorage.setItem("visit:panel", folded ? "folded" : "open"); } catch (x) { /* not kept */ } draw(); }
       else if (act === "knock") { composing = composing === b.dataset.o ? null : b.dataset.o; draw(); }
-      else if (act === "walk") v.knock(b.dataset.o);   // a public door: let in at once
       else if (act === "lobby") v.openLobby().catch(x => note(`The lobby's page: ${x.message || x}`));
+      else if (act === "qr") {
+        if (qr) { qr = null; return draw(); }
+        v.lobbyQr().then(p => { if (!p.qr) throw new Error("no QR code"); qr = { svg: p.qr, until: p.expires * 1000 }; draw(); setTimeout(() => { if (qr && qr.until <= Date.now()) { qr = null; draw(); } }, Math.max(0, qr.until - Date.now()) + 500); },
+          x => note(`📱 ${x.message || x}`));
+      }
+      else if (act === "browsers") { linking = !linking; v.browserPending = null; if (linking) v.listBrowsers(); draw(); }
+      else if (act === "b_allow") v.allowBrowser(b.dataset.code);   // ("browsers" then says it is linked)
+      else if (act === "b_not") { v.browserPending = null; draw(); }
+      else if (act === "b_unlink") v.unlinkBrowser(b.dataset.key);
       else if (act === "describe") { describing = !describing; draw(); }
       else if (act === "unlist") { v.setAbout(null); describing = false; draw(); }
-      else if (act === "find") { finding = !finding; if (finding) v.findGroups(); draw(); }
+      else if (act === "find") { finding = !finding; joining = null; if (finding) v.findGroups(); draw(); }
       else if (act === "new") { making = !making; draw(); }
       else if (act === "group") { if (!groupsOpen.delete(b.dataset.g)) groupsOpen.add(b.dataset.g); draw(); }
       else if (act === "g_join") { v.joinGroup(b.dataset.g); setTimeout(() => v.findGroups(), 500); }
+      else if (act === "g_ask") { joining = joining === b.dataset.g ? null : b.dataset.g; draw(); }
       else if (act === "g_leave") v.leaveGroup(b.dataset.g);
       else if (act === "g_end") { if (confirm(`End ${b.dataset.g} for everyone in it?`)) v.deleteGroup(b.dataset.g); }
-      else if (act === "g_yes" || act === "g_no") v.answerGroup(b.dataset.g, b.dataset.key, act === "g_yes");
       else if (act === "g_out") v.removeFromGroup(b.dataset.g, b.dataset.key);
-      else if (act === "g_op") v.setGroupOp(b.dataset.g, b.dataset.key, !!b.dataset.op);
-      else if (act === "g_open") v.setGroup(b.dataset.g, { open: !!b.dataset.open });
+      else if (act === "g_ban") v.removeFromGroup(b.dataset.g, b.dataset.key, { ban: true });
+      else if (act === "g_unban") v.unbanFromGroup(b.dataset.g, b.dataset.key);
+      else if (act === "g_owner") { if (confirm(`Hand ${b.dataset.g} to ${b.dataset.name}? They own it then, not you.`)) v.handGroup(b.dataset.g, b.dataset.key); }
+      else if (act === "g_pw") { passwording = passwording === b.dataset.g ? null : b.dataset.g; draw(); }
+      else if (act === "g_public") { if (confirm(`Make ${b.dataset.g} public? Anyone joins then, no password.`)) v.setGroup(b.dataset.g, { open: true }); }
       else if (act === "more") { if (!opened.delete(b.dataset.p)) opened.add(b.dataset.p); draw(); }
       else if (act === "cut") {   // every link between you two, ended both ways; no longer a guest (their world would come back)
         const k = b.dataset.p, is = who => !!who && (who.key === k || who.id === k), ends = new Set();
@@ -4503,17 +4588,31 @@
       if (e.target.dataset.v === "always") { if (e.target.checked) always.add(e.target.dataset.k); else always.delete(e.target.dataset.k); }
       if (e.target.dataset.v === "status") v.setStatus(e.target.value);
       if (e.target.dataset.v === "max") v.setMaxVisitors(Number(e.target.value));
-      if (e.target.dataset.v === "door") { if (e.target.value === "public") v.setPublic(true); else { if (v.publicDoor) v.setPublic(false); v.setDoor(e.target.value === "open"); } }
+      if (e.target.dataset.v === "door") v.setDoor(e.target.value === "open");
       if (e.target.dataset.v === "looks") v.useAvatars(e.target.value);
       if (e.target.dataset.v === "mount") { if (v.riding) v.ride(e.target.value); else { v.mount = e.target.value; try { localStorage.setItem("visit:mount", v.mount); } catch (x) { /* not kept */ } } }
     });
     root.addEventListener("submit", e => {
       e.preventDefault();
       const f = e.target.closest("form");
-      if (f.dataset.f === "group") {   // a group of your own
+      if (f.dataset.f === "group") {   // a world of your own: public, or with a password
         const name = f.elements.name.value.trim();
-        if (name) v.createGroup(name, { about: f.elements.about.value.trim(), open: f.elements.open.checked });
+        if (name) v.createGroup(name, { about: f.elements.about.value.trim(), password: f.elements.password.value || null });
         making = false; document.activeElement.blur(); return draw();
+      }
+      if (f.dataset.f === "g_join") {   // a locked world, its password
+        v.joinGroup(f.dataset.g, f.elements.password.value);
+        joining = null; setTimeout(() => v.findGroups(), 800); document.activeElement.blur(); return draw();
+      }
+      if (f.dataset.f === "g_pw") {   // your world's password, new
+        if (f.elements.password.value) v.setGroup(f.dataset.g, { password: f.elements.password.value });
+        passwording = null; document.activeElement.blur(); return draw();
+      }
+      if (f.dataset.f === "code") {   // a browser's code, as it shows it: the browser waiting with it, to allow
+        const code = f.elements.code.value.trim();
+        document.activeElement.blur();
+        if (code) v.linkBrowser(code).then(() => draw(), x => note(`Link a browser: ${x.message || x}`));
+        return;
       }
       if (f.dataset.f === "about") {   // your room's line in the lobby's list
         const tags = f.elements.tags.value.split(/[,\s]+/).map(t => t.trim().toLowerCase().replace(/^#/, "")).filter(Boolean);
@@ -4532,7 +4631,7 @@
     const speaking = setInterval(() => { if (v.mic || v.voices.length || v._calls.size) draw(); }, 250);   // who is near, and speaking
     draw();
     return { element: root, chat: cw,
-      release() { clearInterval(timer); clearInterval(speaking); v.off("change", draw); v.off("seen", onSeen); v.off("call", onCall); v.off("model", onModel); v.off("body", onBody); for (const t of seenWait.values()) clearTimeout(t); if (cw) cw.release(); removeEventListener("keydown", mountKey); root.remove(); },
+      release() { clearInterval(timer); clearInterval(speaking); v.off("change", draw); v.off("seen", onSeen); v.off("call", onCall); v.off("model", onModel); v.off("body", onBody); v.off("browsers", onBrowsers); for (const t of seenWait.values()) clearTimeout(t); if (cw) cw.release(); removeEventListener("keydown", mountKey); root.remove(); },
       say() { if (cw) cw.open(); } };   // the chat window, open to type a line (as Enter does)
   }
 
@@ -4691,7 +4790,7 @@
     const yours = () => ({ scope: "sim", key: v.key || "", name: v.office ? v.office.name : "" });   // your room's chat
     const room = t => t.key === v.key ? "your room" : `${t.name || "a"}'s room`;
     const whom = t => v.whisperTargets.find(o => (t.key && o.key === t.key) || o.id === t.id);   // a whisper's person, now
-    const label = t => t.scope === "lobby" ? "Lobby" : t.scope === "group" ? `Group ${t.name}` : t.scope === "whisper" ? `Tell ${t.name}${whom(t) ? "" : " (away)"}` : t.scope === "sim" ? `To ${room(t)}` : "Say";
+    const label = t => t.scope === "lobby" ? "Lobby" : t.scope === "group" ? `World ${t.name}` : t.scope === "whisper" ? `Tell ${t.name}${whom(t) ? "" : " (away)"}` : t.scope === "sim" ? `To ${room(t)}` : "Say";
     const groupTo = g => ({ scope: "group", key: g.name.toLowerCase(), name: g.name });   // one of your world groups' chat
     const same = (a, b) => a.scope === b.scope && (a.key || a.id || null) === (b.key || b.id || null);
     // A line's text, in parts: a name ({ name, key }), in its own colour, among the rest.
@@ -4912,7 +5011,7 @@
       drawPicker();
     };
     names.addEventListener("mousedown", e => { const b = e.target.closest("button[data-i]"); if (b) { e.preventDefault(); take(Number(b.dataset.i)); input.focus(); } });
-    const help = "/s say (everyone who can see you) · /w name (a whisper) · /r reply · /room (your room's chat) · /room name (a linked room's) · /1 the lobby · /g group (a group's chat; /2, /3… yours in order) · /voice (🎧) · @ a name: mention them";
+    const help = "/s say (everyone who can see you) · /w name (a whisper) · /r reply · /room (your room's chat) · /room name (a linked room's) · /1 the lobby · /g world (a world's chat; /2, /3… yours in order) · /voice (🎧) · @ a name: mention them";
     // Pictures for the next line (pasted, or dropped on the window: each kept by the visit-client at once, `media`
     // once kept), and a link's preview (made as the link is typed; ✕: none for it).
     let pending = [], linkCard = null, linkTimer = null;
@@ -5036,12 +5135,12 @@
       if (cmd === "s" || cmd === "say") next = { scope: "say" };
       else if (cmd === "1" || cmd === "l" || cmd === "lobby") next = v.lobbyChat ? { scope: "lobby" } : (done && note("No lobby chat: this lobby does not carry it, or you are not in it"), null);
       else if (cmd === "r" || cmd === "reply") next = last || told || (done && note("Nobody has whispered to you yet"), null);
-      else if (/^[2-9]$/.test(cmd)) { const g = v.groups[Number(cmd) - 2]; next = g ? groupTo(g) : (done && note(`/${cmd}: your ${["second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth"][Number(cmd) - 2]} group's chat, and you are in ${v.groups.length}`), null); }
+      else if (/^[2-9]$/.test(cmd)) { const g = v.groups[Number(cmd) - 2]; next = g ? groupTo(g) : (done && note(`/${cmd}: your ${["second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth"][Number(cmd) - 2]} world's chat, and you are in ${v.groups.length}`), null); }
       else if (cmd === "g" || cmd === "group") {
         const g = named(v.groups, rest, done) || (done && !rest.trim() && v.groups.length === 1 ? v.groups[0] : null);
         if (g) { next = groupTo(g); rest = rest.slice(g.name.length + 1); }
         else if (!done) return false;
-        else note(v.groups.length ? `/${cmd} and one of your groups: ${v.groups.map(x => x.name).join(", ")}` : "You are in no group: the panel finds them");
+        else note(v.groups.length ? `/${cmd} and one of your worlds: ${v.groups.map(x => x.name).join(", ")}` : "You are in no world: the panel finds them");
       }
       else if (["w", "t", "whisper", "tell", "room", "sim"].includes(cmd)) {
         const rooms = cmd === "room" || cmd === "sim", o = named(rooms ? v.chatTargets : v.whisperTargets, rest, done) || (!rooms && named(v.awayTargets, rest, done));
@@ -5225,13 +5324,13 @@
       if (!l.mine && l.id) tell = last = { scope: "whisper", id: l.id, key: l.key || null, name: l.name };
       else if (l.mine && l.to && l.to.id) tell = told = { scope: "whisper", id: l.to.id, key: l.to.key || null, name: l.to.name };
     };
-    const onError = e => { if (e && (["say", "whisper", "chat", "voice_join", "groups", "admin", "about"].includes(e.ref) || String(e.ref || "").startsWith("group_"))) note(String(e.message || e.code)); };
-    // The lobby (LOBBY.md): its greeting as you join it; the sign-in it takes; your groups, as they change.
-    const onOnline = info => note(`In ${info.title || "the lobby"}${info.motd ? `: ${info.motd}` : ""}${v.groups.length ? ` · your groups: ${v.groups.map(g => g.name).join(", ")} (/g)` : ""}`);
+    const onError = e => { if (e && (["say", "whisper", "chat", "voice_join", "groups", "admin", "about", "browser_allow", "browser_revoke"].includes(e.ref) || String(e.ref || "").startsWith("group_"))) note(String(e.message || e.code)); };
+    // The lobby (LOBBY.md): its greeting as you join it; the sign-in it takes; your worlds, as you join and leave them.
+    const onOnline = info => note(`In ${info.title || "the lobby"}${info.motd ? `: ${info.motd}` : ""}${v.groups.length ? ` · your worlds: ${v.groups.map(g => g.name).join(", ")} (/g)` : ""}`);
     const onSigned = on => note(on ? "Signed in on this workroom: joining the lobby" : "Nobody is signed in on this workroom: out of the lobby until someone is");
-    const onRequest = r => note(`${r.from ? r.from.name : "Someone"} asks to join ${r.group}: let them in from the panel`);
-    const onAnswered = a => note(a.accept === null ? `Asked to join ${a.group}: its ops will answer` : a.accept ? `You are in ${a.group} now: its members' rooms may be in your world, and yours in theirs` : `Not let into ${a.group}`);
-    const onLeft = l => { if (l.reason !== "left") note(l.reason === "removed" ? `Taken out of ${l.group}` : `${l.group} has ended`); };
+    const known = new Set(v.groups.map(g => g.name.toLowerCase()));
+    const onGroup = g => { const k = g.name.toLowerCase(); if (!known.has(k)) { known.add(k); note(`You are in ${g.name} now: its members' rooms sit round yours, and yours round theirs (/g to talk)`); } };
+    const onLeft = l => { known.delete(String(l.group).toLowerCase()); if (l.reason !== "left") note(l.reason === "removed" ? `Taken out of ${l.group}` : l.reason === "banned" ? `Taken out of ${l.group}, and kept out` : `${l.group} has ended`); };
     const onVoice = rv => {   // into a room voice (said once), or out of one (and why)
       const o = rv && rv.out;
       if (o) note(o.why === "kicked" ? `${o.name} took you out of their room's voice` : o.why === "banned" ? `${o.name}'s room keeps you out of its voice` : `Out of ${o.name}'s room's voice: you are no longer linked`);
@@ -5243,19 +5342,19 @@
     addEventListener("keydown", key);
     v.on("chat", onChat); v.on("error", onError); v.on("room_voice", onVoice); v.on("banned", onBanned); v.on("change", voiceLine); v.on("voice", voiceLine);
     v.on("unseen", mailSay); v.on("held", mailSay); v.on("held_sent", onHeldSent);
-    v.on("online", onOnline); v.on("signed_in", onSigned); v.on("group_request", onRequest); v.on("group_answered", onAnswered); v.on("group_left", onLeft);
+    v.on("online", onOnline); v.on("signed_in", onSigned); v.on("group", onGroup); v.on("group_left", onLeft);
     mailSay(); look();
     voiceIn = v.roomVoice && !v.roomVoice.joining ? v.roomVoice.key : null;
     voiceLine();
     for (const l of v.chatLog) { add(l); heard(l); }
-    intro = note("Enter to chat · Tab where it goes · @ mention · paste a picture · 🎙 voice message · 🖼 shared · 🎧 voice · /s say · /w whisper · /r reply · /room yours, /room name · /1 lobby · /g group");
+    intro = note("Enter to chat · Tab where it goes · @ mention · paste a picture · 🎙 voice message · 🖼 shared · 🎧 voice · /s say · /w whisper · /r reply · /room yours, /room name · /1 lobby · /g world");
     return {
       element: root, open, close,
       release() {
         removeEventListener("keydown", key);
         v.off("chat", onChat); v.off("error", onError); v.off("room_voice", onVoice); v.off("banned", onBanned); v.off("change", voiceLine); v.off("voice", voiceLine);
         v.off("unseen", mailSay); v.off("held", mailSay); v.off("held_sent", onHeldSent);
-        v.off("online", onOnline); v.off("signed_in", onSigned); v.off("group_request", onRequest); v.off("group_answered", onAnswered); v.off("group_left", onLeft);
+        v.off("online", onOnline); v.off("signed_in", onSigned); v.off("group", onGroup); v.off("group_left", onLeft);
         recStop(false); clearInterval(lookTimer); v.attention(false);
         removeEventListener("focus", look); removeEventListener("blur", look); document.removeEventListener("visibilitychange", look);
         for (const t of STIRS) removeEventListener(t, stir, { capture: true });

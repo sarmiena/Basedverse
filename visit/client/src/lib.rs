@@ -440,7 +440,7 @@ pub async fn run_with(a: Args, stop: impl std::future::Future<Output = ()> + Sen
     tokio::spawn(db::run(database, client, db_rx, core_tx.clone()));
     let away = saved.away;
     let hello = lobby::Hello { name: a.name.clone(), sim, status: "available".into(), max_visitors: a.max_visitors,
-                               about: saved.about.clone(), public: saved.public };
+                               about: saved.about.clone() };
     match a.lobby.clone() {
         Some(url) => {
             tokio::spawn(lobby::run(url, saved.key.clone(), hello, lobby_rx, core_tx.clone(), away));
