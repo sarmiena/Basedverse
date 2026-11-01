@@ -13,6 +13,8 @@ const MAX_PREVIEW_IMAGE: usize = 2 << 20;
 const MAX_PAGE: u64 = 512 << 10;
 /// The largest voice message (Visit 0.22.0): a minute, recorded as a browser does (Opus, else AAC), fits.
 pub const MAX_VOICE: usize = 2 << 20;
+/// A room's own sound (3.4, #36: a clip its page plays from somewhere in it, for everyone in it), at most.
+pub const MAX_SOUND: usize = 4 << 20;
 /// Its longest, in seconds, as its sender says.
 pub const VOICE_SECS: f64 = 60.0;
 /// At most this many pictures (a voice message among them, at most one), and links, in a line.
@@ -51,6 +53,17 @@ pub fn sniff_voice(b: &[u8]) -> Option<&'static str> {
 /// The kinds a voice message may be.
 pub const VOICE_KINDS: [&str; 3] = ["audio/webm", "audio/ogg", "audio/mp4"];
 
+/// A room's sound (3.4, #36), by what its bytes start with: a voice message's kinds, or WAV, or MP3; else none.
+pub fn sniff_sound(b: &[u8]) -> Option<&'static str> {
+    if b.len() >= 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WAVE" {
+        Some("audio/wav")
+    } else if b.starts_with(b"ID3") || (b.len() >= 2 && b[0] == 0xFF && b[1] & 0xE0 == 0xE0) {
+        Some("audio/mpeg")
+    } else {
+        sniff_voice(b)
+    }
+}
+
 /// A picture, checked: one of the four kinds, by its bytes, at most `max`; its id (the blake3 hash of it, hex) and
 /// type.
 pub fn picture(b: &[u8], max: usize) -> Option<(String, &'static str)> {
@@ -63,10 +76,11 @@ pub fn picture(b: &[u8], max: usize) -> Option<(String, &'static str)> {
 /// What a line may share, checked: a picture (at most MAX_MEDIA) or a voice message (at most MAX_VOICE), by its bytes;
 /// its id and type.
 pub fn shared(b: &[u8]) -> Option<(String, &'static str)> {
-    match sniff_voice(b) {
-        Some(mime) if !b.is_empty() && b.len() <= MAX_VOICE => Some((blake3::hash(b).to_hex().to_string(), mime)),
-        Some(_) => None,
-        None => picture(b, MAX_MEDIA),
+    let id = || blake3::hash(b).to_hex().to_string();
+    match (sniff_voice(b), sniff_sound(b)) {
+        (Some(mime), _) => (!b.is_empty() && b.len() <= MAX_VOICE).then(|| (id(), mime)),   // a voice message's kinds: MAX_VOICE
+        (None, Some(mime)) => (b.len() <= MAX_SOUND).then(|| (id(), mime)),   // 3.4: a room's WAV or MP3 sound
+        (None, None) => picture(b, MAX_MEDIA),
     }
 }
 
@@ -341,6 +355,11 @@ mod tests {
         assert_eq!(sniff_voice(b"\x1a\x45\xdf\xa3\x9f\x42\x82\x88matroska"), None);   // a Matroska file that says it is no WebM
         assert_eq!(sniff_voice(b"OggS\0\x02"), Some("audio/ogg"));
         assert_eq!(sniff_voice(b"\0\0\0\x18ftypiso5"), Some("audio/mp4"));
+        // 3.4: a room's sounds: WAV and MP3 too, at most MAX_SOUND.
+        assert_eq!(sniff_sound(b"RIFF\x24\0\0\0WAVEfmt "), Some("audio/wav"));
+        assert_eq!((sniff_sound(b"ID3\x04"), sniff_sound(&[0xFF, 0xFB, 0x90])), (Some("audio/mpeg"), Some("audio/mpeg")));
+        assert_eq!(shared(b"RIFF\x24\0\0\0WAVEfmt ").map(|x| x.1), Some("audio/wav"));
+        assert!(shared(&[b"RIFF\x24\0\0\0WAVE".as_slice(), &vec![0u8; MAX_SOUND]].concat()).is_none());
         assert_eq!(sniff_voice(b"GIF89a.."), None);
         assert_eq!(shared(webm).map(|x| x.1), Some("audio/webm"));
         assert_eq!(shared(b"GIF89a..").map(|x| x.1), Some("image/gif"));

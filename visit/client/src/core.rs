@@ -229,6 +229,8 @@ const MEDIA_RECENT: usize = 8;
 /// The most points a second taken from a visitor (a click at the middle of its view: 8.3); more are dropped.
 /// Its page sends at most one every 200 ms.
 const POINTS_PER_SECOND: u32 = 5;
+/// A room's one-shot sounds (3.4, #36) its page plays, at most this many a second, for everyone in it.
+const SOUNDS_PER_SECOND: u32 = 10;
 /// The most notches of the wheel one point carries, either way (8.3): its page adds up those between its points.
 const MAX_WHEEL: f64 = 10.0;
 /// How long a guest let in through the open door is waited for, to be agreed as a visit by the lobby.
@@ -318,6 +320,8 @@ pub struct Core {
     says: (Instant, u32),
     /// Lines each of this room's own figures said (`say_as`, 8.9), by its id, in its current window.
     npc_says: HashMap<String, (Instant, u32)>,
+    /// 3.4 (#36): this room's one-shots in the last second.
+    sounds_at: (Instant, u32),
     /// The chat this office's user has had (8.9), theirs too: the last CHAT_KEPT lines, each with when, for a page
     /// that comes back (a reload); all of it is in the database (8.12), and this run began with its last lines.
     chat: VecDeque<Value>,
@@ -411,6 +415,7 @@ impl Core {
             voice: VoiceRoom::default(),
             says: (Instant::now(), 0),
             npc_says: HashMap::new(),
+            sounds_at: (Instant::now(), 0),
             chat: loaded.chat.into_iter().collect(),
             db,
             unseen: loaded.unseen.into_iter().collect(),
@@ -1367,6 +1372,35 @@ impl Core {
                 chat["conversation"] = json!(format!("room:{}", self.key));
                 self.to_page(chat);
             }
+            // 3.4 (#36): a sound of this room's own, once, from a point in it (`at`, its units): to everyone in it (its
+            // visitors, the watchers who stepped in, and its own user, at home on the engine), each to play by their
+            // distance and side. Its clip (`id`) is one of the room's (its page put it here); at most SOUNDS_PER_SECOND.
+            "sound_at" => {
+                let id = m.get("id").and_then(Value::as_str).filter(|id| media::id_ok(id)).map(str::to_string);
+                let at = m.get("at").and_then(Value::as_array).filter(|a| a.len() == 3)
+                    .and_then(|a| a.iter().map(|x| x.as_f64().filter(|x| x.is_finite() && x.abs() <= 1e5)).collect::<Option<Vec<f64>>>());
+                let (Some(id), Some(at)) = (id, at) else {
+                    return self.page_error("bad_message", "sound_at is { id (a sound's, 64 hex), at: [x, y, z] (in the room's units) }", Some("sound_at"));
+                };
+                if self.sounds_at.0.elapsed() >= Duration::from_secs(1) {
+                    self.sounds_at = (Instant::now(), 0);
+                }
+                if self.sounds_at.1 >= SOUNDS_PER_SECOND {
+                    return self.page_error("rate_limited", &format!("at most {SOUNDS_PER_SECOND} sounds a second"), Some("sound_at"));
+                }
+                self.sounds_at.1 += 1;
+                let num = |k: &str, d: f64, lo: f64, hi: f64| m.get(k).and_then(Value::as_f64).filter(|x| x.is_finite()).map_or(d, |x| x.clamp(lo, hi));
+                let sound = json!({ "id": id, "at": at, "volume": num("volume", 1.0, 0.0, 1.0), "ref": num("ref", 2.0, 0.1, 1000.0), "far": num("far", 30.0, 0.5, 10000.0) });
+                for v in self.visits.values().filter(|v| v.up && v.role == Role::Host && v.inside && !v.local) {
+                    let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "sound": sound })));
+                }
+                if let Some(ch) = self.visits.values().find(|v| v.up && v.local && v.role == Role::Visitor).map(|v| v.channel) {   // its own user, at home (the engine)
+                    let mut s = sound;
+                    s["type"] = json!("sound");
+                    s["channel"] = json!(ch);
+                    self.to_page(s);
+                }
+            }
             // Whether someone is looking at this page's chat now (8.9): a line meant for its user that comes meanwhile is
             // seen as it comes; else it waits in the mailbox until they have read it (`read`).
             "attention" => self.attention = m.get("on") == Some(&json!(true)),
@@ -1421,7 +1455,17 @@ impl Core {
             // A picture the page would show (8.12): sent to it (a binary message, never dropped) once this office has
             // it, or `media_none`.
             "media_get" => match m.get("id").and_then(Value::as_str).filter(|id| media::id_ok(id)) {
-                Some(id) => { let _ = self.db.send(DbCmd::GetMedia { id: id.to_string(), to: MediaTo::Page }); }
+                Some(id) => {
+                    // 3.4 (#36): `channel`, the room it is from (a room's sound, as its scene names it): asked of that
+                    // room's host if this visit-client does not have it, as a line's picture is (want_media).
+                    let from = m.get("channel").and_then(Value::as_u64)
+                        .and_then(|ch| self.visits.values().find(|v| v.up && v.role == Role::Visitor && !v.local && u64::from(v.channel) == ch)).map(|v| v.id.clone());
+                    if let Some(vid) = from.filter(|_| !self.media_asked.contains_key(id)) {
+                        self.media_asked.insert(id.to_string(), (Instant::now(), vid.clone(), false));
+                        let _ = self.db.send(DbCmd::HasMedia { id: id.to_string(), visit: vid });
+                    }
+                    let _ = self.db.send(DbCmd::GetMedia { id: id.to_string(), to: MediaTo::Page });
+                }
                 None => self.page_error("bad_message", "id is a picture's id (64 hex characters)", Some("media_get")),
             },
             // A link's preview, made here (8.12: fetched once, by its sender): `preview` when made.
@@ -3407,6 +3451,14 @@ impl Core {
                         }
                     }
                     self.to_page(line);
+                } else if let Some(s) = m.get("sound").filter(|_| v.inside) {   // 3.4 (#36): a sound of the host's room, once, from a point in it
+                    let id = s.get("id").and_then(Value::as_str).filter(|id| media::id_ok(id));
+                    let at = s.get("at").and_then(Value::as_array).filter(|a| a.len() == 3 && a.iter().all(|x| x.as_f64().is_some_and(|x| x.is_finite() && x.abs() <= 1e5)));
+                    if let (Some(id), Some(at)) = (id, at) {
+                        let num = |k: &str, d: f64, lo: f64, hi: f64| s.get(k).and_then(Value::as_f64).filter(|x| x.is_finite()).map_or(d, |x| x.clamp(lo, hi));
+                        let m = json!({ "type": "sound", "channel": ch, "id": id, "at": at, "volume": num("volume", 1.0, 0.0, 1.0), "ref": num("ref", 2.0, 0.1, 1000.0), "far": num("far", 30.0, 0.5, 10000.0) });
+                        self.to_page(m);
+                    }
                 } else if let Some(near) = m.get("near").filter(|_| v.inside) {   // who is near this office's user in the host's room (8.7)
                     let near = near_from(near);
                     v.near_keys = near.as_array().into_iter().flatten().filter_map(|e| e["key"].as_str().map(str::to_string)).collect();
@@ -3530,7 +3582,7 @@ fn page_for(v: &Value) -> PageRole {
         | "voice_near" | "room_voice" | "voice_members" | "user" | "banned" | "seen" | "layout" | "landscape"
         | "plot_forgotten" | "knock" | "knock_sent" | "knock_cancelled" | "answered" | "link_stats" | "scene"
         | "scene_lost" | "host_paused" | "host_resumed" | "enter_refused" | "body" | "call" | "phone" | "lobby_pass" | "browser_pending"
-        | "browser_confirm" | "browsers" | "ignored" => PageRole::User,
+        | "browser_confirm" | "browsers" | "ignored" | "sound" => PageRole::User,
         _ => PageRole::Both,
     }
 }
@@ -3538,7 +3590,7 @@ fn page_for(v: &Value) -> PageRole {
 /// Whether a page of this role may send a message of this type (../../engine/SPEC.md 3.3). A page without a role
 /// may send them all.
 fn role_may(role: PageRole, t: &str) -> bool {
-    const HOST: &[&str] = &["host", "pose", "avatar_want", "possession_want", "phone", "body", "say_as"];
+    const HOST: &[&str] = &["host", "pose", "avatar_want", "possession_want", "phone", "body", "say_as", "sound_at"];
     const USER: &[&str] = &["input", "point", "keyframe", "scene_resync", "avatar_clear", "possessions", "user", "say", "attention", "read",
         "unhold", "media_get", "preview", "history", "shared", "voice_join", "call", "speaker", "world", "enter", "exit", "pick", "unpick", "place", "unplace", "ignore", "unignore", "ignore_clear", "act",
         "seen", "plot_keep", "plot_load", "plot_forget", "link_where", "knock", "answer", "leave_lobby", "join_lobby", "status", "rename",
@@ -3555,7 +3607,10 @@ fn role_may(role: PageRole, t: &str) -> bool {
 /// and landscape are the host's; the person's avatar, possessions, voice and pictures are the user's.
 fn frame_may(role: PageRole, b: &[u8]) -> bool {
     let Some(flags) = b.get(2) else { return true };   // (malformed: refused later, as such)
-    let users = flags & (frames::AVATAR | frames::AUDIO | frames::POSSESSION | frames::MEDIA) != 0;
+    let users = flags & (frames::AVATAR | frames::AUDIO | frames::POSSESSION) != 0;
+    if flags & frames::MEDIA != 0 {
+        return true;   // a picture or voice message (the user's), or a room's sound (3.4: its page's)
+    }
     match role {
         PageRole::Both => true,
         PageRole::Host => !users,

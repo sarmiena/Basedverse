@@ -1056,6 +1056,37 @@ async def main():
         ac = await b.until(lambda m: m["type"] == "act")
         check("and B's own, at home: as its owner", (ac.get("owner"), ac["figure"]), (True, "guide"))
         await asyncio.sleep(10)   # (A's and B's lines here: at most 5 every 10 s, and the next ones count)
+
+        print("\nroom sounds (3.4, #36): the room's page keeps its sounds; one played once, to everyone in it; a visitor fetches its clip from the room")
+        await a.drain(); await b.drain(); await c.drain()
+
+        async def media_frame(pg):
+            while True:
+                f = await asyncio.wait_for(pg.frames.get(), 10)
+                if f[2] == 128:
+                    n = f[11]
+                    m = f[12 + n]
+                    return f[12:12 + n].decode(), f[13 + n:13 + n + m].decode(), f[13 + n + m:]
+        wav = b"RIFF" + struct.pack("<I", 36 + 800) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, 8000, 16000, 2, 16) + b"data" + struct.pack("<I", 800) + bytes(800)
+        await b.ws.send(struct.pack(">HBQ", 21, 128, 0) + wav)
+        mr = await b.until(lambda m: m["type"] in ("media_ready", "error"))
+        check("B's page (the room's) keeps a sound (a WAV), by its hash", (mr["type"], mr["slot"], mr["mime"], mr["size"]), ("media_ready", 21, "audio/wav", len(wav)))
+        sid = mr["id"]
+        await b.ws.send(struct.pack(">HBQ", 22, 128, 0) + b"RIFF\0\0\0\0WAVE" + bytes(4 << 20))
+        check("one over 4 MB: refused, by its slot", ((await b.until(lambda m: m["type"] == "error"))["slot"]), 22)
+        await b.send(type="sound_at", id=sid, at=[1, 0.5, 2], volume=0.8, far=20)
+        s1, s2 = await a.until(lambda m: m["type"] == "sound"), await c.until(lambda m: m["type"] == "sound")
+        check("B plays it once from a point in its room: A and C, in it, each hear of it, on their visit's channel",
+              (s1["channel"], s1["id"], s1["at"], s1["volume"], s1["ref"], s1["far"], s2["channel"]), (va["channel"], sid, [1.0, 0.5, 2.0], 0.8, 2.0, 20.0, vc["channel"]))
+        await a.send(type="media_get", id=sid, channel=va["channel"])
+        check("A's page asks for its clip, by the room it is in: A's visit-client fetches it from B's, and gives it", await media_frame(a), (sid, "audio/wav", wav))
+        await b.send(type="sound_at", id="nope", at=[0, 0, 0])
+        check("a sound that is no clip's id: refused", (await b.until(lambda m: m["type"] == "error"))["code"], "bad_message")
+        for _ in range(11):
+            await b.send(type="sound_at", id=sid, at=[0, 0, 0])
+        check("more than 10 a second: refused", (await b.until(lambda m: m["type"] == "error"))["code"], "rate_limited")
+        await asyncio.sleep(0.5)
+        await a.drain(); await b.drain(); await c.drain()
         await a.drain(); await b.drain(); await c.drain()
         await b.send(type="voice_where", me=None, phone=None, visitors=[[vb["channel"], 10, 0, 0]])
         await a.until(lambda m: m["type"] == "voice_near" and m["near"] == [])

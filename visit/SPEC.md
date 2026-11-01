@@ -432,7 +432,8 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `act` | `figure`, `action` | 3.3 (#48), the user's: one of the actions of a figure in the room its user is in (from their target's card): to that room's page (`act`), which runs it as a point at the figure would be, by that type's own rules (8.9, "Targets") |
 | `speaker` | `channel`, `on` (bool) | a call on this office's phone's speaker (8.8), or back to the ear (`no_call` if none is on there) |
 | `voice_where` | `me` [x, y, z] \| null, `phone` [x, y, z] \| null, `visitors` [[`channel`, x, y, z], …], `world` [[`key`, x, y, z], …] (metres, this room's terms) | where everyone in this office's room is (8.7): its own user (null: not in it), its phone, each visitor in it; and where its world has each friend at home in their own room, a plot in it (by their key; Visit 0.20). Who hears whom in the room, and across its plot's sides, goes by it. Sent when it changes, at most 10 a second |
-| `media_get` | `id` | a picture or a voice message (8.12) this page would show or play: sent as a binary message (5.4, bit 7) once this office has it (it asks the link the line came by, if it has not), or `media_none` |
+| `media_get` | `id`, `channel`? | a picture or a voice message (8.12) this page would show or play: sent as a binary message (5.4, bit 7) once this office has it (it asks the link the line came by, if it has not), or `media_none`. `channel` (3.4): a room's sound, from the room on that channel (8.13): asked of its host if this office does not have it |
+| `sound_at` | `id`, `at` [x, y, z], `volume`?, `ref`?, `far`? | 3.4, the room's page (host): one of its sounds (8.13), once, from that point (its units): to everyone in its room; at most 10 a second (`rate_limited`) |
 | `preview` | `url` (http or https), `req` | a link's preview (8.12), made by this visit-client (it fetches the page once): `preview` back, with `req` |
 | `history` | `before`? (ms since 1970; none: now), `limit`? (1–200, 50), `req` | the chat before then (8.12), from the database: `history` back, newest last |
 | `shared` | `conversation` (`room:<key>`, `person:<key>`, `lobby`, `group:<name in lower case>`), `kind` (`media`, `voice` or `links`), `before`?, `limit`? (1–200, 60), `req` | the pictures, the voice messages or the links shared in that conversation (8.12), newest first: `shared` back |
@@ -478,7 +479,8 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `call` | `channel`, `act` | a call on that visit (8.8): they ring, answer, or hang up |
 | `chat` | `channel`, `key`, `name`, `text`, and `id` (a visitor's, by its visit there), `npc` (one of the room's own figures, by its id) or `owner` (true: the room's owner); `target`? (3.3: { `kind`, `id` }, what a line said aloud is meant for); or `scope` | a line said (8.9): in this office's room by a visitor (that visit's channel, its `id`), or by one of its own figures (`npc`, no `channel`: `say_as`), or in a room its user is in or sees from outside (that visit's channel: its owner, one of its figures, or another visitor). `scope: "sim"`: said in a room's chat (`key`, `name`: its sayer): into this office's room from a linked office (`home: true`; `channel`, the link it came by), or in the chat of a room linked with this one (its owner's or said into it: `channel`, the link with that room's office). `scope: "whisper"`: whispered to this office's user (`id`, the sayer's office id; `key`, its key or null; or, 3.3, `npc`: one of a room's figures, `key` that room's, with `say_as`'s `to`). `scope: "lobby"`: said in the lobby (`id`, `key`, as a whisper's); this office's own too, in the lobby's order. `scope: "group"` (3.0.0): said in one of its worlds (`group`, its name; `id`, `key`, as a lobby line's; `mine` on this office's own, which comes back as the lobby's are). Never this office's own otherwise. `ready` and `online` say whether the lobby carries chat (`lobby_chat`) |
 | `chat_log` | `lines` | the chat this office's user has had (8.9), for a page that connects (a reload): after `ready` and the lobby, if there is any. Each line as `chat` gave it, with `at` (ms since 1970) and `conversation`; this office's own too (`mine: true`, `scope` "say", "sim" or "whisper", `to` as the page's `chat` event has it). The last 100 (all of it is in its database, 8.12: `history`) |
-| `media_ready` | `slot`, `id`, `mime`, `size` | a picture or a voice message the page shared (5.4, bit 7, on that slot), kept (8.12): its id. Neither: `error` (`bad_media`, `ref: "media_put"`, `slot`) |
+| `sound` | `channel`, `id`, `at`, `volume`, `ref`, `far` | 3.4: a sound of the room on that channel (8.13), once, from that point in it (its units) |
+| `media_ready` | `slot`, `id`, `mime`, `size` | a picture or a voice message the page shared, or (3.4) a room's sound (5.4, bit 7, on that slot), kept (8.12): its id. Neither: `error` (`bad_media`, `ref: "media_put"`, `slot`) |
 | `unseen` | `count`, `conversations` [{`conversation`, `count`}], `lines` | the mailbox (8.9, 0.22.0): how many lines meant for this office's user came while nobody looked and are not read yet, in all and by conversation, and the newest 100 of them (each as `chat_log`'s). After `chat_log` when there are any, as it changes, and in answer to `read` |
 | `held` | `held` [{`id`, `key`, `name`, `text`, `at`}] | the whispers this office's user left for someone away (8.9), still kept: after `ready` when there are any, and as they change |
 | `held_sent` | `id`, `key`, `name`, `text`, `at` | one of them passed on, now that they are in the lobby (`held` follows) |
@@ -522,7 +524,7 @@ Both directions, one scene delta (or, from the host's page, one scene edit) per 
 | bytes | field |
 |---|---|
 | 0–1 | `channel`, u16 big-endian |
-| 2 | flags: bit 0 = a key delta (everything that has moved, 8.1); bit 1 = a scene edit (host page to visit-client only, alone); bit 2 = this office's avatar (8.6: page to visit-client only, alone, its channel 0); bit 3 = a packet of voice (8.7: from the page, its own user's, its channel saying where it may go, added: 1 in person, 2 their calls, 4 the room voice they are in; to it, another office's, on the visit's channel); bit 4 = someone else's voice passed on (8.7, 8.8: to the page only, on the visit's channel it came by: who spoke, an id or an office's key, then the packet); bit 5 = this room's landscape (8.10: page to visit-client only, alone, its channel 0; gzipped JSON, at most 16 MiB); bit 6 = one of this office's possessions' models (8.11: page to visit-client only, alone, its channel its slot in the `possessions` list; gzipped JSON, at most 4 MiB); bit 7 = a picture shared in chat (8.12: from the page, one to keep, alone, its channel a slot the page picks, answered by `media_ready`; to it, one it asked for, its channel 0: who it is (a length byte, its id), its type (a length byte, its MIME type), then its bytes; never dropped, unlike a frame) |
+| 2 | flags: bit 0 = a key delta (everything that has moved, 8.1); bit 1 = a scene edit (host page to visit-client only, alone); bit 2 = this office's avatar (8.6: page to visit-client only, alone, its channel 0); bit 3 = a packet of voice (8.7: from the page, its own user's, its channel saying where it may go, added: 1 in person, 2 their calls, 4 the room voice they are in; to it, another office's, on the visit's channel); bit 4 = someone else's voice passed on (8.7, 8.8: to the page only, on the visit's channel it came by: who spoke, an id or an office's key, then the packet); bit 5 = this room's landscape (8.10: page to visit-client only, alone, its channel 0; gzipped JSON, at most 16 MiB); bit 6 = one of this office's possessions' models (8.11: page to visit-client only, alone, its channel its slot in the `possessions` list; gzipped JSON, at most 4 MiB); bit 7 = a picture shared in chat, or (3.4) a room's sound (8.12, 8.13: from the page, one to keep, alone, its channel a slot the page picks, answered by `media_ready`; to it, one it asked for, its channel 0: who it is (a length byte, its id), its type (a length byte, its MIME type), then its bytes; never dropped, unlike a frame) |
 | 3–10 | timestamp, u64 big-endian, microseconds: the host page's clock when it took the delta (unused for an edit). Voice to the page: byte 3 says how it came (8.7: 0 in person, 1 a call, 2 a room voice), the rest 0 |
 | 11… | the delta (8.1), or the edit, gzipped JSON |
 
@@ -1465,6 +1467,29 @@ title, description, site and picture, else its `<title>` and description), and f
 kept as a picture). The line carries the preview (`links`: `{ url, title, description, site, image }`, at most 2), so
 those it goes to show it and never contact the site (as messaging apps do).
 
+### 8.13 Room sounds (3.4)
+
+A room's own sounds, heard by everyone in it, its visitors as well as its owner, each from where it is, by distance
+and side, as voices are (8.7). Files, never code: what runs on a visitor's page is visit.js and the room's data.
+
+- **The sounds.** The room's page names its sounds (`v.sounds({ kind: file })`): each a WAV or MP3 of at most 4 MB,
+  or an Ogg, WebM or MP4 of at most 2 MB (by their bytes; `bad_media` otherwise); at most 32. Its visit-client keeps
+  each as it keeps a picture (8.12: by its hash), and the room's scene says them (`sounds`: kind -> { `id`, `mime` }),
+  as it changes. A page that hears one fetches its clip by its id from the room it is in (`media_get` with that room's
+  `channel`): its visit-client asks that room's host over their link if it does not have it, and keeps it.
+- **Loops**: anything in the room's scene marked `userData.visitSound = { kind, volume, ref, far }` (set before it
+  goes into the scene: it travels with it) sounds from where it is, over and over, while it is there and shown: at its
+  `volume` (0 to 1) within `ref` metres, fainter farther, nothing past `far`. `bed: true`: everywhere in the room the
+  same, from nowhere (wind, birds). A page plays the nearest 8 within reach (beds first), and starts each where the
+  wall clock has it (its offset the time modulo the clip's length), so everyone in the room hears about the same part.
+- **One-shots**: the room's page plays one once from a point in it (`v.soundAt(objectOrPoint, kind, { volume, ref,
+  far })`: `sound_at`): its visit-client sends it to everyone in its room (`sound`, at most 10 a second), its own user
+  too, and a page plays it if it is within `far` (at most 6 at once).
+- **Who hears.** The room your user is in: a visit, a plot in your world you stepped onto, your own room at home. A host
+  page (the engine's) hears nothing. Nothing plays before the browser lets it (a click or a key, its autoplay rule). Room
+  sounds are on or off apart from voices (`v.setRoomSounds`, the panel's 🔈), kept in that browser. Nothing goes
+  quieter under voices (yet).
+
 ## 9. The library: `visit.js`
 
 The normative surface; INTEGRATING.md shows it in use. Loaded with
@@ -1621,6 +1646,10 @@ Visit.panel(element, v, { card: false })   // no target card: your world draws i
 v.ignore(key, { npc, name }); v.unignore(key, { npc }); v.clearIgnored()   // 3.3: whom your user ignores in chat (8.9): a
                    //   person by their key, a room's figure by that room's key and its id; at most v.maxIgnored (50)
 v.ignored; v.isIgnored(key, npc)   // [{ key, npc, name }]; "ignored" as it changes
+v.sounds({ kind: file })           // 3.4, host (8.13): your room's sounds (a Blob, ArrayBuffer or URL each): a Promise of { kind: id }
+object.userData.visitSound = { kind, volume, ref, far, bed }   // a loop from that thing (bed: everywhere in your room)
+v.soundAt(objectOrPoint, kind, { volume, ref, far })   // host: one of your room's sounds, once, from there, for everyone in it
+v.roomSounds; v.setRoomSounds(on)  // the room's sounds on or off on this page (the panel's 🔈), kept in this browser
 v.pick(key, name); v.unpick(key); v.isPicked(key)   // 3.3: a room in your world, or out of it: a key from v.offices,
                    //   or (proved by the link) a visit's peer.key; at most v.maxPicks (8: "too_many" past it)
 v.isGuest(key)     // whether that key is in a world with you; "visit_started" says guest: true for one let in through the
