@@ -1242,8 +1242,61 @@ async def run(a, b, url):
         check("and the guide's line among it, kept by A's visit-client as the guide's", await a.js("v.chatLog.some(l => l.old && l.npc === 'guide' && l.name === 'Guide')"), True)
         check("and the box still says where A's lines went (this tab): Say, as A last chose", await a.js("JSON.parse(sessionStorage.getItem('visit:chat-to')).scope"), "say")
         await a.until("v.visiting && !v.visiting.paused && !!(v._viewer && v._viewer.scene)", 30)
+
+        print("\ntargets (3.3, #48): the guide described, picked by a click, its card; a whisper to it, its answer to A alone; @")
+        await b.js("window.addressed = []; v.on('addressed', e => addressed.push(e)); "
+                   "v.figures([{ id: 'guide', name: 'Guide', title: 'the room\\'s guide', about: 'Asks what you came for.', actions: ['spin'] }])")
+        check("B describes its guide (v.figures): A, in B's room, has it", await a.until("(f => f && [f.name, f.title, f.actions])(v.figuresHere.find(f => f.id === 'guide'))", 10),
+              ["Guide", "the room's guide", ["spin"]])
+        await asyncio.sleep(6)   # (A's lines above: at most 5 every 10 s)
+        await a.js("(s => { const T = s.T, g = s.root.getObjectByName('visit:npc:guide').getWorldPosition(new T.Vector3()), c = s.camera.getWorldPosition(new T.Vector3()); "
+                   "v._pick(s, s.camera, 'click', s.unit || 1, g.sub(c)); })(v._viewer.scene)")
+        check("A clicks the guide (B's room picks by a click, its default): A's target, private to A", await a.until("(t => t && [t.kind, t.id, t.name, t.title, t.room === v.visiting.host.key])(v.target)"),
+              ["figure", "guide", "Guide", "the room's guide", True])
+        card = "document.querySelector('.visit-card')"
+        check("its card: name, title, line; the guide's action, Say, Whisper", await a.until(f"(c => !c.hidden && [c.querySelector('b').textContent, c.querySelector('.ti').textContent, c.querySelector('.ab').textContent, [...c.querySelectorAll('.bt button')].map(b => b.textContent)])({card})"),
+              ["Guide", "the room's guide", "Asks what you came for.", ["spin it", "Say", "Whisper"]])
+        await a.shot("a_target_card.png")
+        await a.js(f"{card}.querySelector('button[data-c=whisper]').click()")
+        check("Whisper: A's chat box opens, telling the guide", await a.until(f"(c => c.classList.contains('typing') && c.querySelector('select').selectedOptions[0].textContent)({cw})"), "Tell Guide:")
+        await a.call("Input.insertText", text="where am I?")
+        await enter(a)
+        ad = await b.until("addressed.length === 1 && addressed[0]")
+        check("sent: B's page alone hears it (addressed, a whisper, from A's visit), as no line in B's chat", (ad["figure"], ad["whisper"], ad["text"], ad["from"]["key"] == await a.js("v.key"),
+              await b.js("v.chatLog.some(l => l.text === 'where am I?')")), ("guide", True, "where am I?", True, False))
+        check("A's window: To [Guide]", await a.until(f"(t => t.startsWith('To [Guide]') && t)({cw}.querySelector('.log').lastChild.textContent)"), "To [Guide]: where am I?")
+        await b.js("v.sayAs('guide', 'Guide', 'in my room, friend', { to: addressed[0].from.id })")
+        check("B's guide answers A alone (sayAs to): A's window says it as the guide's whisper, and no bubble", await a.until(
+            f"(t => t.includes('friend') && !v.chats.some(c => c.text.includes('friend')) && t)({cw}.querySelector('.log').lastChild.textContent)"), "[Guide] whispers: in my room, friend")
+        await asyncio.sleep(0.5)
+        check("and B's chat has none of it", await b.js("v.chatLog.some(l => l.text.includes('friend'))"), False)
+        n0 = await b.js("window.spins.length")
+        await a.js(f"{card}.querySelector('button[data-c=act]').click()")
+        check("the card's 'spin it': B's room runs its spin on the guide, by its own rules, for A", await b.until(f"window.spins.length > {n0} && spins[spins.length - 1].type"), "spin")
+        await a.js(f"{card}.querySelector('button[data-c=say]').click()")
+        check("Say: the box says it aloud, to the guide", await a.until(f"{cw}.querySelector('select').selectedOptions[0].textContent"), "Say to Guide:")
+        await a.call("Input.insertText", text="hello there")
+        await enter(a)
+        ad = await b.until("addressed.length === 2 && addressed[1]")
+        check("said aloud, meant for the guide: B's page hears it so, and B's chat has it", (ad["whisper"], ad["text"], await b.until("v.chatLog.some(l => l.text === 'hello there' && l.target && l.target.id === 'guide')")),
+              (False, "hello there", True))
+        await enter(a)
+        await a.call("Input.insertText", text="/s @Gu")
+        check("@ in the box: the guide among whom a line may be for", await a.until(f"[...{cw}.querySelectorAll('.names button')].map(b => b.textContent).includes('Guide')"), True)
+        await a.key("Escape", "Escape", 27, True)
+        await a.key("Escape", "Escape", 27, False)
+        await a.js(f"{card}.querySelector('button[data-c=clear]').click()")
+        check("✕: no target, no card", await a.until(f"!v.target && {card}.hidden"), True)
+        await b.js("v.figures([{ id: 'guide', name: 'Guide', title: 'the room\\'s guide', actions: ['spin'], talk: 'owner' }])")
+        await a.until("(f => f && f.talk === 'owner')(v.figuresHere.find(f => f.id === 'guide'))", 10)
+        await a.js("v.setTarget({ kind: 'figure', id: 'guide' })")
+        check("a guide that answers its room's owner alone (talk: owner): A's card offers no Say or Whisper, and says why", await a.until(
+            f"(c => !c.hidden && [(c.querySelector('.ab.no') || {{}}).textContent, [...c.querySelectorAll('.bt button')].map(b => b.textContent)])({card})"),
+              ["only its room's owner may talk to it", ["spin it"]])
+        await a.js("v.setTarget({ kind: 'figure', id: 'guide' })")
         await a.js("v.leave()")
         await b.until("v.visitors.length === 0")
+        check("A's target set again, then A leaves B's room: no target", await a.until("!v.target"), True)
         await a.js("v.setMic(false)")
         await b.js("v.setMic(false)")
         check("each back in its own room, microphones off: nobody near, nothing captured", (await a.until("v.voices.length === 0 && !v._mic"), await b.until("v.voices.length === 0 && !v._mic")), (True, True))

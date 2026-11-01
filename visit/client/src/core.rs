@@ -962,6 +962,20 @@ impl Core {
                 self.save_state();
                 self.tell_ignored();
             }
+            // 3.3 (#48): an action of a figure in the room this office's user is in, from its card: to that room's page.
+            "act" => {
+                let (figure, action) = (m.get("figure").and_then(Value::as_str), m.get("action").and_then(Value::as_str));
+                let (Some(f), Some(t)) = (figure.filter(|f| link::possession_id_ok(f)), action.filter(|t| link::possession_id_ok(t))) else {
+                    return self.page_error("bad_message", "act is { figure, action }: a figure's id and an interaction type", Some("act"));
+                };
+                match self.visiting() {
+                    Some(v) => { let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "act": { "figure": f, "action": t } }))); }
+                    None => {
+                        let owner = self.inside_visit().map(|v| v.channel);
+                        self.to_page(json!({ "type": "act", "owner": true, "channel": owner, "figure": f, "action": t }));
+                    }
+                }
+            }
             "ignore_clear" => {
                 self.saved.ignored.clear();
                 self.save_state();
@@ -1184,6 +1198,22 @@ impl Core {
                     return self.page_error("not_found", "this office is in no group of that name", Some("say"));
                 }
                 let key = to.and_then(|t| t.get("key")).and_then(Value::as_str).filter(|k| state::key_ok(k)).map(str::to_string);
+                // 3.3 (#48): { figure }: a whisper to one of the figures of the room this office's user is in, for that room's
+                // page alone (`addressed`); and, said aloud, the figure or person the line is meant for (`target`).
+                let figure = to.and_then(|t| t.get("figure")).and_then(Value::as_str).filter(|id| link::possession_id_ok(id)).map(str::to_string);
+                if to.and_then(|t| t.get("figure")).is_some() && figure.is_none() {
+                    return self.page_error("bad_message", "figure is a room's figure's id (1 to 40 letters, digits, _ . or -)", Some("say"));
+                }
+                let target = match m.get("target").filter(|t| !t.is_null()) {
+                    None => None,
+                    Some(t) => match target_from(t) {
+                        Some(t) if to.is_none() => Some(t),
+                        _ => return self.page_error("bad_message", "target is { kind: \"figure\" | \"person\", id }, on a line said aloud (no to)", Some("say")),
+                    },
+                };
+                if figure.is_some() && shares {
+                    return self.page_error("not_supported", "a whisper to a figure is text only", Some("say"));
+                }
                 // { whisper }: an office's id, or its key (0.22.0): by it, one in the lobby that takes whispers, else
                 // someone away, for whom this office keeps it (text only) until they and it are both in the lobby.
                 let w = to.and_then(|t| t.get("whisper")).and_then(Value::as_str);
@@ -1192,8 +1222,8 @@ impl Core {
                 if key.as_ref().is_some_and(|k| self.banned_by.get(k).is_some_and(|b| b.2)) {
                     return self.page_error("banned", "that room keeps you out of its chat", Some("say"));
                 }
-                if to.is_some() && !lobby && !room && key.is_none() && whisper.is_none() && away.is_none() && group.is_none() {
-                    return self.page_error("bad_message", "to is \"here\", \"room\", \"lobby\", { key } of an office linked with this one, { whisper } an office's id or key, or { group } one of this office's groups", Some("say"));
+                if to.is_some() && !lobby && !room && key.is_none() && whisper.is_none() && away.is_none() && group.is_none() && figure.is_none() {
+                    return self.page_error("bad_message", "to is \"here\", \"room\", \"lobby\", { key } of an office linked with this one, { whisper } an office's id or key, { group } one of this office's groups, or { figure } one of the room's figures", Some("say"));
                 }
                 if let Some(k) = away {
                     let name = to.and_then(|t| t.get("name")).and_then(Value::as_str).map(state::clip_name).map(|n| n.trim().to_string()).unwrap_or_default();
@@ -1257,9 +1287,33 @@ impl Core {
                     mine["to"] = json!({ "key": self.key, "name": self.office.get("name") });
                     mine["conversation"] = json!(format!("room:{}", self.key));
                     self.room_said(&line, None);
+                } else if let Some(fid) = figure {
+                    // To the room this office's user is in: another's (its visit-client gives it to its page alone), or
+                    // their own (to its page here). Kept here as theirs, as a whisper is: nobody else has it.
+                    let fname = to.and_then(|t| t.get("name")).and_then(Value::as_str).map(state::clip_name).map(|n| n.trim().to_string()).unwrap_or_default();
+                    let there = self.visiting().map(|v| (v.cmd.clone(), v.peer.get("key").and_then(Value::as_str).unwrap_or("").to_string()));
+                    let room_key = there.as_ref().map_or_else(|| self.key.clone(), |t| t.1.clone());
+                    mine["scope"] = json!("whisper");
+                    mine["to"] = json!({ "key": room_key, "npc": fid, "name": fname });
+                    mine["conversation"] = json!(format!("room:{room_key}"));
+                    match there {
+                        Some((cmd, _)) => { let _ = cmd.try_send(LinkCmd::Ctl(json!({ "tell": text, "figure": fid }))); }
+                        None => {
+                            let from = json!({ "owner": true, "key": self.key, "name": self.my_name() });
+                            self.addressed(&fid, from, &text, true);
+                        }
+                    }
                 } else {
                     let host = self.visiting().and_then(|v| v.peer.get("key").and_then(Value::as_str)).unwrap_or(&self.key).to_string();
                     mine["conversation"] = json!(format!("room:{host}"));
+                    if let Some(t) = &target {
+                        line["target"] = t.clone();
+                        mine["target"] = t.clone();
+                        if self.visiting().is_none() && t["kind"] == "figure" {   // a line in this room meant for its figure
+                            let from = json!({ "owner": true, "key": self.key, "name": self.my_name() });
+                            self.addressed(t["id"].as_str().unwrap_or(""), from, &text, false);
+                        }
+                    }
                     self.say_out(line);
                 }
                 self.keep_chat(mine);
@@ -1278,10 +1332,33 @@ impl Core {
                 if text.is_empty() {
                     return self.page_error("bad_message", &format!("text is 1 to {SAY_LEN} characters"), Some("say_as"));
                 }
+                // 3.3 (#48): `to`, to one person alone: "owner" (this office's user), or a visit's id in this room.
+                let to = m.get("to").filter(|t| !t.is_null());
+                let alone = match to {
+                    None => None,
+                    Some(t) if t == "owner" => Some(None),
+                    Some(t) => match t.as_str().and_then(|vid| self.visits.values().find(|v| v.id == vid && v.up && v.role == Role::Host && !v.local)) {
+                        Some(v) => Some(Some(v.cmd.clone())),
+                        None => return self.page_error("not_found", "to is \"owner\" or the id of a visit in this room", Some("say_as")),
+                    },
+                };
                 if !counted(self.npc_says.entry(id.clone()).or_insert((Instant::now(), 0))) {
                     return self.page_error("rate_limited", &format!("at most {SAYS} lines every {} s from each", SAY_WINDOW.as_secs()), Some("say_as"));
                 }
                 let line = json!({ "key": self.key, "name": name, "text": text, "npc": id });
+                if let Some(alone) = alone {   // a whisper from the figure: no bubble, nobody else
+                    match alone {
+                        Some(cmd) => { let _ = cmd.try_send(LinkCmd::Ctl(json!({ "said": line, "whisper": true }))); }
+                        None => {
+                            let mut chat = line;
+                            chat["type"] = json!("chat");
+                            chat["scope"] = json!("whisper");
+                            chat["conversation"] = json!(format!("room:{}", self.key));
+                            self.to_page(chat);
+                        }
+                    }
+                    return;
+                }
                 for v in self.visits.values().filter(|v| v.up && v.role == Role::Host && !v.local && !self.chat_banned(v.peer.get("key").and_then(Value::as_str).unwrap_or(""))) {
                     let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "said": line })));
                 }
@@ -2380,6 +2457,9 @@ impl Core {
     fn say_out(&mut self, line: Value) {
         if let Some(v) = self.visiting() {
             let mut ctl = json!({ "say": line["text"] });
+            if !line["target"].is_null() {
+                ctl["target"] = line["target"].clone();
+            }
             attach(&mut ctl, line["media"].as_array().cloned().unwrap_or_default(), line["links"].as_array().cloned().unwrap_or_default());
             let _ = v.cmd.try_send(LinkCmd::Ctl(ctl));
             return;
@@ -2389,6 +2469,14 @@ impl Core {
         for v in self.visits.values().filter(|v| v.up && v.role == Role::Host && !v.local && !self.chat_banned(v.peer.get("key").and_then(Value::as_str).unwrap_or(""))) {
             let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "said": line })));
         }
+    }
+
+    /// A line meant for one of this room's figures (3.3, #48): to this office's room's page (the host's: on the engine too,
+    /// open or not its user's), whoever said it, aloud (`whisper` false: everyone who can see them had it too) or to the
+    /// figure alone. The room answers with say_as, aloud or (`to`) to them alone; whom its figures answer is its own.
+    fn addressed(&mut self, figure: &str, from: Value, text: &str, whisper: bool) {
+        let name = from["name"].clone();
+        self.to_page(json!({ "type": "addressed", "figure": figure, "from": from, "name": name, "text": text, "whisper": whisper }));
     }
 
     /// A line a visitor in this room said: to this office's page, and to everyone else who can see this room (its other
@@ -3223,8 +3311,40 @@ impl Core {
                     if (!text.is_empty() || !media.is_empty() || !links.is_empty()) && counted(&mut v.says) {
                         let mut line = json!({ "key": v.peer.get("key"), "name": person(v), "id": v.id, "text": text });
                         attach(&mut line, media, links);
+                        let target = m.get("target").and_then(target_from);
+                        if let Some(t) = &target {
+                            line["target"] = t.clone();
+                        }
+                        let from = json!({ "id": v.id, "key": v.peer.get("key"), "name": person(v) });
+                        let banned = self.chat_banned(line["key"].as_str().unwrap_or(""));
                         self.want_media(&line, id);
                         self.say_in(ch, line);
+                        if let Some(t) = target.filter(|t| t["kind"] == "figure" && !banned) {
+                            self.addressed(t["id"].as_str().unwrap_or(""), from, &text, false);
+                        }
+                    }
+                } else if let Some(text) = m.get("tell").filter(|_| v.inside).and_then(Value::as_str).map(said_text) {
+                    // 3.3 (#48): a visitor's whisper to one of this room's figures: to this room's page alone.
+                    let figure = m.get("figure").and_then(Value::as_str).filter(|f| link::possession_id_ok(f)).map(str::to_string);
+                    if let Some(f) = figure.filter(|_| !text.is_empty() && counted(&mut v.says)) {
+                        let from = json!({ "id": v.id, "key": v.peer.get("key"), "name": person(v) });
+                        if !self.chat_banned(from["key"].as_str().unwrap_or("")) {
+                            self.addressed(&f, from, &text, true);
+                        }
+                    }
+                } else if let Some(a) = m.get("act").filter(|_| v.inside) {
+                    // 3.3 (#48): an action of one of this room's figures, from its card (an interaction type the room
+                    // takes): to its page, which runs it as it would a point at the figure, by its own rules.
+                    let (figure, action) = (a.get("figure").and_then(Value::as_str), a.get("action").and_then(Value::as_str));
+                    if let (Some(f), Some(t)) = (figure.filter(|f| link::possession_id_ok(f)), action.filter(|t| link::possession_id_ok(t))) {
+                        if v.points.0.elapsed() >= Duration::from_secs(1) {
+                            v.points = (Instant::now(), 0);
+                        }
+                        if v.points.1 < POINTS_PER_SECOND {
+                            v.points.1 += 1;
+                            let m = json!({ "type": "act", "channel": ch, "figure": f, "action": t });
+                            self.to_page(m);
+                        }
                     }
                 } else if m.get("scene_resync").is_some() {
                     v.resync_due = true;
@@ -3279,6 +3399,13 @@ impl Core {
                     let mut line = line;
                     line["type"] = json!("chat");
                     line["channel"] = json!(ch);
+                    if m.get("whisper") == Some(&json!(true)) && line.get("npc").is_some() {   // 3.3: one of its figures, to this office's user alone
+                        line["scope"] = json!("whisper");
+                        line["conversation"] = json!(format!("room:{}", line["key"].as_str().unwrap_or("")));
+                        if let Some(o) = line.as_object_mut() {
+                            o.remove("target");
+                        }
+                    }
                     self.to_page(line);
                 } else if let Some(near) = m.get("near").filter(|_| v.inside) {   // who is near this office's user in the host's room (8.7)
                     let near = near_from(near);
@@ -3397,7 +3524,7 @@ fn page_for(v: &Value) -> PageRole {
             else if v.get("home") == Some(&json!(true)) || v.get("role") == Some(&json!("visitor")) { PageRole::User }
             else { PageRole::Both }
         }
-        "input" | "point" | "keyframe" | "scene_resync" | "shared_adds" | "landscapes" | "enter" | "exit"
+        "input" | "point" | "keyframe" | "scene_resync" | "shared_adds" | "landscapes" | "enter" | "exit" | "addressed" | "act"
         | "avatar" | "avatar_none" | "possessions" | "possession" => PageRole::Host,
         "chat" | "chat_log" | "unseen" | "held" | "held_sent" | "media_none" | "preview" | "history" | "shared"
         | "voice_near" | "room_voice" | "voice_members" | "user" | "banned" | "seen" | "layout" | "landscape"
@@ -3413,7 +3540,7 @@ fn page_for(v: &Value) -> PageRole {
 fn role_may(role: PageRole, t: &str) -> bool {
     const HOST: &[&str] = &["host", "pose", "avatar_want", "possession_want", "phone", "body", "say_as"];
     const USER: &[&str] = &["input", "point", "keyframe", "scene_resync", "avatar_clear", "possessions", "user", "say", "attention", "read",
-        "unhold", "media_get", "preview", "history", "shared", "voice_join", "call", "speaker", "world", "enter", "exit", "pick", "unpick", "place", "unplace", "ignore", "unignore", "ignore_clear",
+        "unhold", "media_get", "preview", "history", "shared", "voice_join", "call", "speaker", "world", "enter", "exit", "pick", "unpick", "place", "unplace", "ignore", "unignore", "ignore_clear", "act",
         "seen", "plot_keep", "plot_load", "plot_forget", "link_where", "knock", "answer", "leave_lobby", "join_lobby", "status", "rename",
         "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set", "group_owner", "group_delete", "groups", "admin",
         "lobby_pass", "browser_code", "browser_allow", "browsers", "browser_revoke"];
@@ -3518,7 +3645,21 @@ fn said_from(v: &Value) -> Option<Value> {
     } else if v["owner"] == json!(true) {
         out["owner"] = json!(true);
     }
+    if let Some(t) = v.get("target").and_then(target_from) {
+        out["target"] = t;
+    }
     Some(out)
+}
+
+/// What a line said aloud is meant for (3.3, #48): { kind: "figure", id: a room's figure's id } or { kind: "person", id:
+/// an office's key (or another short id) }.
+fn target_from(t: &Value) -> Option<Value> {
+    let id = t.get("id").and_then(Value::as_str)?;
+    match t.get("kind").and_then(Value::as_str)? {
+        "figure" if link::possession_id_ok(id) => Some(json!({ "kind": "figure", "id": id })),
+        "person" if !id.is_empty() && id.len() <= 100 && !id.chars().any(char::is_control) => Some(json!({ "kind": "person", "id": id })),
+        _ => None,
+    }
 }
 
 /// One more in a window of SAYS a SAY_WINDOW: true if it may go.

@@ -468,6 +468,20 @@ visit.host({
   (`visit.ignore(key, { npc, name })`; 3.3: their lines then never reach your page). Make sure your room's keys ignore a text box (WASD there is typing,
   not walking), and leave Enter and `/` to the chat window. Something of yours bottom left: move the window
   (`--visit-chat-left`, `--visit-chat-bottom` in your CSS).
+- **Your room's figures, and targets** (3.3, SPEC 8.9 "Targets"; optional). A figure that talks (`visit:npc:<id>`,
+  `sayAs`) can be described for anyone in your room: `visit.figures([{ id, name, title, about, actions, talk }])` (data
+  only; `actions`: interaction types of yours, offered on a card as buttons, each by its own rules; `talk`: whom it
+  answers, `"everyone"`, `"owner"` or `"none"`, so a card offers Say and Whisper only to those it would answer). Your user, and
+  anyone in your room, may have one of its figures or people as a **target**: Visit picks it the way you say
+  (`visit.host({ ..., targeting: "click" | "near" | "none" })`; click by default), or your page picks it its own way
+  (`visit.setTarget({ kind, id, name })`, and `visit.targeting(false)` so Visit picks none). Visit's panel shows a
+  small card for it; your world draws its own instead with `Visit.panel(element, visit, { card: false })` and
+  `visit.on("target", t => …)`. A line meant for a figure reaches your room's page, aloud or whispered, whoever said
+  it: `visit.on("addressed", ({ figure, from, name, text, whisper }) => …)`, on the engine in your server page. Answer
+  with `visit.sayAs(id, name, text)` (aloud), or `visit.sayAs(id, name, text, { to: from.id || "owner" })` (to them
+  alone, a whisper). Whom your figures answer is yours to decide (`from.owner`: your user; an answer that costs you
+  something can be theirs alone). A figure's bubble shows 4 rows at most: cut its long text into lines that fit, and
+  say them one after another (`sayAs` takes 200 characters, 5 lines every 10 s from each figure).
 - **Your user's name** (if your room knows it): `visit.setName(name)`, now and whenever it changes. Others then see
   it with what your user says, over their voice, and in their panel ("Ann (Duckroom)"); without it, your office's
   name.
