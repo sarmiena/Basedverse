@@ -10,7 +10,10 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
-## v3.4.0 — 2026-11-01 — a room's own sounds, heard by everyone in it, from where they are (#36)
+## v3.4.1 — 2026-11-01 — a room's own sounds, heard by everyone in it, from where they are (#36)
+
+v3.4.0 was tagged but never released (a room hosted on its own page threw every tick: fixed here). Upgrade from 3.3.0
+straight to this.
 
 - **Room sounds** ([visit/SPEC.md](visit/SPEC.md) 8.13; [#36](https://github.com/sarmiena/Basedverse/issues/36)). A
   room's page gives its sounds as files, by name (`v.sounds({ kind: file })`: WAV or MP3 up to 4 MB, Ogg, WebM or MP4
