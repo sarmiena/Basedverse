@@ -1148,6 +1148,8 @@ async def main():
         await b.send(type="phone", on=True)
         await a.until(lambda m: m["type"] == "phone")
         await b.until(lambda m: m["type"] == "phone" and m["channel"] == lb["channel"])
+        await b.send(type="call", channel=lb["channel"], act="answer")
+        check("3.4.3: an answer to a call nobody rang: refused (no call on)", (await b.until(lambda m: m["type"] == "error"))["code"], "no_call")
         await a.send(type="call", channel=la["channel"], act="ring")
         await b.until(lambda m: m["type"] == "call")
         await b.send(type="call", channel=lb["channel"], act="answer")

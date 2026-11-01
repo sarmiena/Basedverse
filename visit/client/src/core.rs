@@ -168,6 +168,12 @@ struct Visit {
     /// its phone's speaker (8.8; else to the ear).
     call_on: bool,
     speaker: bool,
+    /// 3.4.3: a call ringing over this link, not yet answered: rung by this office (Some(true): only the other side
+    /// may answer it) or by the other (Some(false): only this office's page may). An answer for no such ring is
+    /// nothing: no call is on.
+    ring: Option<bool>,
+    /// 3.4.3: pictures the other side asked this office for in the current minute (MEDIA_WANTS at most).
+    wants: (Instant, u32),
     /// Lines said by the visitor in the current window (host side): at most SAYS a SAY_WINDOW.
     says: (Instant, u32),
     /// Landscapes (8.10). Host side: the visitor reads them (else its page gets the whole room inline), and the
@@ -226,6 +232,9 @@ const HELD_EACH: usize = 20;
 const HELD_EVERY: Duration = Duration::from_millis(2500);
 /// Pictures (8.12) kept in memory too, the last few, while the database takes them.
 const MEDIA_RECENT: usize = 8;
+/// 3.4.3: the most pictures a linked office may ask this one for a minute (as many as it takes from it: link.rs
+/// MEDIA_PER_MINUTE); more, and they are not read nor sent.
+const MEDIA_WANTS: u32 = 30;
 /// The most points a second taken from a visitor (a click at the middle of its view: 8.3); more are dropped.
 /// Its page sends at most one every 200 ms.
 const POINTS_PER_SECOND: u32 = 5;
@@ -789,7 +798,7 @@ impl Core {
                 id: id.to_string(), channel, role, peer: peer.clone(), local: true, up: false, cmd,
                 last_seq: 0, inputs: (Instant::now(), 0), want_key: false, host_state: None, ctl: (Instant::now(), 0), key_asked: None, resync_asked: None, resync_due: false,
                 points: (Instant::now(), 0), guest: false, watch: true, inside: false, shared_adds: false, link: false, in_world: false, avatar_asked: false, possessions_asked: Vec::new(), peer_possessions: json!([]), peer_phone: false,
-                call_on: false, speaker: false, says: (Instant::now(), 0),
+                call_on: false, speaker: false, ring: None, wants: (Instant::now(), 0), says: (Instant::now(), 0),
                 landscapes: false, land_sent: None, land_hash: None, near_keys: Vec::new(), peer_user: None,
             });
         }
@@ -1141,9 +1150,12 @@ impl Core {
                     return self.page_error("bad_message", "act is \"ring\", \"answer\" or \"hangup\"", Some("call"));
                 };
                 match self.visits.values_mut().find(|v| v.channel == ch && v.up) {
+                    Some(v) if act == "answer" && v.ring != Some(false) => {   // (3.4.3: only a call they rang)
+                        return self.page_error("no_call", "no call ringing from them on that visit", Some("call"));
+                    }
                     Some(v) if v.peer_phone || act != "ring" => {   // only ringing needs their phone
                         let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "call": act })));
-                        call_state(v, &act);
+                        call_state(v, &act, true);
                     }
                     Some(_) => return self.page_error("no_phone", "their room has no phone", Some("call")),
                     None => return self.page_error("no_such_visit", "no visit on that channel", Some("call")),
@@ -2903,7 +2915,7 @@ impl Core {
                     id: id.to_string(), channel, role, peer, local: false, up: false, cmd,
                     last_seq: 0, inputs: (Instant::now(), 0), want_key: false, host_state: None, ctl: (Instant::now(), 0), key_asked: None, resync_asked: None, resync_due: false,
                     points: (Instant::now(), 0), guest, watch, inside: !watch, shared_adds: false, link, in_world: false, avatar_asked: false, possessions_asked: Vec::new(), peer_possessions: json!([]), peer_phone: false,
-                    call_on: false, speaker: false, says: (Instant::now(), 0),
+                    call_on: false, speaker: false, ring: None, wants: (Instant::now(), 0), says: (Instant::now(), 0),
                     landscapes: false, land_sent: None, land_hash: None, near_keys: Vec::new(), peer_user: None,
                 });
             }
@@ -3199,7 +3211,9 @@ impl Core {
         }
         if let Some(act) = m.get("call").and_then(Value::as_str).filter(|a| ["ring", "answer", "hangup"].contains(a)) {
             let act = act.to_string();
-            call_state(v, &act);
+            if !call_state(v, &act, false) {   // (3.4.3: an answer to no ring of this office's: nothing, and not told)
+                return;
+            }
             self.to_page(json!({ "type": "call", "channel": ch, "act": act }));
             return self.tell_near();
         }
@@ -3255,6 +3269,13 @@ impl Core {
             return;
         }
         if let Some(mid) = m.get("media_want").and_then(Value::as_str).filter(|i| media::id_ok(i)) {   // a picture this office passed on (8.12)
+            if v.wants.0.elapsed() >= Duration::from_secs(60) {
+                v.wants = (Instant::now(), 0);
+            }
+            v.wants.1 += 1;
+            if v.wants.1 > MEDIA_WANTS {   // (3.4.3: each read is up to 8 MB)
+                return debug!(visit = id, "asked for too many pictures this minute: not read");
+            }
             let _ = self.db.send(DbCmd::GetMedia { id: mid.to_string(), to: MediaTo::Link(id.to_string()) });
             return;
         }
@@ -3685,12 +3706,27 @@ fn clamp_point(m: &Value) -> Value {
     p
 }
 
-/// A call's state on a link, by what passed either way: on when answered, over when hung up.
-fn call_state(v: &mut Visit, act: &str) {
+/// A call's state on a link, by what passed either way (`mine`: this office's page did it; else the other side):
+/// ringing when rung; on when the ring is answered by the side it rang (3.4.3: only then); over when hung up. Whether
+/// it counted (an answer to no ring of the other side's is nothing).
+fn call_state(v: &mut Visit, act: &str, mine: bool) -> bool {
+    let Some((on, ring)) = call_next(v.call_on, v.ring, act, mine) else { return false };
+    (v.call_on, v.ring) = (on, ring);
+    if !on {
+        v.speaker = false;
+    }
+    true
+}
+
+/// A call's state (on, ringing: rung by this side?) after `act`, by this side (`mine`) or the other; none if it is
+/// nothing (an answer to no ring, or to one's own).
+fn call_next(on: bool, ring: Option<bool>, act: &str, mine: bool) -> Option<(bool, Option<bool>)> {
     match act {
-        "answer" => v.call_on = true,
-        "hangup" => (v.call_on, v.speaker) = (false, false),
-        _ => {}
+        "ring" if !on => Some((false, Some(mine))),
+        "ring" => Some((on, ring)),
+        "answer" if ring == Some(!mine) => Some((true, None)),
+        "answer" => None,
+        _ => Some((false, None)),   // hangup
     }
 }
 
@@ -3906,6 +3942,24 @@ fn clamp_input(m: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_call_is_on_only_when_its_ring_is_answered_by_the_side_it_rang() {
+        // 3.4.3: the other side's answer to nothing (or to its own ring) turns nothing on.
+        assert_eq!(call_next(false, None, "answer", false), None);
+        assert_eq!(call_next(false, Some(false), "answer", false), None);
+        assert_eq!(call_next(false, None, "answer", true), None);
+        // This side rings, the other answers; the other rings, this side answers.
+        assert_eq!(call_next(false, None, "ring", true), Some((false, Some(true))));
+        assert_eq!(call_next(false, Some(true), "answer", false), Some((true, None)));
+        assert_eq!(call_next(false, Some(false), "answer", true), Some((true, None)));
+        // A ring while a call is on changes nothing; a hangup ends a call, or a ring, either way.
+        assert_eq!(call_next(true, None, "ring", false), Some((true, None)));
+        assert_eq!(call_next(true, None, "hangup", false), Some((false, None)));
+        assert_eq!(call_next(false, Some(true), "hangup", true), Some((false, None)));
+        // And once on, an answer again is nothing.
+        assert_eq!(call_next(true, None, "answer", false), None);
+    }
 
     #[test]
     fn a_rooms_figures_are_the_rooms_to_say() {

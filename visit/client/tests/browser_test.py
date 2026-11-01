@@ -869,6 +869,16 @@ async def run(a, b, url):
             "v.avatars.default === 'mine' && v.visitors[0].look === 'mine' && !!room.scene.getObjectByName('body:B') && !room.scene.getObjectByName('avatar:B')"), True)
         await a.js("(s => { s.value = 'theirs'; s.dispatchEvent(new Event('change', { bubbles: true })); })(document.querySelector('.visit-panel select[data-v=looks]'))")
         await a.until("v.avatars.default === 'theirs' && v.visitors[0].look === 'theirs'")
+        # 3.4.3: what a room says of your model is its word, shown as text: never run.
+        body = "(h => v._send({ type: 'body', channel: h.channel, look: %s, eyes: 1.5, problem: %s }))([...v._hosted.values()].find(h => h.avatar))"
+        await a.js(body % ("'mine'", "'<img src=x onerror=\"window.__pwned = 1\">'"))
+        a_row = "[...document.querySelectorAll('.visit-panel button.who[data-v=more]')].find(x => x.querySelector('b') && x.querySelector('b').textContent === 'A')"
+        check("a room's word on B's model, with HTML in it: B's panel shows it as text, runs none of it", await b.until(
+            "(btn => { if (!btn) return false; const nx = btn.closest('.row').nextElementSibling; if (!nx || !nx.classList.contains('sub')) { btn.click(); return false; }"
+            " return nx.textContent.includes(\"yours can't be shown: <img src=x\") && [!!nx.querySelector('img'), typeof window.__pwned]; })(%s)" % a_row), [False, "undefined"])
+        await b.js("(btn => btn && btn.click())(%s)" % a_row)
+        await a.js(body % ("'theirs'", "null"))
+        await b.until("(bd => !!bd && bd.look === 'theirs' && !bd.problem)(v._bodies.get(v._viewer.channel))")
         print("\nmodels, checked as other rooms will read them (Visit.checkModel, MODELS.md)")
         check("B's own avatar: fine, its eyes at its eyes point, its clips", await b.js(
             "(c => [c.ok, c.eyes, c.clips.join()])(Visit.checkModel(v._avatarOwn.object, { three: v._hooks.scene.three }))"), [True, 1.5, "idle,walk"])

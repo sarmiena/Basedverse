@@ -122,6 +122,8 @@ pub enum Ev {
     DebugDrop(String, oneshot::Sender<bool>),
     DebugReset(oneshot::Sender<()>),
     DebugLie(Option<String>),
+    /// 3.4.3: the lobby as it is now, to everyone, held back since the last went out (ANNOUNCE_EVERY).
+    Announce,
 }
 
 /// What a run is given.
@@ -303,7 +305,15 @@ pub struct Core {
     /// Passwords being hashed now; and each world's wrong passwords, lately (by its name in lower case).
     hashing: usize,
     wrong: HashMap<String, VecDeque<Instant>>,
+    /// 3.4.3: when the lobby last went out to everyone, and whether one is held back to go when ANNOUNCE_EVERY is up.
+    announced: Option<Instant>,
+    announce_held: bool,
 }
+
+/// 3.4.3: the lobby goes out to everyone at most this often (each time it is the whole list, to every office and
+/// browser): what changes in between goes out together, once, when it is up. A connection that keeps changing its
+/// status (or anything else everyone sees) costs the lobby no more than one that does it four times a second.
+const ANNOUNCE_EVERY: Duration = Duration::from_millis(250);
 
 /// `n` random bytes, as lower-case hex.
 pub fn hex(n: usize) -> String {
@@ -354,7 +364,7 @@ impl Core {
             cfg, limits3, limits4, me, offices: HashMap::new(), by_name: HashMap::new(), by_key: HashMap::new(), resumes: HashMap::new(),
             knocks: HashMap::new(), knock_order: Vec::new(), visits: HashMap::new(), visit_order: Vec::new(), bans, groups, lie: None, replying: None,
             passes: HashMap::new(), links, browsers: HashMap::new(), pending: HashMap::new(), pending_from: HashMap::new(), awaiting: HashMap::new(), scan_misses: HashMap::new(), hashing: 0,
-            wrong: HashMap::new(),
+            wrong: HashMap::new(), announced: None, announce_held: false,
         }
     }
 
@@ -443,6 +453,10 @@ impl Core {
                     let _ = r.send(());
                 }
                 Ev::DebugLie(key) => self.lie = key,
+                Ev::Announce => {
+                    self.announce_held = false;
+                    self.announce_now();
+                }
             }
         }
     }
@@ -502,8 +516,28 @@ impl Core {
         FromLobby::Lobby { offices }
     }
 
+    /// Everyone hears the lobby as it is now: at once, unless it last went out less than ANNOUNCE_EVERY ago; then
+    /// once, when that is up (with whatever else changed meanwhile).
+    fn announce(&mut self) {
+        if self.announce_held {
+            return;
+        }
+        match self.announced.map(|t| t.elapsed()).filter(|e| *e < ANNOUNCE_EVERY) {
+            None => self.announce_now(),
+            Some(e) => {
+                self.announce_held = true;
+                let me = self.me.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(ANNOUNCE_EVERY - e).await;
+                    let _ = me.send(Ev::Announce);
+                });
+            }
+        }
+    }
+
     /// Everyone hears the lobby as it is now, each version its own.
-    fn announce(&self) {
+    fn announce_now(&mut self) {
+        self.announced = Some(Instant::now());
         for p in [Proto::V3, Proto::V4] {
             let conns: Vec<&Conn> = self.offices.values().filter(|o| o.proto == p).flat_map(|o| self.hearers(o)).collect();
             if conns.is_empty() {
@@ -1158,15 +1192,25 @@ impl Core {
             ToLobby::Link { endpoint, addr } => self.on_link(oid, endpoint, addr),
             ToLobby::Status { status } => match status.filter(|s| STATUSES.contains(&s.as_str())) {
                 Some(s) => {
-                    self.offices.get_mut(oid).expect("here").status = s;
-                    self.announce();
+                    let o = self.offices.get_mut(oid).expect("here");
+                    if o.status != s {
+                        o.status = s;
+                        self.announce();
+                    } else {   // (3.4.3: the same again changes nothing for anyone else: the lobby to it alone)
+                        self.tell(oid, &self.view(p));
+                    }
                 }
                 None => self.error(oid, "bad_message", "status must be one of available, busy", Some("status")),
             },
             ToLobby::MaxVisitors { n } => match n.filter(|n| *n <= self.limits(p).max_visitors) {
                 Some(n) => {
-                    self.offices.get_mut(oid).expect("here").max_visitors = n;   // lower than the visitors it has ends no visit
-                    self.announce();
+                    let o = self.offices.get_mut(oid).expect("here");
+                    if o.max_visitors != n {   // lower than the visitors it has ends no visit
+                        o.max_visitors = n;
+                        self.announce();
+                    } else {
+                        self.tell(oid, &self.view(p));
+                    }
                 }
                 None => self.error(oid, "bad_message", format!("n must be 0 to {}", self.limits(p).max_visitors), Some("max_visitors")),
             },
@@ -1181,8 +1225,13 @@ impl Core {
                     Ok(a) => a,
                     Err(e) => return self.error(oid, "bad_message", e, Some("about")),
                 };
-                self.offices.get_mut(oid).expect("here").about = a;
-                self.announce();
+                let o = self.offices.get_mut(oid).expect("here");
+                if o.about != a {
+                    o.about = a;
+                    self.announce();
+                } else {
+                    self.tell(oid, &self.view(p));
+                }
             }
             ToLobby::Door { .. } => {}   // 3.0's door open to anyone: public worlds since 3.1
             ToLobby::Admin { action, key, minutes, text } => self.on_admin(oid, action, key, minutes, text),
