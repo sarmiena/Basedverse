@@ -171,6 +171,8 @@ struct Awaiting {
 
 /// Browser keys with confirmations waiting, at most.
 const MOST_AWAITING: usize = 5000;
+/// Scans of a room's QR code that match nothing, from one address (an IPv6 one: its /64), in 10 minutes, at most.
+const SCAN_MISSES: usize = 10;
 
 /// A room's confirmation of a waiting browser (3.2): its digits, the office, until when.
 struct Confirm {
@@ -295,6 +297,8 @@ pub struct Core {
     pending_from: HashMap<std::net::IpAddr, usize>,
     /// 3.2.1: confirmations waiting for a browser key to show them.
     awaiting: HashMap<String, Awaiting>,
+    /// 3.2.2: scans that matched no confirmation, lately, by address.
+    scan_misses: HashMap<std::net::IpAddr, VecDeque<Instant>>,
     /// Passwords being hashed now; and each world's wrong passwords, lately (by its name in lower case).
     hashing: usize,
     wrong: HashMap<String, VecDeque<Instant>>,
@@ -348,7 +352,7 @@ impl Core {
         Core {
             cfg, limits3, limits4, me, offices: HashMap::new(), by_name: HashMap::new(), by_key: HashMap::new(), resumes: HashMap::new(),
             knocks: HashMap::new(), knock_order: Vec::new(), visits: HashMap::new(), visit_order: Vec::new(), bans, groups, lie: None, replying: None,
-            passes: HashMap::new(), links, browsers: HashMap::new(), pending: HashMap::new(), pending_from: HashMap::new(), awaiting: HashMap::new(), hashing: 0,
+            passes: HashMap::new(), links, browsers: HashMap::new(), pending: HashMap::new(), pending_from: HashMap::new(), awaiting: HashMap::new(), scan_misses: HashMap::new(), hashing: 0,
             wrong: HashMap::new(),
         }
     }
@@ -430,6 +434,7 @@ impl Core {
                     self.pending.clear();
                     self.pending_from.clear();
                     self.awaiting.clear();
+                    self.scan_misses.clear();
                     self.wrong.clear();
                     self.groups.reset();
                     self.bans.reset();
@@ -747,20 +752,44 @@ impl Core {
                 Some(office)
             }
             None if verify.is_some() => {
-                // 3.2: a tab its room's QR code opened (`#verify=`): its room's confirmation of this browser's key,
-                // shown, links it; this tab and any of it waiting are in.
-                if !self.awaiting.contains_key(&key) {
-                    return refuse("no_confirm", "This browser is not the one waiting for that QR code (your camera may have opened it in another browser): \
-                                   type the 6 digits your room shows on the page that waits, or link this browser with its own code".into(), 4401, "nothing to confirm");
+                // 3.2.2: a room's QR code, scanned (`#verify=`): by any device (a phone, mostly). The browser that waits for
+                // that confirmation is linked, and its waiting tabs are in. The scanner is in too if it is that browser;
+                // else it is told what it confirmed (`browser_confirmed`), and is not linked.
+                let now = Instant::now();
+                let from = bucket(ip);
+                let misses = self.scan_misses.entry(from).or_default();
+                while misses.front().is_some_and(|t| now.duration_since(*t) > Duration::from_secs(600)) {
+                    misses.pop_front();
                 }
+                if misses.len() >= SCAN_MISSES {
+                    return refuse("rate_limited", "too many codes that match nothing, from here: try again in a while".into(), 4429, "too many misses");
+                }
+                let secret = verify.as_deref().and_then(proto::confirm_of);
+                let target = secret.as_ref().and_then(|s| self.awaiting.iter().find(|(_, a)| a.confirms.iter().any(|c| c.secret == *s && c.until > now)).map(|(k, _)| k.clone()));
+                let Some(target) = target else {
+                    self.scan_misses.entry(from).or_default().push_back(now);
+                    if self.scan_misses.len() > MOST_PENDING {
+                        self.scan_misses.retain(|_, m| m.back().is_some_and(|t| now.duration_since(*t) < Duration::from_secs(600)));
+                    }
+                    return refuse("no_confirm", "That QR code confirms nothing now (it lasts 5 minutes, once): in your room, Link a browser and its code again".into(),
+                                  4401, "nothing to confirm");
+                };
                 let id = conn.id;
                 self.browsers.insert(id, Browser { conn: conn.clone(), key: key.clone(), agent, ip, office: None, code: None, gone: false });
-                let on = self.verify(&key, verify, &conn);
-                if !on {
+                let Some(oid) = self.verify(&target, verify, &conn) else {
                     self.browsers.remove(&id);
                     conn.close(4401, "not confirmed");
+                    return false;
+                };
+                if target == key {
+                    return self.browsers.get(&id).is_some_and(|b| b.office.is_some());   // this browser: in (unless refused, 4429)
                 }
-                return on;
+                let office = self.offices.get(&oid).map(|o| o.name.clone()).unwrap_or_default();
+                let agent = self.links.agent(&target).unwrap_or_else(|| "A browser".into());
+                conn.send(&FromLobby::BrowserConfirmed { office, agent, pictures: proto::pictures(&target) });
+                conn.close(1000, "confirmed");
+                self.browsers.remove(&id);
+                return false;
             }
             None => self.links.office(&key),
         };
@@ -958,14 +987,15 @@ impl Core {
         self.replying = None;
     }
 
-    /// A browser shows a confirmation (3.2): typed on its page (`browser_verify`), or by a tab of it its room's QR code
-    /// opened (`hello` with `verify`), on `to`. One of its rooms' that still waits for its key: linked to that office,
-    /// and every tab of it waiting is in. A wrong one is counted: at CONFIRM_TRIES, every confirmation of it is off.
-    fn verify(&mut self, key: &str, secret: Option<String>, to: &Conn) -> bool {
+    /// A browser's confirmation shown (3.2): typed on its page (`browser_verify`), or its room's QR code scanned (`hello`
+    /// with `verify`: by it, or by any device for it), on `to`. One of its rooms' that still waits for its key: linked
+    /// to that office (returned), and every tab of it waiting is in. A wrong one is counted: at CONFIRM_TRIES, every
+    /// confirmation of it is off.
+    fn verify(&mut self, key: &str, secret: Option<String>, to: &Conn) -> Option<String> {
         let now = Instant::now();
         let Some(a) = self.awaiting.get_mut(key) else {
             to.send(&FromLobby::error("bad_confirm", "no confirmation waits for this browser now: in your room, Link a browser and its code again", Some("browser_verify")));
-            return false;
+            return None;
         };
         a.confirms.retain(|c| c.until > now);
         let hit = secret.as_deref().and_then(proto::confirm_of).and_then(|s| a.confirms.iter().position(|c| c.secret == s));
@@ -977,29 +1007,27 @@ impl Core {
             }
             let text = if off { "no confirmation waits for this browser now: in your room, Link a browser and its code again" } else { "that is not what your room shows" };
             to.send(&FromLobby::error("bad_confirm", text, Some("browser_verify")));
-            return false;
+            return None;
         };
         let c = a.confirms.remove(i);
         self.awaiting.remove(key);
         if !self.offices.get(&c.oid).is_some_and(|o| o.key.as_deref() == Some(c.okey.as_str())) {
             to.send(&FromLobby::error("not_in_lobby", "the workroom that would link this browser has left the lobby", Some("browser_verify")));
-            return false;
+            return None;
         }
-        let agent = self.browsers.get(&to.id).map(|b| b.agent.clone()).unwrap_or_default();
+        // What the browser is: as its own waiting tab said (not the device that scanned for it).
+        let agent = self.browsers.values().find(|b| b.key == key && !b.gone).map(|b| b.agent.clone())
+            .or_else(|| self.links.agent(key)).unwrap_or_else(|| "A browser".into());
         for k in self.links.add(key, &c.okey, &agent, self.limits4.browsers.unwrap_or(10)) {
             self.detach_key(&k, "unlinked: its workroom linked a newer browser");
         }
         // Every tab of this browser not in yet (the one that showed it first): in, as that office.
         let mut tabs: Vec<u64> = self.browsers.iter().filter(|(_, b)| b.key == key && b.office.is_none() && !b.gone).map(|(id, _)| *id).collect();
         tabs.sort_by_key(|id| *id != to.id);
-        let mut on = false;
         for id in tabs {
-            let ok = self.attach(id, &c.oid);
-            if id == to.id {
-                on = ok;
-            }
+            self.attach(id, &c.oid);
         }
-        on
+        Some(c.oid)
     }
 
     /// An office's own: the browser waiting with a code (`allow`: 3.2, a confirmation for it to show), its linked

@@ -627,6 +627,7 @@ nobody has taken it meanwhile. Who someone is, is their key.
 | `web_welcome` | `proto`, `id`, `name`, `key` (the office's), `limits`, `admin`?, `title`?, `motd`? | to a linked browser, its key proved (6.11) |
 | `browser_code` | `code` (8), `pictures` (3 emoji), `expires_in` (s) | to a browser not linked: the code its office types in its room (6.11) |
 | `browser_confirming` | `office` (its name), `expires_in` (s) | 3.2, to a waiting browser: that office would link it, once it shows its room's confirmation |
+| `browser_confirmed` | `office`, `agent`, `pictures` | 3.2.2, to a device that scanned a room's QR code for another browser: that browser is linked now; this one is not (closed 1000) |
 | `welcome` | `proto`, `id`, `name`, `key`, `relays`: [url], `resume` (32 hex), `resumed` (bool), `visits`: [id], `knocking`: [{`id`, `to`}], `limits` (6.10), `chat`: true, `admin`? (true: this key is one of the lobby's operators), `title`?, `motd`? | after a good `hello` and `prove` |
 | `lobby` | `offices`: [{`id`, `name`, `status`, `sim`, `max_visitors`, `visitors` (count), `visiting` (version 4: always `null`, nobody's whereabouts being everyone's; version 3: the host's office id, or `null`), `ready`, `key`, `watchers` (count), `world`, `links`, `whisper` (true), `about` ({`text`, `tags`} or null)}], you included | on any change |
 | `knock` | `id`, `from` {`id`, `name`, `sim`, `key`}, `message`, `expires_in`, `watch`?, `link`? | someone knocked (to watch, with `watch`; to link, with `link`) |
@@ -780,10 +781,12 @@ own to come back by.
   (`browser_pending`: what it is, its pictures, the same as on its screen). Allowed (`browser_allow`), it is not
   linked yet (3.2): the room gets a **confirmation** (`browser_confirm`: 6 digits, good 5 minutes, that browser's
   alone) and shows it as a QR code of the lobby's page with it (`https://<lobby>/#verify=<digits>`) and as digits; the
-  browser hears who would link it (`browser_confirming`). It shows the confirmation one of two ways: its device's
-  camera scans the QR code, which opens the lobby's page in it (the same browser: the same key), and that tab says
-  `hello` with `verify`; or the digits are typed on its page (`browser_verify`). Then it is linked, and in (the
-  waiting tab and the QR code's both). A confirmation is the browser's key's, not one connection's (3.2.1): a waiting
+  browser hears who would link it (`browser_confirming`). It is confirmed one of two ways: a phone (any device: the
+  person's own, at the room) scans the QR code, which opens the lobby's page there, and that page says `hello` with
+  `verify` (3.2.2: the scanner is told what it confirmed, `browser_confirmed` {`office`, `agent`, `pictures`}, closed
+  1000, and is not linked, unless it is that browser itself); or the digits are typed on the waiting page
+  (`browser_verify`). Then it is linked, and its waiting tabs are in by themselves. Scans that match nothing: 10 every
+  10 minutes from one address (`rate_limited`). A confirmation is the browser's key's, not one connection's (3.2.1): a waiting
   tab that comes back after a drop hears `browser_confirming` again, a QR code's tab links with none waiting, and the
   page takes `#verify=` when only its address's end changes (a phone opening it in the same tab). Another browser's
   tab with them is refused (`no_confirm`, 4401); a wrong one

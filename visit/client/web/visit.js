@@ -13,7 +13,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "3.2.1", PROTO = "basedverse-visit-local/2";
+  const VERSION = "3.2.2", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -948,9 +948,10 @@
         case "browser_pending": this.browserPending = { code: String(m.code), key: String(m.key), agent: String(m.agent || "A browser"), pictures: String(m.pictures || "") };
           this._emit("browser_pending", this.browserPending); break;
         case "browser_confirm":   // 3.2: what the browser you allowed must show: this QR code (its camera), or these digits
-          this.browserPending = null;
-          this.browserConfirm = { code: String(m.code), key: String(m.key), confirm: String(m.confirm), url: String(m.url), qr: typeof m.qr === "string" ? m.qr : null,
-            until: Date.now() + 1000 * (Number(m.expires_in) || 300) };
+          { const p = this.browserPending && this.browserPending.code === String(m.code) ? this.browserPending : null;
+            this.browserPending = null;
+            this.browserConfirm = { code: String(m.code), key: String(m.key), confirm: String(m.confirm), url: String(m.url), qr: typeof m.qr === "string" ? m.qr : null,
+              agent: p ? p.agent : "that browser", pictures: p ? p.pictures : "", until: Date.now() + 1000 * (Number(m.expires_in) || 300) }; }
           this._emit("browser_confirm", this.browserConfirm); break;
         case "lobby_bans": this.lobbyBans = (Array.isArray(m.bans) ? m.bans : []).filter(isObj).map(b => ({ key: String(b.key), until: b.until == null ? null : Number(b.until), reason: String(b.reason || "") })); break;
         case "about": this.about = aboutFrom(m.about); break;
@@ -4373,13 +4374,13 @@
         // The lobby in a browser (3.1): on your phone (a QR code to scan), or a browser that shows a code (typed here,
         // allowed); the browsers linked, each to unlink.
         const on = v.browsers.filter(b => b.online).length;
-        rows.push(`<div class="row"><span class="grow" title="the lobby's page in a browser, as you: its chat, who is here, your worlds">browsers <span class="muted">· ${v.browsers.length ? `${v.browsers.length} linked${on ? `, ${on} in` : ""}` : "the lobby, as you"}</span></span><button data-v="qr" class="${qr ? "go" : ""}" title="a QR code: your phone's camera opens the lobby there, as you (once, within 10 minutes)">📱 Phone</button><button data-v="browsers" class="${linking ? "go" : ""}" title="a browser at the lobby's page shows a code: type it here; and the browsers linked to you">Link a browser</button></div>`);
+        rows.push(`<div class="row"><span class="grow" title="the lobby's page in a browser, as you: its chat, who is here, your worlds">browsers <span class="muted">· ${v.browsers.length ? `${v.browsers.length} linked${on ? `, ${on} in` : ""}` : "the lobby, as you"}</span></span><button data-v="qr" class="${qr ? "go" : ""}" title="the lobby on your phone, as you: a QR code its camera opens (this links your phone; good once, for 2 minutes)">📱 On my phone</button><button data-v="browsers" class="${linking ? "go" : ""}" title="a browser at the lobby's page shows a code: type it here; and the browsers linked to you">Link a browser</button></div>`);
         // (An image of the SVG, never the SVG itself in the page: an image runs no script, whoever made it.)
-        if (qr && qr.until > Date.now()) rows.push(`<div class="row sub"><div class="qr"><img alt="a QR code: the lobby, as you" src="data:image/svg+xml;charset=utf-8,${esc(encodeURIComponent(qr.svg))}"></div><div class="muted">scan it with your phone's camera: the lobby opens there as you, linked (good once, for ${Math.max(1, Math.round((qr.until - Date.now()) / 60000))} more minutes)</div></div>`);
+        if (qr && qr.until > Date.now()) rows.push(`<div class="row sub"><div class="qr"><img alt="a QR code: the lobby, as you" src="data:image/svg+xml;charset=utf-8,${esc(encodeURIComponent(qr.svg))}"></div><div class="muted">to use the lobby on your phone: scan it with its camera, and your phone is in the lobby as you, linked (good once, for ${Math.max(1, Math.round((qr.until - Date.now()) / 60000))} more minutes)</div></div>`);
         // 3.2: a browser allowed, until it shows this: its camera scans the QR code (opening the lobby's page in it), or
         // its page takes the digits. Then it is linked ("browsers" says so).
         const cf = v.browserConfirm;
-        if (cf && cf.until > Date.now()) rows.push(`<div class="row sub">${cf.qr ? `<div class="qr"><img alt="a QR code: the confirmation, for that browser's camera" src="data:image/svg+xml;charset=utf-8,${esc(encodeURIComponent(cf.qr))}"></div>` : ""}<div>Now on that browser: scan this with its camera, or type <b class="digits">${esc(cf.confirm.slice(0, 3))} ${esc(cf.confirm.slice(3))}</b> on its page. <span class="muted">Linked once it does (${Math.max(1, Math.round((cf.until - Date.now()) / 60000))} min).</span></div><div class="btns"><button data-v="b_cancel">Cancel</button></div></div>`);
+        if (cf && cf.until > Date.now()) rows.push(`<div class="row sub">${cf.qr ? `<div class="qr"><img alt="a QR code: the confirmation, for that browser's camera" src="data:image/svg+xml;charset=utf-8,${esc(encodeURIComponent(cf.qr))}"></div>` : ""}<div>Scan this with your phone to confirm <b>${esc(cf.agent)}</b> <span class="pics">${esc(cf.pictures)}</span> (your phone is not linked), or type <b class="digits">${esc(cf.confirm.slice(0, 3))} ${esc(cf.confirm.slice(3))}</b> on that browser's page. <span class="muted">It goes in by itself once you do (${Math.max(1, Math.round((cf.until - Date.now()) / 60000))} min).</span></div><div class="btns"><button data-v="b_cancel">Cancel</button></div></div>`);
         if (linking) {
           const p = v.browserPending;
           if (p) rows.push(`<div class="row knock"><b>${esc(p.agent)}</b> <span class="pics">${esc(p.pictures)}</span> waits with ${esc(p.code.slice(0, 4))}-${esc(p.code.slice(4))}: the same pictures on its screen? <div class="btns"><button class="go" data-v="b_allow" data-code="${esc(p.code)}">Link it</button><button data-v="b_not">Not that one</button></div></div>`);
