@@ -10,6 +10,25 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v3.4.2 — 2026-11-01 — a line said aloud is heard within 45 m of its sayer, as their voice is (#54)
+
+- **Say goes by distance** ([visit/SPEC.md](visit/SPEC.md) 8.9; [#54](https://github.com/sarmiena/Basedverse/issues/54)).
+  `/s` (the default, `v.say(text)`) reaches whoever would hear its sayer's voice in person: everyone in the room within
+  45 m of them, and, for a user at home, a friend near them across their plots' side (near in both worlds, as voice
+  has it). Not someone farther off in the same room, nor a watcher whose world shows the plot, nor a corner. The bubble
+  follows the line: it shows only for those who had it. The room's visit-client decides, by where the room places
+  everyone (`voice_where`, as for voice); someone it has not placed has every line, as before, so a room that places
+  nobody is as it was. A visitor's line goes no farther than the room. The room's own page still has every line said
+  in it, for its logic: one its user is not near comes as "said_far" (`far` on the wire), never in its chat, as a
+  bubble, or kept. The room's figures (`say_as`) are heard in the whole room, as before. Wider reach keeps its scopes:
+  `/room`, `/w`, `/1`, `/g`.
+- The lobby is 3.4.1's (only its version): no new deploy.
+
+**What an integration does:** nothing, if your page reports where everyone is for voice (`voice_where`: Visit's world
+does it for you). A room page that listened to `chat` for lines said anywhere in the room (an NPC that answers what
+it hears, say) listens to `"said_far"` too, or to `"addressed"` for lines meant for its figures. Offices on older
+releases still send their lines to everyone in their rooms.
+
 ## v3.4.1 — 2026-11-01 — a room's own sounds, heard by everyone in it, from where they are (#36)
 
 v3.4.0 was tagged but never released (a room hosted on its own page threw every tick: fixed here). Upgrade from 3.3.0

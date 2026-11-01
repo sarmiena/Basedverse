@@ -50,8 +50,8 @@ take them unless your user asks for something else. The defaults are Visit's own
   list, knocks, your door (open to your worlds, closed), your world's Map (and how many rooms you picked, of 8), the microphone and who is near, calls (📞 call, Pick up, speaker / handset, Hang up), notes (where
   a friend's world put your room), and ⏱ (how this page is doing);
 - **the chat window** (the panel's, `Visit.chat`): bottom left, as in a game. Enter to type, and say a line to
-  everyone who can see you, whisper to one person (`/w name`), say it in your room's chat (`/room`: everyone in it
-  and linked with it) or a linked friend's (`/room name`), to the lobby (`/1`), or to one of your worlds
+  everyone near you (within 45 m, as your voice carries: 3.4.2), whisper to one person (`/w name`), say it in your
+  room's chat (`/room`: everyone in it and linked with it) or a linked friend's (`/room name`), to the lobby (`/1`), or to one of your worlds
   (`/g name`, or `/2`, `/3`…); joining the lobby, it says the lobby's name and its message of the day; Tab finishes a name, else moves on to the next of those (Shift+Tab: back); 🎙 a voice
   message; 📬 what came for your user while nobody looked (whispers, your room's chat, mentions), kept until read;
   a whisper to someone away is kept by your `visit` until you are both in the lobby; 🎧 joins a
@@ -457,7 +457,8 @@ visit.host({
   where your plot was, and walk them into its walls. Leave out what moves or changes (people, screens, signs,
   agents): those go as before. If something marked does change in itself, call `visit.landscapeChanged()`.
 - **Chat**: the panel's chat window, bottom left: your user presses Enter, types a line, and Enter says it. Said
-  (the default), everyone who can see them has it over their head for a few seconds, and in their chat; `/w name`
+  (the default), everyone within 45 m of them has it over their head for a few seconds, and in their chat, as their
+  voice carries (3.4.2: a room has everyone placed by Visit's voice: `voice_where`); `/w name`
   whispers it to one person, `/room` says it in your room's chat (everyone in your room and linked with it, as a
   game's party), `/room name` in a linked friend's, `/1` to the whole lobby
   (`visit.say(text, to)` from code). Something of your room's own that talks (a receptionist, a guide; not a

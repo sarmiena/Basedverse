@@ -13,7 +13,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "3.4.1", PROTO = "basedverse-visit-local/2";
+  const VERSION = "3.4.2", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -2210,6 +2210,8 @@
     // the visit-client: a reload keeps the chat); v.chatLog, the last 100; v.chats, the lines
     // over heads still showing. Visit draws those in the views it draws (your world, and another's room); a room
     // without a world draws its own (Visit.bubble). Visit.chat, the chat window (the panel's), shows them all.
+    // 3.4.2 (#54): a line said aloud is heard within voiceRange (45 m) of its sayer, as their voice is: in your own room,
+    // one your user was too far off for comes as "said_far" (for your room's logic), never as a "chat" line.
     say(text, to, { media = [], links = [] } = {}) {
       this._as("user", "say");
       const t = [...String(text == null ? "" : text).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim()].slice(0, CHAT_LEN).join("").trim(), now = Date.now();
@@ -2448,9 +2450,13 @@
           : rk ? { key: rk, name: this._nameOf(rk) || (this._peerOf(m.channel) || {}).name || "" } : this._peerOf(m.channel) || {};
         return { ...line, scope: "sim", channel: m.channel, to: { key: String(p.key || ""), name: String(p.name || "") } };
       }
+      // 3.4.2 (#54): said in your own room out of your user's hearing (more than voiceRange off, or they are not in it):
+      // for the room's logic ("said_far"), never a line in your chat or a bubble.
+      if (m.far === true) { this._emit("said_far", { key: line.key, name: line.name, text: line.text, id: typeof m.id === "string" ? m.id : null, channel: m.channel }); return null; }
       const npc = typeof m.npc === "string" ? m.npc : null;   // one of a room's own figures (sayAs): yours, said with no channel
       const aim = isObj(m.target) && ["figure", "person"].includes(m.target.kind) && typeof m.target.id === "string" ? { kind: m.target.kind, id: m.target.id } : null;   // (3.3: meant for)
-      return { ...line, id: typeof m.id === "string" ? m.id : null, npc, owner: m.owner === true, channel: m.channel, room: this._hosted.has(m.channel) || (npc && m.channel == null) ? "home" : m.channel, ...(aim ? { target: aim } : {}) };
+      // (3.4.2: `seam`, said by a friend at home near your user across your plots' side: by the visit that shows their room.)
+      return { ...line, id: typeof m.id === "string" ? m.id : null, npc, owner: m.owner === true, channel: m.channel, room: this._hosted.has(m.channel) || (npc && m.channel == null) ? "home" : m.channel, ...(aim ? { target: aim } : {}), ...(m.seam === true ? { seam: true } : {}) };
     }
     // An office's name, by its key, as this page knows it (the lobby, its links).
     _nameOf(key) {
@@ -2461,7 +2467,7 @@
     _lineOf(c, old) {
       return { scope: c.scope || "say", key: c.key, name: c.name, text: c.text, mine: !!c.mine, owner: !!c.owner, id: c.id || null, npc: c.npc || null, channel: c.channel, to: c.to || null,
         media: c.media || [], links: c.links || [], conversation: c.conversation || null, mention: !c.mine && this._mentions(c.text), ...(c.held ? { held: true } : {}),
-        ...(c.group ? { group: c.group } : {}), ...(c.target ? { target: c.target } : {}),
+        ...(c.group ? { group: c.group } : {}), ...(c.target ? { target: c.target } : {}), ...(c.seam ? { seam: true } : {}),
         at: old ? c.at : Date.now(), ...(old ? { old: true } : {}) };
     }
     // Whether a line mentions your user (8.9): @ and the name they go by, or your office's, as a word of its own.
