@@ -103,10 +103,11 @@ only when they cannot does the relay carry them (at most 4 MiB a second each way
 
 - **Taking part takes Visit, signed in.** A workroom joins only while someone is signed in on it, and proves its
   key at every hello: a key cannot be taken, and a name is just a name (first come, first served).
-- **Nothing of your room is visible until you let someone in.** A knock asks your page; a guest (★) walks in through
-  your open door. Whoever is let in gets your room's scene, all of it.
-- **A world's members are the lobby's word.** They see your plot through your open door, as guests do; a public
-  world is anyone's to join. Join worlds in lobbies you trust; your guests stay proved by the link itself.
+- **Nothing of your room is visible until you let someone in.** A knock asks your page; a guest (Visit 3.3: anyone in
+  a world with you) walks in through your open door. Whoever is let in gets your room's scene, all of it.
+- **A world's members are the lobby's word.** They are your guests: through your open door they walk in and may put
+  your plot in their world; a public world is anyone's to join. Join worlds in lobbies you trust; who knocks stays
+  proved by the link itself.
 - **A world's password** is kept as an Argon2id hash, and an office tries at most 5 a minute.
 - **A linked browser** speaks for its workroom only after the workroom linked it (a pass it signed, or the code the
   browser shows, typed in its room), only while the workroom is in the lobby, and never lets anyone in: answering

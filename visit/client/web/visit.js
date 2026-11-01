@@ -13,7 +13,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "3.2.3", PROTO = "basedverse-visit-local/2";
+  const VERSION = "3.3.0", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -37,6 +37,8 @@
   // mounts. A page gives at most POSSESSIONS (each as big as an avatar may be); MOUNT_KEY gets your user on their
   // mount and off again (the panel's, once your room gives one).
   const POSSESSIONS = 8, MOUNT_KEY = "KeyM", EYES = 1.6;
+  const MAX_PICKS = 8;   // the most plots your world shows at once (3.3: the ones you picked; visit-client's and the lobby's limit too)
+  const MAX_IGNORED = 50;   // the most your user ignores in chat (3.3: as WoW's ignore list)
   // What the host hears many times a second: none of it changes what the page shows, so none fires "change".
   const QUIET = new Set(["input", "point", "keyframe", "link_stats", "scene", "scene_lost", "scene_resync"]);
   // A timer from a Worker: a page's own timers slow to once a second (or less) while its tab is in the
@@ -260,6 +262,9 @@
     return { key: String(b.key), agent: String(b.agent || "A browser"), pictures: String(b.pictures || ""), created: Number(b.created) || 0, used: Number(b.used) || 0, online: b.online === true };
   }
   // A room's line in the directory: { text, tags }, or null.
+  // Whom your user ignores in chat (3.3), as visit-client says: [{ key, npc (a room's figure's id, or null), name }].
+  const ignoredFrom = list => (Array.isArray(list) ? list : []).filter(i => isObj(i) && typeof i.key === "string")
+    .map(i => ({ key: i.key, npc: typeof i.npc === "string" ? i.npc : null, name: String(i.name || "") }));
   function aboutFrom(a) {
     return isObj(a) ? { text: String(a.text || ""), tags: (Array.isArray(a.tags) ? a.tags : []).map(String) } : null;
   }
@@ -521,6 +526,9 @@
       // The interactions on (8.3): which types a visitor's crosshair shows hot, and with what label.
       const isig = JSON.stringify(this.inter), inter = this.interSig !== null && isig !== this.interSig;
       this.interSig = isig;
+      // Its figures and how Visit picks a target in it (3.3, #48): as they change.
+      const fsig = JSON.stringify(this.figs || null), figs = this.figSig !== undefined && this.figSig !== null && fsig !== this.figSig;
+      this.figSig = fsig;
       // The landscape: which objects, under which. Changed, it goes again (_landSend) and visitors put it where it goes.
       const ssig = statics.map(([o, p]) => o.uuid + ">" + (p ? p.o.uuid : "")).join();
       let land = null;
@@ -539,6 +547,7 @@
       if (props.length) edit.props = props;
       if (scene) edit.scene = scene;
       if (inter) edit.interactions = this.inter;
+      if (figs && this.figs) { edit.figures = this.figs.figures; edit.targeting = this.figs.targeting; }
       if (land) edit.landscape = land;
       return { edit: Object.keys(edit).length > 1 ? edit : null, moved };
     }
@@ -691,7 +700,9 @@
       const json = apart ? this._without(root, () => sharedJSON(root)) : sharedJSON(root);
       this.sent = new Set(["geometries", "materials", "textures", "images"].flatMap(k => (json[k] || []).map(x => x.uuid)));
       this.interSig = JSON.stringify(this.inter);
+      this.figSig = JSON.stringify(this.figs || null);
       return { type: "scene", three: String(three.REVISION), json, ids: [...this.objs.values()].map(r => [r.o.uuid, r.idx]), targets: this.targets(root), interactions: this.inter,
+        ...(this.figs ? { figures: this.figs.figures, targeting: this.figs.targeting } : {}),
         renderer: rendererProps(renderer, three), fov: Number(hooks.fov) || 70, near: Number(this.cfg.near) || 0.1, far: Number(this.cfg.far) || 1000,
         walk: w && Number(w.speed) > 0 ? { speed: Number(w.speed), mounts: w.mounts === true } : null, yaw0: h.yaw0,
         pose: h.pose ? Object.assign({}, h.pose, { y: (Number(h.pose.y) || 0) + (h.eyes || 0) }) : h.pose,   // its eyes: where its camera goes
@@ -719,13 +730,16 @@
       this._samples = { latency: [], drawn: [] };   // the last few thousand of each, for a test's percentiles
       this.offices = [];
       this.key = null;         // this office's key: its lasting identity, the same every run (with a state file)
-      this.door = "open";      // "open": your guests come in without knocking; "closed": everyone knocks
-      this.guests = [];        // [{ key, name }]: who walks in through the open door
+      this.door = "open";      // "open": your guests (your worlds' members) come in without knocking; "closed": everyone knocks
+      this.picks = [];         // whose plots your world shows (3.3), at most MAX_PICKS: [{ key, name }]
+      this.ignored = [];       // whom your user ignores in chat (3.3), at most MAX_IGNORED: [{ key, npc, name }]
+      this.target = null;      // 3.3 (#48): your user's target in the room they are in: { kind, id, name, room, ... } or null
+      this._targeting = true;  //   and whether Visit picks it itself, the room's way (v.targeting(false): your page does)
       this.knocks = [];        // on your door: { id, from, message, until, link }
       this.knocking = [];      // yours, waiting: { id, to, link }
       this.layout = [];        // where you have put friends' plots in your world: [{ key, x, z, turn }]
       this.seen = [];          // where friends have put your room in their worlds (8.4): [{ key, name, at: { dx, dz, turn, size } }]
-      this.watchers = [];      // who sees your room from outside it (your guests' worlds, links): [{ id, visitor, inside, link }]
+      this.watchers = [];      // who sees your room from outside it (worlds that picked it, links): [{ id, visitor, inside, link }]
       this.links = [];         // your links (8.5): [{ id, host, where ("corner", "aside" or "world"), inside }]
       this.avatars = { default: "theirs", by: [] };
       this.riding = null;      // the mount your user rides (8.11): its id, or null
@@ -768,7 +782,7 @@
       this.unseen = { count: 0, conversations: [], lines: [] };   // the mailbox (8.9): lines meant for you, not read yet
       this.held = [];          // whispers you left for someone away, still with your visit-client: [{ id, key, name, text, at }]
       this._attention = false; // someone looking at this page's chat (Visit.chat says), as last told
-      this._kept = new Map();     // guests' plots kept while they are away (8.10): key -> { key, name, plot, unit, json, asked, built }
+      this._kept = new Map();     // picked plots kept while they are away (8.10): key -> { key, name, plot, unit, json, asked, built }
       this._landText = null;      // this room's landscape, as last given to visit-client
       this._said = [];            // when you last said lines (CHATS every CHAT_WINDOW)
       this._saidAs = new Map();   // and each of your room's figures (sayAs), by its id
@@ -810,7 +824,7 @@
     on(event, fn) { (this._on[event] = this._on[event] || []).push(fn); return this; }
     off(event, fn) { this._on[event] = (this._on[event] || []).filter(f => f !== fn); return this; }
     _emit(event, arg) { for (const fn of this._on[event] || []) { try { fn(arg); } catch (e) { console.error("visit: a", event, "handler threw", e); } } }
-    _changed() { this._emit("change", this); }
+    _changed() { this._targetCheck(); this._emit("change", this); }
 
     // ---------- the connection ----------
     // `token` is the token, or a function giving it (fresh each time: a visit-client restarted with a new
@@ -876,7 +890,8 @@
       this.about = aboutFrom(m.about);
       this.unseen = { count: 0, conversations: [], lines: [] }; this.held = [];   // (said again after, if any)
       if (this._attention) this._send({ type: "attention", on: true });
-      this._guests(m);
+      this._picks(m);
+      this.ignored = ignoredFrom(m.ignored);
       this.layout = Array.isArray(m.layout) ? m.layout : [];
       this.voiceRange = Number(m.voice_range) > 0 ? Number(m.voice_range) : VOICE_RANGE;
       this._kept = new Map((Array.isArray(m.kept) ? m.kept : []).filter(k => isObj(k) && typeof k.key === "string" && isObj(k.plot))
@@ -973,7 +988,16 @@
           this._emit("answered", { to: k && k.to, accept: m.accept, reason: m.reason, message: m.message || "", link: m.link === true });
           break;
         }
-        case "guests": this._guests(m); break;
+        case "picks": this._picks(m); break;
+        case "ignored": {   // 3.3: whom your user ignores, now: their lines out of the log, and over their heads
+          this.ignored = ignoredFrom(m.ignored);
+          const gone = l => !l.mine && this.isIgnored(l.key, l.npc);
+          this.chatLog = this.chatLog.filter(l => !gone(l));
+          for (const [k, c] of this._chats) if (gone(c)) this._chats.delete(k);
+          this._emit("ignored", this.ignored);
+          this._changed();
+          break;
+        }
         case "avatars": this._avatarsFrom(m); this._avatarWants(); this._visitorsList(); break;
         case "avatar": this._avatarIn(m); break;
         case "avatar_none": this._avatarNone(m); break;
@@ -1044,6 +1068,15 @@
           if (this._viewer && this._viewer.channel === m.channel) { this.stats.rtt = Number(m.rtt_ms); this.stats.path = String(m.path); }
           break;
         case "keyframe": case "input": case "scene_resync": case "point": case "shared_adds": case "landscapes": this._hostMessage(m); break;
+        case "act": this._act(m); break;
+        // 3.3 (#48): a line meant for one of this room's figures, whoever said it (from: { id (their visit here) | owner,
+        // key, name }), aloud or (whisper) to it alone. The room answers with sayAs, aloud or { to } them alone.
+        case "addressed": {
+          const fr = isObj(m.from) ? m.from : {};
+          this._emit("addressed", { figure: String(m.figure || ""), from: { id: typeof fr.id === "string" ? fr.id : null, key: typeof fr.key === "string" ? fr.key : null, name: String(fr.name || ""), owner: fr.owner === true },
+            name: String(m.name || fr.name || ""), text: String(m.text || ""), whisper: m.whisper === true });
+          break;
+        }
         case "landscape": this._landIn(m); break;
         case "plot_forgotten": this._kept.delete(String(m.key)); if (this._world) this._world._keptForget(String(m.key)); break;
         case "scene": this._sceneEdit(m); break;
@@ -1104,7 +1137,7 @@
       this._changed();
       return true;
     }
-    // A link's room into your world (v.world first): a plot round yours, as a guest's, while the link lasts.
+    // A link's room into your world (v.world first): a plot round yours, as a picked one's, while the link lasts.
     toWorld(id) {
       const w = this._link(id);
       if (!w || !this._world || w.where === "world") return false;
@@ -1142,6 +1175,41 @@
           reach: Number(t.reach) > 0 ? Number(t.reach) : Infinity, wheel: t.wheel === true, run: t.run });
       }
       this._interactions = map;
+    }
+    // 3.3 (#48): your room's figures, described for anyone in it (a card shows them): data only, [{ id (its object is
+    // visit:npc:<id>, as sayAs has it), name (24), title? (40), about? (280), actions? (at most 8 interaction types this
+    // room takes, offered as buttons; each runs only by its own rules: who, reach, cosmetic or agreed) }]. At most 32,
+    // 8 KB in all. They go to everyone in your room with its scene, as they change.
+    figures(list) {
+      this._as("host", "figures");
+      const out = [];
+      for (const f of Array.isArray(list) ? list : []) {
+        const g = figureFrom(f);
+        if (!g) throw new Error("visit.figures: each is { id (1 to 40 letters, digits, _ . -), name, title?, about?, actions? }");
+        if (out.some(x => x.id === g.id)) throw new Error(`visit.figures: "${g.id}" twice`);
+        out.push(g);
+      }
+      if (out.length > FIGURES) throw new Error(`visit.figures: at most ${FIGURES}`);
+      if (JSON.stringify(out).length > FIGURES_BYTES) throw new Error(`visit.figures: at most ${FIGURES_BYTES} bytes in all`);
+      this._figures = out;
+      this._targetCheck();
+      this._changed();
+    }
+    // A figure's action from someone's card (3.3, #48): run as a point at the figure would be, by its type's own rules
+    // (who may, how far, cosmetic or agreed), and only one the figure lists.
+    _act(m) {
+      const hk = this._hooks, h = m.channel != null ? this._hosted.get(m.channel) : null;
+      if (!hk || (!h && m.owner !== true)) return;
+      const f = (this._figures || []).find(x => x.id === m.figure), t = this._interactions.get(m.action);
+      const object = f && hk.scene.root.getObjectByName("visit:npc:" + f.id);
+      if (!f || !t || !object || !f.actions.includes(m.action)) return;
+      const visitor = h ? h.visitor : { id: null, key: this.key, name: this._userName || (this.office ? this.office.name : ""), owner: true }, owner = h ? h.owner : true;
+      const T = hk.scene.three, at = object.getWorldPosition(new T.Vector3());
+      const p = h && h.pose, distance = p ? at.distanceTo(new T.Vector3(Number(p.x) || 0, (Number(p.y) || 0) + (h.eyes || 0), Number(p.z) || 0)) : 0;
+      if (distance > t.reach || (t.who === "guests" && !owner && !this.isGuest(visitor.key)) || (t.who === "owner" && !owner)) return;
+      const e = { id: h ? h.id : null, visitor, type: m.action, object, point: at.toArray(), distance, wheel: 0, figure: f.id };
+      try { t.run(e); } catch (x) { console.error(`visit: interaction "${m.action}" threw`, x); }
+      this._emit("interaction", { id: e.id, visitor, type: m.action, cosmetic: t.cosmetic, object, wheel: 0, figure: f.id });
     }
     // The types the scene says it takes (a visitor's crosshair shows them hot): not the owner's own.
     _interList() {
@@ -1363,7 +1431,7 @@
       }
       a.mixer.update(dt);
     }
-    // Whether this office sees that one's room from outside it: a plot in its world (a guest's, or a link put there).
+    // Whether this office sees that one's room from outside it: a plot in its world (picked, or a link put there).
     watching(officeId) { return [...this._watches.values()].some(w => w.host.id === officeId); }
     _link(id) { return id == null ? (this._viewer && this._viewer.link ? this._viewer : null) : [...this._links.values()].find(w => w.id === id) || null; }
     // In the room in the stage (a visit, or a link gone there): where keys, the mouse and points go.
@@ -1373,9 +1441,9 @@
     leaveLobby() { this._send({ type: "leave_lobby" }); }
     joinLobby() { this._send({ type: "join_lobby" }); }
     kick(visitId) { this._send({ type: "end", visit: visitId }); }
-    // Your door and your guests (kept by visit-client, with its state file): while the door is open, a guest's
-    // knock lets them in at once, without asking you, and your worlds' members see your plot. A guest is a key, as
-    // v.offices lists it (or, surer, as a visit's peer has it: its link proved it), with the name you knew them by.
+    // Your door (kept by visit-client, with its state file): while it is open, your guests (3.3: everyone in a world
+    // with you) are let in at once, without asking you, to walk in or to put your room in their world; closed, everyone
+    // knocks, and your room leaves their worlds. (Before 3.3 guests were a list of keys, ★: gone.)
     setDoor(open) { this._send({ type: "door", open: !!open }); }
     // 3.0's door open to anyone: gone in 3.1 (a public world is how anyone comes round). Does nothing.
     setPublic() { console.warn("visit.setPublic: gone in Visit 3.1: make a public world (createGroup) instead"); }
@@ -1384,8 +1452,8 @@
     setAbout(text, tags = []) { this._send({ type: "about", about: text == null ? null : { text: String(text), tags: (tags || []).map(String) } }); }
 
     // ---------- worlds (LOBBY.md; the protocol calls them groups) ----------
-    // A world's members each put the others' rooms round their own, as if each were everyone's guest, for worlds
-    // only (their doors open). A world is public (anyone joins) or takes a password; whoever makes one owns it: its
+    // A world's members are each other's guests (3.3): through their open doors each may put the others' rooms round
+    // their own (their pick: v.pick) and walk in without asking. A world is public (anyone joins) or takes a password; whoever makes one owns it: its
     // line, its password (a new one keeps its members), taking members out and keeping keys out, handing it on.
     // v.groups, yours; "group" as one changes, "group_left" as you are out of one (left, removed, banned, deleted).
     // The lobby refuses what may not be (error, its ref the message's type: group_create, group_join...).
@@ -1480,9 +1548,135 @@
     lobbyBan(key, { minutes = null, reason = "" } = {}) { this._send({ type: "admin", action: "ban", key: String(key), ...(minutes ? { minutes: Number(minutes) } : {}), text: String(reason) }); }
     lobbyUnban(key) { this._send({ type: "admin", action: "unban", key: String(key) }); }
     lobbyBansList() { this._send({ type: "admin", action: "bans" }); }
-    addGuest(key, name = "") { this._send({ type: "guest_add", key, name }); }
-    removeGuest(key) { this._send({ type: "guest_remove", key }); }
-    isGuest(key) { return !!key && this.guests.some(g => g.key === key); }
+    // Your guests (3.3): everyone in a world with you. Through your open door they put your room in their world (it is
+    // theirs to pick) and walk in without asking; and you theirs. Nobody else: they knock.
+    get guests() {
+      const by = new Map();
+      for (const g of this.groups) for (const m of g.members) if (m.key && m.key !== this.key && !by.has(m.key)) by.set(m.key, { key: m.key, name: this.userOf(m.key) || m.name || "" });
+      return [...by.values()];
+    }
+    isGuest(key) { return !!key && key !== this.key && this.groupsWith(key).length > 0; }
+    // Whose plots your world shows (3.3): your pick, at most MAX_PICKS (8), kept by visit-client. Nothing is in it by
+    // itself; a guest's plot shows while they are in the lobby with their door open (and, picked, from its last
+    // landscape while they are away). Unpicked, it goes, and where you had placed it too. A ninth: "too_many".
+    pick(key, name = "") { this._send({ type: "pick", key: String(key), name: String(name) }); }
+    unpick(key) { this._send({ type: "unpick", key: String(key) }); }
+    isPicked(key) { return !!key && this.picks.some(p => p.key === key); }
+    get maxPicks() { return MAX_PICKS; }
+    // Whom your user ignores in chat (3.3, as WoW's ignore list): a person by their office's key, or one of a room's own
+    // figures (sayAs) by that room's key and the figure's id (`npc`). Their lines never reach this page from then on
+    // (nor over their heads, nor the mailbox): visit-client drops them, and keeps the list (at most MAX_IGNORED, 50:
+    // "too_many"). Nothing tells them. "ignored" as it changes.
+    ignore(key, { npc = null, name = "" } = {}) { this._send({ type: "ignore", key: String(key), ...(npc ? { npc: String(npc) } : {}), name: String(name) }); }
+    unignore(key, { npc = null } = {}) { this._send({ type: "unignore", key: String(key), ...(npc ? { npc: String(npc) } : {}) }); }
+    clearIgnored() { this._send({ type: "ignore_clear" }); }
+    isIgnored(key, npc = null) { return !!key && this.ignored.some(i => i.key === key && i.npc === (npc || null)); }
+    get maxIgnored() { return MAX_IGNORED; }
+
+    // ---------- targets (3.3, #48): the plumbing; each world decides how they are picked and what shows ----------
+    // Your user's target in the room they are in: one of the people there, or one of its figures (sayAs's). Private to
+    // this page: nobody else is told. { kind: "person", id: their office's key, name } or { kind: "figure", id, name,
+    // title, about, actions }, each with `room` (the key of the room's office); null: none. It goes when your user
+    // leaves that room, or it does. "target" as it changes. Visit picks it itself, the room's way (its host's
+    // `targeting`: "click", "near" or "none"), unless your page picks its own: v.targeting(false).
+    setTarget(t) {
+      let next = null;
+      if (t != null) {
+        if (!isObj(t) || !["person", "figure"].includes(t.kind) || typeof t.id !== "string" || !t.id || t.id.length > 100) throw new Error('visit.setTarget: { kind: "person" | "figure", id, name } or null');
+        const f = t.kind === "figure" ? this._figuresHere().get(t.id) : null;
+        next = { kind: t.kind, id: t.id, name: clip(t.name, 24) || (f ? f.name : "") || (t.kind === "figure" ? t.id : ""), room: this._roomKey() };
+        if (f) Object.assign(next, { title: f.title, about: f.about, actions: f.actions.slice(), talk: f.talk });
+        if (typeof t.visit === "string") next.visit = t.visit;
+      }
+      const was = this.target;
+      if ((!was && !next) || (was && next && was.kind === next.kind && was.id === next.id && was.room === next.room && was.name === next.name)) return;
+      this.target = next;
+      this._emit("target", next);
+      this._emit("change", this);
+    }
+    targeting(on) { this._targeting = on !== false; }
+    // The figures of the room your user is in, as it describes them (its v.figures): [{ id, name, title, about, actions }].
+    get figuresHere() { return [...this._figuresHere().values()]; }
+    _figuresHere() {
+      const r = this._room();
+      return r.s ? r.s.figures || new Map() : new Map((this._figures || []).map(f => [f.id, f]));
+    }
+    _roomKey() { return this._conversationHere().slice(5); }
+    // A figure's action from your target's card: run by the room as a point at the figure would be (its own rules).
+    act(figure, action) { this._send({ type: "act", figure: String(figure), action: String(action) }); }
+    // Your target still there? Out of the room it was in (your user left it), or it left: none.
+    _targetCheck() {
+      const t = this.target;
+      if (!t || this._targetChecking) return;
+      let gone = this._roomKey() !== t.room;
+      if (!gone && t.kind === "figure") {
+        const r = this._room(), s = r.s, root = s ? s.root : this._hooks && this._hooks.scene.root;
+        gone = !this._figuresHere().has(t.id) && !(root && this._candidates(s || { root }).some(c => c.kind === "figure" && c.id === t.id));
+      }
+      if (!gone && t.kind === "person") {
+        const ppl = this._peopleHere();
+        gone = !!ppl && !ppl.some(p => p.key === t.id || (t.visit && p.id === t.visit));
+      }
+      if (gone) { this._targetChecking = true; try { this.setTarget(null); } finally { this._targetChecking = false; } }
+    }
+    // Who is in the room your user is in, as this page knows them (null: it does not): at home, your visitors; in
+    // another's, its owner and whoever its voices reach you from.
+    _peopleHere() {
+      const r = this._room();
+      if (r.kind === "home" && !r.s) return this.visitors.map(x => ({ key: x.visitor.key, id: x.id, name: x.visitor.name }));
+      const near = r.w && this._nearBy.get(r.w.channel);
+      if (!near) return null;
+      const owner = r.w.host ? [{ key: r.w.host.key, id: null, name: r.w.host.name }] : [];
+      return [...owner, ...near.map(n => ({ key: n.key, id: n.id, name: n.name }))];
+    }
+    // What can be a target in a scene (cached a second): its figures (objects named visit:npc:<id>) and people (bodies
+    // marked userData.visitor, not your own).
+    _candidates(s) {
+      const now = performance.now();
+      if (s._cands && now - s._candsAt < 1000) return s._cands;
+      const out = [], figs = s.figures || new Map((this._figures || []).map(f => [f.id, f]));
+      s.root.traverse(o => {
+        const m = /^visit:npc:([A-Za-z0-9_.-]{1,40})$/.exec(o.name || "");
+        if (m) out.push({ o, kind: "figure", id: m[1], name: (figs.get(m[1]) || {}).name || m[1] });
+        else if (o.userData && typeof o.userData.visitor === "string" && o.userData.visitor !== s.ownId && !(s.own || []).includes(o)) out.push({ o, kind: "person", visit: o.userData.visitor, name: /^avatar:/.test(o.name || "") ? o.name.slice(7) : "" });
+      });
+      s._cands = out; s._candsAt = now;
+      return out;
+    }
+    // Visit's own picking (3.3, #48), the room's way: what the camera looks at (within its angular size, and a little
+    // more), the nearest such; `near`, only within TARGET_NEAR metres (`k`: metres in one of the frame's units).
+    // `dir`: the way to look, if not the camera's (a click where the page's own ray went).
+    _pick(s, cam, mode, k, dir = null) {
+      if (!this._targeting || !s || !cam || (s.targeting || "click") !== mode) return;
+      const T = s.T || (this._hooks && this._hooks.scene.three) || (this._world && this._world.T);
+      if (!T) return;
+      const q = s._pickQ || (s._pickQ = { b: new T.Box3(), c: new T.Vector3(), d: new T.Vector3(), f: new T.Vector3(), p: new T.Vector3(), sz: new T.Vector3() });
+      cam.getWorldPosition(q.p);
+      if (dir) q.f.set(dir.x, dir.y, dir.z).normalize(); else cam.getWorldDirection(q.f);
+      const far = (mode === "near" ? TARGET_NEAR : 60) / (k || 1);
+      let best = null;
+      for (const c of this._candidates(s)) {
+        if (!c.o.parent || !c.o.visible) continue;
+        q.b.setFromObject(c.o);
+        if (q.b.isEmpty()) { c.o.getWorldPosition(q.c); q.sz.set(0.6 / (k || 1), 0, 0); } else { q.b.getCenter(q.c); q.b.getSize(q.sz); }
+        q.d.copy(q.c).sub(q.p);
+        const dist = q.d.length();
+        if (dist > far || dist < 1e-6) continue;
+        const angle = q.d.angleTo(q.f), size = Math.atan2(Math.max(q.sz.x, q.sz.y, q.sz.z) / 2, dist);
+        if (angle <= size + TARGET_SLACK && (!best || dist < best.dist)) best = { c, dist };
+      }
+      if (!best) {
+        if (mode === "near" && this.target && this.target.room === this._roomKey()) {   // looked away: kept, until it is far
+          const c = this._candidates(s).find(x => x.kind === this.target.kind && (x.id === this.target.id || (x.visit && x.visit === this.target.visit)));
+          if (c && c.o.parent) { c.o.getWorldPosition(q.c); if (q.c.distanceTo(q.p) > 2 * far) this.setTarget(null); }
+        }
+        return;
+      }
+      const c = best.c;
+      if (c.kind === "figure") return this.setTarget({ kind: "figure", id: c.id, name: c.name });
+      const who = (this._peopleHere() || []).find(p => p.id === c.visit) || {};
+      this.setTarget({ kind: "person", id: who.key || "visit:" + c.visit, name: who.name || c.name, visit: c.visit });
+    }
     // Your world's layout (kept by visit-client): where a friend's plot sits, its centre in your room's units and
     // 0-3 quarter turns; unplaced, it goes in a ring round yours by itself. It is yours alone, nobody agrees to it:
     // each friend in it is told where their own room sits beside yours, and nothing else of it; and you, where
@@ -1502,18 +1696,18 @@
     _plotMetres() { const p = this._plot(); return p ? p.size.map(x => x * this._unit()) : [10, 10]; }
     // Your friends' plots around your room, and walking onto them (../../WORLD.md): see World.
     world(opts = {}) { this._as("user", "world"); if (this._world) this._world.release(); return new World(this, opts); }
-    _guests(m) {
+    _picks(m) {
       this.door = m.door === "closed" ? "closed" : "open";
-      this.guests = (Array.isArray(m.guests) ? m.guests : []).map(g => ({ key: String(g.key), name: String(g.name || "") }));
-      this._guestLinksToWorld();
+      this.picks = (Array.isArray(m.picks) ? m.picks : []).map(g => ({ key: String(g.key), name: String(g.name || "") }));
+      this._pickedLinksToWorld();
     }
-    // A link with a guest is that guest's plot in your world, as watching it would be: visit-client counts the link
-    // as watching that office and starts no world watch of it beside (watch_guests), so in the corner it would take
-    // a guest's plot off your ground. With a world, such a link goes there (when it starts, or when its office
-    // becomes a guest); a link with anyone else stays in the corner.
-    _guestLinksToWorld() {
+    // A link with someone picked is their plot in your world, as watching it would be: visit-client counts the link
+    // as watching that office and starts no world watch of it beside (watch_picks), so in the corner it would take
+    // their plot off your ground. With a world, such a link goes there (when it starts, or when they are picked); a
+    // link with anyone else stays in the corner.
+    _pickedLinksToWorld() {
       if (!this._world) return;
-      for (const w of [...this._links.values()]) if (w.where !== "world" && !w.inside && this.isGuest(w.host.key)) this.toWorld(w.id);
+      for (const w of [...this._links.values()]) if (w.where !== "world" && !w.inside && this.isPicked(w.host.key)) this.toWorld(w.id);
     }
 
     // ---------- visits ----------
@@ -1544,7 +1738,7 @@
         if (home) { this.home = { id: m.id, channel: m.channel, paused: false }; if (this._world) this._world.listAt = -1; }
         if (m.inside && !home) this._send({ type: "exit", channel: m.channel });   // this page lost where it was: it starts at home
         if (w.link && m.where === "world") { w.wantWorld = true; if (this._world) this.toWorld(w.id); }   // where it was put, before a reload
-        else if (w.link && this._world && this.isGuest(w.host.key)) this.toWorld(w.id);   // a guest's: its plot (_guestLinksToWorld)
+        else if (w.link && this._world && this.isPicked(w.host.key)) this.toWorld(w.id);   // one picked: its plot (_pickedLinksToWorld)
         else if (w.link && !this._viewer) this._toCorner(w);
       } else {
         if (this._viewer && this._viewer.link) this._aside(this._viewer);   // a visit: the corner's link waits aside
@@ -1955,6 +2149,26 @@
     say(text, to, { media = [], links = [] } = {}) {
       this._as("user", "say");
       const t = [...String(text == null ? "" : text).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim()].slice(0, CHAT_LEN).join("").trim(), now = Date.now();
+      // 3.3 (#48): { target }: said aloud, meant for one of the figures or people in the room (the room's page hears a
+      // figure's: `addressed`); { whisper: { kind: "figure", id } }: to that figure alone (its room's page alone has it).
+      let aim = null;
+      if (isObj(to) && isObj(to.target)) {
+        const g = to.target;
+        if (!["figure", "person"].includes(g.kind) || typeof g.id !== "string" || !g.id) return false;
+        aim = { kind: g.kind, id: g.id };
+        to = undefined;
+      }
+      if (isObj(to) && isObj(to.whisper) && to.whisper.kind === "person") to = { whisper: String(to.whisper.id || ""), name: to.whisper.name };
+      if (isObj(to) && isObj(to.whisper) && to.whisper.kind === "figure") {
+        const id = String(to.whisper.id || ""), name = clip(to.whisper.name, 24) || (this._figuresHere().get(id) || {}).name || id, room = this._roomKey();
+        this._said = this._said.filter(at => now - at < CHAT_WINDOW);
+        if (!/^[A-Za-z0-9_.-]{1,40}$/.test(id) || !t || media.length || links.length || this._said.length >= CHATS || !this._ws || this._ws.readyState !== 1) return false;
+        this._said.push(now);
+        this._send({ type: "say", text: t, to: { figure: id, name } });
+        this._chatIn({ key: this.key || "", name: this._userName || (this.office ? this.office.name : ""), text: t, mine: true, owner: false, id: null, scope: "whisper",
+          to: { key: room, npc: id, name }, conversation: "room:" + room });
+        return true;
+      }
       const scope = to == null || to === "here" ? "say" : to === "lobby" ? "lobby" : isObj(to) && to.whisper != null ? "whisper" : isObj(to) && to.group != null ? "group" : "sim";
       if (scope === "group") {   // one of your world groups: everyone in it (text only, through the lobby; it comes back, in order)
         const g = this.groups.find(x => x.name.toLowerCase() === String(to.group).toLowerCase());
@@ -1985,9 +2199,9 @@
       if (((scope === "sim" || scope === "whisper") && !target) || ((scope === "lobby" || (scope === "whisper" && !shares)) && !(this.lobbyChat && this.state === "online"))) return false;
       if (shares && (scope === "lobby" || (scope === "whisper" && !this.chatTargets.some(o => o.key === target.key)))) return false;   // pictures and links: not through the lobby
       this._said.push(now);
-      this._send(scope === "say" ? { type: "say", text: t, ...att } : { type: "say", text: t, to: scope === "lobby" ? "lobby" : to === "room" ? "room" : scope === "whisper" ? { whisper: target.id } : { key: target.key }, ...att });
+      this._send(scope === "say" ? { type: "say", text: t, ...att, ...(aim ? { target: aim } : {}) } : { type: "say", text: t, to: scope === "lobby" ? "lobby" : to === "room" ? "room" : scope === "whisper" ? { whisper: target.id } : { key: target.key }, ...att });
       const me = { key: this.key || "", name: this._userName || (this.office ? this.office.name : ""), text: t, mine: true, owner: false, id: null, ...att };
-      if (scope === "say") { const r = this._room(); this._chatIn({ ...me, room: r.kind === "home" ? "home" : r.w.channel, conversation: this._conversationHere() }); }
+      if (scope === "say") { const r = this._room(); this._chatIn({ ...me, room: r.kind === "home" ? "home" : r.w.channel, conversation: this._conversationHere(), ...(aim ? { target: aim } : {}) }); }
       else if (scope === "sim") this._chatIn({ ...me, scope, to: { key: target.key, name: target.name }, conversation: "room:" + target.key });
       else if (scope === "whisper") this._chatIn({ ...me, scope, to: { id: target.id, key: target.key, name: target.name }, conversation: "person:" + (target.key || "id:" + target.id) });
       return true;   // (a lobby line comes back from the lobby, in its order)
@@ -1996,15 +2210,15 @@
     // letters, digits, _ . or -, and its object in your scene is named "visit:npc:<id>" (its bubble goes over it);
     // `name` is what it goes by in everyone's chat. Said in your room, to everyone who can see it, and kept in its
     // chat; never as your user, and on a limit of its own (each figure CHATS lines every CHAT_WINDOW). False if not sent.
-    sayAs(id, name, text) {
+    sayAs(id, name, text, { to = null } = {}) {
       const t = [...String(text == null ? "" : text).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim()].slice(0, CHAT_LEN).join("").trim(), now = Date.now();
       const i = String(id == null ? "" : id), n = String(name == null ? "" : name).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim();
       if (!/^[A-Za-z0-9_.-]{1,40}$/.test(i) || !n || !t || !this._ws || this._ws.readyState !== 1) return false;
       const said = (this._saidAs.get(i) || []).filter(at => now - at < CHAT_WINDOW);
       if (said.length >= CHATS) return false;
       this._saidAs.set(i, said.concat(now));
-      this._send({ type: "say_as", id: i, name: n, text: t });
-      return true;   // (it comes back from the visit-client as your room's line, kept)
+      this._send({ type: "say_as", id: i, name: n, text: t, ...(to != null ? { to: String(to) } : {}) });
+      return true;   // (it comes back from the visit-client as your room's line, kept; `to`: to them alone, a whisper)
     }
     // The conversation of the room your user is in (8.12): "room:" its owner's key.
     _conversationHere() {
@@ -2110,7 +2324,7 @@
       return this.offices.filter(o => o.whisper && !(this.office && o.id === this.office.id)).map(o => ({ id: o.id, key: o.key, name: o.name }));
     }
     // Whom you may leave a whisper for (say(text, { whisper: key, name })), not in the lobby now (0.22.0): those you
-    // have whispered with, and your guests, by their keys. Your visit-client keeps it, text only, and passes it on once
+    // have whispered with, and your guests (your worlds' members), by their keys. Your visit-client keeps it, text only, and passes it on once
     // they and you are both in the lobby (v.held until then; "held_sent" as it goes).
     get awayTargets() {
       const here = new Set(this.whisperTargets.map(o => o.key)), by = new Map();
@@ -2156,11 +2370,11 @@
       if (m.scope === "group") return { ...line, scope: "group", group: String(m.group || ""), mine: m.mine === true, id: typeof m.id === "string" ? m.id : null };
       if (m.mine === true) {
         if (!old) return null;
-        const to = isObj(m.to) ? { key: String(m.to.key || ""), name: String(m.to.name || ""), ...(m.to.id ? { id: String(m.to.id) } : {}) } : null;
+        const to = isObj(m.to) ? { key: String(m.to.key || ""), name: String(m.to.name || ""), ...(m.to.id ? { id: String(m.to.id) } : {}), ...(typeof m.to.npc === "string" ? { npc: m.to.npc } : {}) } : null;
         return { ...line, scope: ["sim", "whisper"].includes(m.scope) ? m.scope : "say", mine: true, to, ...(m.held === true ? { held: true } : {}) };
       }
       if (m.scope === "lobby") return { ...line, scope: "lobby", mine: !!this.office && m.id === this.office.id };
-      if (m.scope === "whisper") return { ...line, scope: "whisper", id: typeof m.id === "string" ? m.id : null };
+      if (m.scope === "whisper") return { ...line, scope: "whisper", id: typeof m.id === "string" ? m.id : null, npc: typeof m.npc === "string" ? m.npc : null };
       if (m.scope === "sim") {   // the room whose chat it is: yours (home), else its owner (by the conversation, or the link it came by)
         const rk = line.conversation && line.conversation.startsWith("room:") ? line.conversation.slice(5) : null;
         const p = m.home === true || rk === this.key ? { key: this.key || "", name: this.office ? this.office.name : "" }
@@ -2168,7 +2382,8 @@
         return { ...line, scope: "sim", channel: m.channel, to: { key: String(p.key || ""), name: String(p.name || "") } };
       }
       const npc = typeof m.npc === "string" ? m.npc : null;   // one of a room's own figures (sayAs): yours, said with no channel
-      return { ...line, id: typeof m.id === "string" ? m.id : null, npc, owner: m.owner === true, channel: m.channel, room: this._hosted.has(m.channel) || (npc && m.channel == null) ? "home" : m.channel };
+      const aim = isObj(m.target) && ["figure", "person"].includes(m.target.kind) && typeof m.target.id === "string" ? { kind: m.target.kind, id: m.target.id } : null;   // (3.3: meant for)
+      return { ...line, id: typeof m.id === "string" ? m.id : null, npc, owner: m.owner === true, channel: m.channel, room: this._hosted.has(m.channel) || (npc && m.channel == null) ? "home" : m.channel, ...(aim ? { target: aim } : {}) };
     }
     // An office's name, by its key, as this page knows it (the lobby, its links).
     _nameOf(key) {
@@ -2179,7 +2394,7 @@
     _lineOf(c, old) {
       return { scope: c.scope || "say", key: c.key, name: c.name, text: c.text, mine: !!c.mine, owner: !!c.owner, id: c.id || null, npc: c.npc || null, channel: c.channel, to: c.to || null,
         media: c.media || [], links: c.links || [], conversation: c.conversation || null, mention: !c.mine && this._mentions(c.text), ...(c.held ? { held: true } : {}),
-        ...(c.group ? { group: c.group } : {}),
+        ...(c.group ? { group: c.group } : {}), ...(c.target ? { target: c.target } : {}),
         at: old ? c.at : Date.now(), ...(old ? { old: true } : {}) };
     }
     // Whether a line mentions your user (8.9): @ and the name they go by, or your office's, as a word of its own.
@@ -2424,6 +2639,7 @@
       if (hooks.unit != null && !(Number(hooks.unit) > 0)) throw new Error("visit.host: unit is how many metres one of the scene's units is (a number above 0)");
       if (hooks.mounts != null && typeof hooks.mounts !== "boolean") throw new Error("visit.host: mounts is true or false (8.11)");
       if (hooks.eye != null && !(Number(hooks.eye) > 0)) throw new Error("visit.host: eye is how high above its floor a visitor's pose is, in metres (1.6)");
+      if (hooks.targeting != null && !TARGETINGS.includes(hooks.targeting)) throw new Error(`visit.host: targeting is "click", "near" or "none" (#48: how Visit picks a target for anyone in this room)`);
       // `preview` (optional): { x, y, z, yaw, pitch }, where a link sees this room from before going in (8.5); without
       // it, from above its plot, going round.
       const pv = hooks.preview;
@@ -2502,7 +2718,7 @@
 
     // A point at something marked with a type of interaction this room takes (8.3): the first thing on the ray that
     // is not a visitor's body or hidden, then the type on it or on what it is part of. Its entry runs if the type is
-    // on, this visitor may (a guest, for who: "guests"; the owner, for who: "owner"), it is within reach, and, for the
+    // on, this visitor may (a guest, in a world with you, for who: "guests"; the owner, for who: "owner"), it is within reach, and, for the
     // wheel, the type takes it.
     _interact(h, from, dir, wheel = 0) {
       const hk = this._hooks;
@@ -2539,6 +2755,7 @@
         }
         const sync = this._sync, ready = hs.filter(h => h.sceneSent);
         sync.inter = this._interList();
+        sync.figs = { figures: this._figures || [], targeting: targetingOf(this._hooks.targeting) };
         sync.shared = ready.every(h => h.sharedAdds);   // one visitor on an older Visit: every add whole, as it reads them
         const t0 = this._perf ? performance.now() : 0, { edit, moved } = sync.scan(now);
         if (this._perf) this._pt("scan", performance.now() - t0);
@@ -2669,7 +2886,7 @@
         walk: isObj(e.walk) && num(e.walk.speed, 0) > 0 ? { speed: Math.min(50, num(e.walk.speed, 2.5)), mounts: e.walk.mounts === true } : null,
         eye: num(e.eye, 0) > 0 ? num(e.eye, 0) : null,   // our eyes over our feet there (its units; `body` says again): an older host's, unsaid
         hist: [], vis: { x: 0, y: 0, z: 0 }, waitKey: true, own: [], last: 0, gcAt: performance.now(), q: new T.Quaternion(), v: new T.Vector3(), relight: null,
-        interactions: interMap(e.interactions), landParents: isObj(e.landscape) && Array.isArray(e.landscape.parents) ? e.landscape.parents : null };
+        interactions: interMap(e.interactions), figures: figMap(e.figures), targeting: targetingOf(e.targeting), landParents: isObj(e.landscape) && Array.isArray(e.landscape.parents) ? e.landscape.parents : null };
       this._sceneAdopt(s, root);
       const byUuid = new Map();
       root.traverse(o => byUuid.set(o.uuid, o));
@@ -2696,7 +2913,7 @@
       this._landAttach(w);
       if (w.home && wd) wd.listAt = -1;   // home has arrived: the world's own plot is known
       const key = w.host && w.host.key;
-      if (key && this.isGuest(key) && !w.home) {   // a guest's plot: kept to draw while they are away (8.10), here and by visit-client
+      if (key && this.isPicked(key) && !w.home) {   // a picked plot: kept to draw while they are away (8.10), here and by visit-client
         const k = this._kept.get(key) || { key, json: null, asked: false, built: null };
         if (!k.plot || JSON.stringify(k.plot) !== JSON.stringify(s.plot) || k.unit !== s.unit) this._send({ type: "plot_keep", key, name: w.host.name || "", plot: s.plot, unit: s.unit });
         this._kept.set(key, Object.assign(k, { name: w.host.name || "", plot: s.plot, unit: s.unit }));
@@ -2797,6 +3014,8 @@
       if (!s) return this._sceneResync(w);   // an edit with no scene to apply it to: start again
       if (isObj(e.res)) this._sceneResources(s, e.res);
       if (Array.isArray(e.interactions)) s.interactions = interMap(e.interactions);
+      if (Array.isArray(e.figures)) { s.figures = figMap(e.figures); this._targetCheck(); }
+      if (typeof e.targeting === "string") s.targeting = targetingOf(e.targeting);
       for (const idx of Array.isArray(e.remove) ? e.remove : []) {
         const o = idx ? s.byIdx.get(idx) : null;
         if (!o) continue;
@@ -2849,7 +3068,7 @@
     }
 
     // A landscape (8.10), from visit-client: a room's (on its visit's channel), kept by visit-client or sent once;
-    // or (channel 0) a guest's plot kept while they are away.
+    // or (channel 0) a picked plot kept while they are away.
     _landIn(m) {
       if (!isObj(m.json)) return;
       const key = String(m.key || "");
@@ -3385,6 +3604,8 @@
       if (!v || now - v.pointAt < POINT_MS) return;
       v.pointAt = now;
       this._send({ type: "point", yaw: v.yaw, pitch: v.pitch });
+      const s = this._viewer && this._viewer.scene;
+      if (s && s.camera) this._pick(s, s.camera, "click", s.unit || 1);   // 3.3 (#48): a click on someone, if the room picks so
       if (v.cross) { v.cross.style.transform = "scale(1.6)"; setTimeout(() => { v.cross.style.transform = ""; }, 120); }
     }
     // A turn of the wheel there (SPEC 8.3): its notches added up while a point waits its turn (one every POINT_MS),
@@ -3427,6 +3648,7 @@
         break;
       }
       v.wheelOn = wheel;   // the wheel there is the room's (its type takes it), else nobody's
+      this._pick(s, s.camera, "near", s.unit || 1);   // 3.3 (#48): whoever is looked at, close by, if the room picks so
       v.cross.style.background = hot ? "rgba(255,255,255,.95)" : "";
       if (v.hint && v.hint.textContent !== label) { v.hint.textContent = label; v.hint.style.display = label ? "block" : "none"; }
     }
@@ -3761,13 +3983,25 @@
   // The interactions a host takes, as its scene says them: type -> { label, cosmetic }.
   const interMap = list => new Map((Array.isArray(list) ? list : []).filter(i => isObj(i) && typeof i.type === "string")
     .map(i => [i.type, { label: String(i.label || i.type).slice(0, 60), cosmetic: i.cosmetic === true, wheel: i.wheel === true }]));
+  // A room's figures (3.3, #48), as v.figures gives them, or as its scene says them: data only, capped. id -> { id, name,
+  // title, about, actions } (actions: interaction types the room takes, for a card's buttons).
+  const FIGURES = 32, FIGURES_BYTES = 8192, TARGET_NEAR = 4, TARGET_SLACK = 2.5 * Math.PI / 180, TARGETINGS = ["click", "near", "none"];
+  const clip = (x, n) => [...String(x == null ? "" : x).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim()].slice(0, n).join("").trim();
+  const figureFrom = f => isObj(f) && typeof f.id === "string" && /^[A-Za-z0-9_.-]{1,40}$/.test(f.id) && clip(f.name, 24)
+    ? { id: f.id, name: clip(f.name, 24), title: clip(f.title, 40), about: clip(f.about, 280),
+        actions: (Array.isArray(f.actions) ? f.actions : []).filter(t => typeof t === "string" && /^[\w.-]{1,40}$/.test(t)).slice(0, 8),
+        talk: ["everyone", "owner", "none"].includes(f.talk) ? f.talk : "everyone" } : null;
+  // Whether your user may talk to that figure, as its room says (a hint: the room decides whom it answers).
+  const mayTalk = (v, f) => !!f && (f.talk === "everyone" || f.talk == null || (f.talk === "owner" && f.room != null && f.room === v.key));
+  const figMap = list => new Map((Array.isArray(list) ? list : []).slice(0, FIGURES).map(figureFrom).filter(Boolean).map(f => [f.id, f]));
+  const targetingOf = t => TARGETINGS.includes(t) ? t : "click";
 
   const hashKey = k => { let h = 2166136261; for (let i = 0; i < k.length; i++) h = Math.imul(h ^ k.charCodeAt(i), 16777619); return h >>> 0; };
   // A rectangle on the floor, [x0, z0, x1, z1]; plots are only ever turned by quarter turns, so it is one.
   const overlap = (a, b) => a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
   const within = (r, x, z) => x > r[0] && x < r[2] && z > r[1] && z < r[3];
 
-  // Your world: your own room, at home in its own coordinates, and each plot you watch (a guest's, whose door is
+  // Your world: your own room, at home in its own coordinates, and each plot you watch (one you picked, whose door is
   // open to you, or a link you put there) where your layout puts it: where you placed it, else a ring round yours.
   // You walk in your own room with your own walking; step onto a plot and you are in its owner's room (it moves
   // you, by its walls), drawn there by your page as yourself; walk off it and you are home again.
@@ -3812,7 +4046,7 @@
       v._world = this;
       v._send({ type: "world", on: true });
       for (const w of [...v._links.values()]) if (w.wantWorld) v.toWorld(w.id);   // links that were in it before this page reloaded
-      v._guestLinksToWorld();   // a guest's link already in the corner: its plot now there is a world
+      v._pickedLinksToWorld();   // a picked one's link already in the corner: its plot now there is a world
     }
 
     get inside() { return this.in != null; }
@@ -3837,8 +4071,8 @@
         }
         xs.push({ key: w.host.key, name: w.host.name || "", w, plot: w.scene.plot, k: w.scene.unit / unit });
       }
-      for (const k of v._kept.values()) {   // a guest's plot while they are away (8.10): its last landscape, where it was
-        if (xs.some(x => x.key === k.key) || !isObj(k.plot) || !v.isGuest(k.key)) continue;
+      for (const k of v._kept.values()) {   // a picked plot while they are away (8.10): its last landscape, where it was
+        if (xs.some(x => x.key === k.key) || !isObj(k.plot) || !v.isPicked(k.key)) continue;
         if (!k.json) { if (!k.asked) { k.asked = true; v._send({ type: "plot_load", key: k.key }); } continue; }
         xs.push({ key: k.key, name: k.name, w: null, kept: k, plot: k.plot, k: k.unit / unit });
       }
@@ -3916,7 +4150,7 @@
       return h;
     }
 
-    // A guest's plot kept while they are away (8.10), as a scene: its landscape read with this page's three.js (as
+    // A picked plot kept while they are away (8.10), as a scene: its landscape read with this page's three.js (as
     // data: cleanScene), lit softly if it brought no lights of its own, and over it its name: offline.
     _keptScene(x) {
       const k = x.kept, T = this.T;
@@ -4097,6 +4331,10 @@
     // (notches, positive down: a turn of the wheel there, the page's own to count), a wheel point: notches added up
     // while a point waits its turn (one every POINT_MS, as a visitor's), then sent at most MAX_WHEEL at once.
     point(target, { wheel = 0 } = {}) {
+      if (!wheel) try {   // 3.3 (#48): a click on someone in the room you are in, if it picks so
+        const c = this._cam, T = this.T;
+        this._pickHere("click", target && c ? new T.Vector3(Number(target.x) || 0, Number(target.y) || 0, Number(target.z) || 0).sub(c.getWorldPosition(new T.Vector3())) : null);
+      } catch (e) { /* (a target is a nicety) */ }
       const a = this._aimAt(target);
       if (!a) return false;
       if (!wheel) {
@@ -4132,6 +4370,20 @@
       return { yaw, pitch };
     }
     leave() { const w = this.in != null && this.v._watches.get(this.in); if (w) this._exit(w); }
+    // Visit's own picking in your world (3.3, #48): in the room your user is in (a plot, home, or your own scene), the
+    // way that room picks.
+    _pickHere(mode, dir = null) {
+      const v = this.v, r = v._room();
+      if (!this._cam || r.kind === "visit") return;
+      let s = r.s;
+      if (!s) {
+        const hk = v._hooks;
+        if (!hk) return;
+        s = this._ownPick || (this._ownPick = {});
+        Object.assign(s, { root: hk.scene.root, T: hk.scene.three, figures: new Map((v._figures || []).map(f => [f.id, f])), targeting: targetingOf(hk.targeting) });
+      }
+      v._pick(s, this._cam, mode, v._unit(), dir);
+    }
 
     // A friend's plot, this frame (8.4, "Drawing"): true when it is left out, its rectangle wholly out of the camera's
     // view (its shadows only ever land inside it, so nothing of it would show), else its lights put on their beat
@@ -4177,6 +4429,8 @@
     }
     _render(camera) {
       const r = this.renderer, auto = r.autoClear, planes = r.clippingPlanes, now = performance.now(), v = this.v;
+      this._cam = camera;
+      if (now - (this._pickAt || 0) >= AIM_MS) { this._pickAt = now; try { this._pickHere("near"); } catch (e) { /* (a target is a nicety) */ } }
       const list = this._layout(), mine = v._plot();
       try {
         r.clippingPlanes = !this.clipOwn ? [] : (() => {
@@ -4212,7 +4466,7 @@
             continue;
           }
           const h = this._holder(x);
-          if (x.kept) {   // a guest away: its kept plot
+          if (x.kept) {   // picked, away: its kept plot
             if (this._neighbour(x, h, camera, now)) { out++; continue; }
             r.clippingPlanes = h.planes; r.render(h.holder, camera); drawn++;
             continue;
@@ -4309,8 +4563,8 @@
 .visit-panel button { cursor: pointer; } .visit-panel button:disabled { opacity: .45; cursor: default; }
 .visit-panel button.go { background: #2f9e4f; border-color: #2f9e4f; color: #fff; }
 .visit-panel .knock { display: block; background: #fff0d6; color: #7a4a00; } .visit-panel .knock .btns { display: flex; gap: 6px; margin-top: 4px; }
-.visit-panel button.star { border: 0; background: none; padding: 0 2px; color: #6e7681; font-size: 14px; line-height: 1; }
-.visit-panel button.star.on { color: #e3b341; }
+.visit-panel button.wpick { padding: 0 4px; font-size: 11px; line-height: 16px; white-space: nowrap; }
+.visit-panel button.wpick.on { color: #3fb950; border-color: #3fb950; }
 .visit-panel .knock label { display: flex; align-items: center; gap: 4px; color: #7a4a00; }
 .visit-panel .lnk { display: block; } .visit-panel .lnk .btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 .visit-panel .speaking { color: #3fb950; } .visit-panel button.on { background: #9e2f2f; border-color: #9e2f2f; color: #fff; }
@@ -4340,7 +4594,7 @@
     return `${name} put your room ${dir} of theirs` + (Number.isFinite(gap) ? `, ${Math.round(gap)} m off` : "");
   }
 
-  function panel(element, v, { chat: withChat = true } = {}) {
+  function panel(element, v, { chat: withChat = true, card: withCard = true } = {}) {
     v._as("user", "panel");
     if (!document.getElementById("visit-panel-css")) {
       const st = document.createElement("style"); st.id = "visit-panel-css"; st.textContent = PANEL_CSS; document.head.appendChild(st);
@@ -4358,7 +4612,9 @@
     let finding = false, making = false, describing = false;   // the lobby's worlds shown; a new world's form; your line's
     let joining = null, passwording = null;   // a locked world's password asked (to join it; yours, to change it)
     let linking = false, qr = null;   // linked browsers shown, with a code's box; a QR code shown for your phone ({ svg, until })
+    let ignoredOpen = false;   // whom you ignore in chat, listed (3.3)
     const cw = withChat ? chat(v) : null;   // the chat window (8.9), bottom left (chat: false, none: your page has its own)
+    if (withCard) targetCard(v, { chat: withChat });   // your target's card (3.3, #48), top middle (card: false: your world draws its own)
     // M, anywhere but a box of the page's own: on your mount, or off (8.11).
     const mountChosen = () => v._mountOf(v.mount) ? v.mount : v.mounts[0].id;
     const mountKey = e => {
@@ -4368,7 +4624,6 @@
       v.ride(v.riding ? null : mountChosen());
     };
     addEventListener("keydown", mountKey);
-    const always = new Set();   // links on your door to let in for good (a guest, ★), as you answer them
     // Notes, a while each: where a friend's world put your room (once it settles: a friend dragging it about on their
     // Map tells you at every step; never again for the same place), and a call that ended other than hung up.
     let notes = [];
@@ -4417,9 +4672,8 @@
       if (v.state === "online") {
         rows.push(`<div class="row"><span class="grow">you are</span><select data-v="status">${["available", "busy"].map(s => `<option${s === v.status ? " selected" : ""}>${s}</option>`).join("")}</select>
           <select data-v="max" title="how many visitors at once">${[0, 1, 2, 3, 4, 5, 6, 7, 8].map(n => `<option value="${n}"${n === v.maxVisitors ? " selected" : ""}>${n} visitors</option>`).join("")}</select></div>`);
-        rows.push(`<div class="row"><span class="grow">your door</span><select data-v="door" title="open: your guests (★) link and walk in without asking, and your worlds' members see your plot; closed: everyone asks">
-          <option value="open"${v.door !== "closed" ? " selected" : ""}>open to guests</option><option value="closed"${v.door === "closed" ? " selected" : ""}>closed: everyone asks</option></select>
-          <span class="muted">${v.guests.length} ★</span></div>`);
+        rows.push(`<div class="row"><span class="grow">your door</span><select data-v="door" title="open: everyone in a world with you may put your room in their world, and walks in without asking; closed: everyone asks, and your room leaves their worlds">
+          <option value="open"${v.door !== "closed" ? " selected" : ""}>open to my worlds</option><option value="closed"${v.door === "closed" ? " selected" : ""}>closed: everyone asks</option></select></div>`);
         // Your line in the lobby's list of who is here (and on its public page): what you are, a few tags.
         if (describing) rows.push(`<form class="row" data-f="about"><input name="text" maxlength="200" placeholder="you, in a line" value="${esc(v.about ? v.about.text : "")}"><input name="tags" maxlength="110" placeholder="tags, comma-separated" value="${esc(v.about ? v.about.tags.join(", ") : "")}" style="max-width:9em"><button class="go">Save</button>${v.about ? `<button type="button" data-v="unlist" title="no line">Clear</button>` : ""}</form>`);
         else rows.push(`<div class="row"><span class="grow">${v.about ? `your line: <span class="muted">${esc(v.about.text || "(none)")}${v.about.tags.length ? " · " + v.about.tags.map(t => "#" + esc(t)).join(" ") : ""}</span>` : `<span class="muted">no line about you in the lobby</span>`}</span><button data-v="describe" title="your line in the lobby's list of who is here (and on its public page)">${v.about ? "Edit" : "Write one"}</button></div>`);
@@ -4439,18 +4693,27 @@
           else rows.push(`<form class="row" data-f="code"><input name="code" maxlength="12" placeholder="the code it shows: ABCD-EFGH" autocomplete="off"><button class="go">Find it</button></form>`);
           for (const b of v.browsers) rows.push(`<div class="row sub"><span class="grow">${b.online ? "●" : "○"} ${esc(b.agent)} <span class="pics">${esc(b.pictures)}</span> <span class="muted">· ${b.online ? "in now" : `last in ${new Date(b.used * 1000).toLocaleDateString()}`}</span></span><button data-v="b_unlink" data-key="${esc(b.key)}" title="this browser no longer speaks for you">Unlink</button></div>`);
         }
+        // Whom you ignore in chat (3.3): how many; opened, each to let go; Clear, all of them.
+        if (v.ignored.length) {
+          rows.push(`<div class="row"><span class="grow" title="their lines never reach you (click a name in chat, or /ignore name)">ignored <span class="muted">· ${v.ignored.length} of ${MAX_IGNORED}</span></span><button data-v="ignored" class="${ignoredOpen ? "go" : ""}">${ignoredOpen ? "Hide" : "Show"}</button><button data-v="ig_clear" title="hear everyone you ignore again">Clear</button></div>`);
+          if (ignoredOpen) for (const i of v.ignored) rows.push(`<div class="row sub"><span class="grow">${esc(i.name || "someone")}${i.npc ? ` <span class="muted">· a figure in ${esc(v._nameOf(i.key) || "a room")}</span>` : ""}</span><button data-v="unignore" data-key="${esc(i.key)}" data-npc="${esc(i.npc || "")}">Unignore</button></div>`);
+        }
         rows.push(`<div class="row"><span class="grow">visitors look like</span><select data-v="looks" title="in your room: the look each one brings (their model), or your own (our model); one can be set apart (click them below)">
           <option value="theirs"${v.avatars.default === "theirs" ? " selected" : ""}>their model</option><option value="mine"${v.avatars.default === "mine" ? " selected" : ""}>our model</option></select></div>`);
       }
-      // A star: whether this key is a guest (click to change); nothing for an office with no key yet.
-      const star = (key, name) => !key ? "" : `<button class="star${v.isGuest(key) ? " on" : ""}" data-v="guest" data-key="${esc(key)}" data-name="${esc(name)}"
-        title="${v.isGuest(key) ? `a guest: links and walks in without asking while your door is open (click: no longer)` : `make ${esc(name)} a guest: in without asking while your door is open`}">${v.isGuest(key) ? "★" : "☆"}</button>`;
+      // 3.3: whether their room is in your world (your pick, at most MAX_PICKS; click to change): for someone in a world
+      // with you (or picked before); nothing for anyone else, nor an office with no key yet.
+      const pickBtn = (key, name) => {
+        if (!key || key === v.key || !(v.isGuest(key) || v.isPicked(key))) return "";
+        const on = v.isPicked(key), full = !on && v.picks.length >= MAX_PICKS;
+        return `<button class="wpick${on ? " on" : ""}" data-v="pick" data-key="${esc(key)}" data-name="${esc(name)}"${full ? " disabled" : ""} title="${on
+          ? `${esc(name)}'s room is in your world (click: take it out)` : full ? `your world shows ${MAX_PICKS} rooms already: take one out first`
+          : `put ${esc(name)}'s room in your world, beside yours (${v.picks.length} of ${MAX_PICKS})`}">${on ? "🗺 ✓" : "🗺 +"}</button>`;
+      };
       for (const k of v.knocks) {
-        const forGood = k.link && k.from.key && !v.isGuest(k.from.key)
-          ? `<label title="make ${esc(k.from.name)} a guest: in without asking from now on, while your door is open"><input type="checkbox" data-v="always" data-k="${esc(k.id)}"${always.has(k.id) ? " checked" : ""}>★ always</label>` : "";
         rows.push(`<div class="row knock"><b>${esc(k.from.name)}</b> ${k.link ? "wants to link" : "is knocking"}${k.message ? `: “${esc(k.message)}”` : ""}
           <div class="btns"><button class="go" data-v="in" data-k="${esc(k.id)}">${k.link ? "Link" : "Let in"}</button><button data-v="out" data-k="${esc(k.id)}">Not now</button>
-          ${forGood}<span class="muted">${Math.max(0, Math.round((k.until - Date.now()) / 1000))}s</span></div></div>`);
+          <span class="muted">${Math.max(0, Math.round((k.until - Date.now()) / 1000))}s</span></div></div>`);
       }
       // Your phone (8.8): a call to make, to those linked to you whose rooms have phones.
       if (v._phone && !v.calls.length && v.phones.length) rows.push(`<div class="row lnk"><div>📞 call</div><div class="btns">${v.phones.map(p => `<button data-v="call" data-key="${esc(p.key)}" title="ring their phone">${esc(p.name)}</button>`).join("")}</div></div>`);
@@ -4468,20 +4731,20 @@
       if (v.mounts.length) rows.push(`<div class="row"><span class="grow">${v.riding ? "riding" : "your mount"}</span><select data-v="mount" title="the one M gets you on" style="max-width: 9em">${v.mounts.map(m =>
         `<option value="${esc(m.id)}"${m.id === v.mount ? " selected" : ""}>${esc(m.name)}${m.fly ? " (flies)" : ""}</option>`).join("")}</select><button data-v="ride" class="${v.riding ? "go" : ""}" title="M: on your mount, or off">${v.riding ? "Get off" : "Ride"}</button></div>`);
       const roundYours = v._world ? v._world.plots.filter(p => !p.home) : [];   // (a user page's own room is a plot too)
-      if (v._world && v.state === "online") rows.push(`<div class="row"><span class="grow">your world: ${roundYours.length} ${roundYours.length === 1 ? "room" : "rooms"} round yours${(n => n ? ` (${n} offline)` : "")(roundYours.filter(p => p.offline).length)}</span><button data-v="map" title="where your friends' rooms sit round yours, from above">Map</button></div>`);
+      if (v._world && v.state === "online") rows.push(`<div class="row"><span class="grow" title="the rooms you put in your world (🗺 + by someone in a world with you), at most ${MAX_PICKS}">your world: ${roundYours.length} ${roundYours.length === 1 ? "room" : "rooms"} round yours${(n => n ? ` (${n} offline)` : "")(roundYours.filter(p => p.offline).length)} <span class="muted">· ${v.picks.length} of ${MAX_PICKS} picked</span></span><button data-v="map" title="where your friends' rooms sit round yours, from above">Map</button></div>`);
       // Your worlds (LOBBY.md): each a row (how many of it are online, 🔒 a password); opened, its members, Leave, and for
       // its owner: take one out (✕) or keep them out (⛔), hand it on (♛), its password, public, End it; the lobby's
       // worlds to join (Find: a locked one asks its password), a new one (New: public, or with a password).
       if (v.state === "online") {
         const here = new Set(v.offices.map(o => o.key).filter(Boolean));
-        rows.push(`<div class="row"><span class="grow">worlds <span class="muted">· ${v.groups.length ? `you are in ${v.groups.length}` : "members' rooms sit round each other's"}</span></span><button data-v="find" class="${finding ? "go" : ""}" title="the lobby's worlds">Find</button><button data-v="new" class="${making ? "go" : ""}" title="a world of your own">New</button></div>`);
+        rows.push(`<div class="row"><span class="grow">worlds <span class="muted">· ${v.groups.length ? `you are in ${v.groups.length}` : "their members walk into each other's rooms, and pick whose rooms sit round theirs"}</span></span><button data-v="find" class="${finding ? "go" : ""}" title="the lobby's worlds">Find</button><button data-v="new" class="${making ? "go" : ""}" title="a world of your own">New</button></div>`);
         if (making) rows.push(`<form class="row" data-f="group"><input name="name" maxlength="24" placeholder="its name"><input name="about" maxlength="200" placeholder="what it is" style="max-width:8em"><input name="password" maxlength="64" placeholder="password (none: public)" style="max-width:9em" autocomplete="new-password"><button class="go">Make</button></form>`);
         for (const g of v.groups) {
           const k = g.name.toLowerCase(), runs = v.isGroupOwner(g.name), online = g.members.filter(m => here.has(m.key) || m.key === v.key).length, open = groupsOpen.has(k);
           const how = g.locked ? " 🔒" : !g.open ? " · closed" : "";
           rows.push(`<div class="row"><button class="who grow" data-v="group" data-g="${esc(k)}"><b>⚑ ${esc(g.name)}</b>${how} <span class="muted">· ${online}/${g.members.length} online</span></button><button class="caret" data-v="group" data-g="${esc(k)}">${open ? "▾" : "▸"}</button></div>`);
           if (!open) continue;
-          const who = m => `${here.has(m.key) || m.key === v.key ? "●" : "○"} ${esc(m.key === v.key ? "you" : (v.userOf(m.key) || m.name))}${m.key === g.owner ? " ♛" : ""}`;
+          const who = m => `${here.has(m.key) || m.key === v.key ? "●" : "○"} ${esc(m.key === v.key ? "you" : (v.userOf(m.key) || m.name))}${m.key === g.owner ? " ♛" : ""}${m.key === v.key ? "" : " " + pickBtn(m.key, v.userOf(m.key) || m.name)}`;
           const subs = [];
           if (g.about) subs.push(`<div class="muted">${esc(g.about)}</div>`);
           subs.push(`<div>${g.members.map(m => runs && m.key !== g.owner
@@ -4554,7 +4817,8 @@
           if (v.voiceMembers.some(x => x.key === p.key)) btns.push(`<button data-v="voice_kick" data-key="${esc(p.key)}" title="out of your room's voice now (they may come back)">Kick from voice</button>`);
         }
         if (p.visit) btns.push(`<button data-v="kick" data-x="${esc(p.visit.id)}" title="out of your room">Kick</button>`);
-        btns.push(`<button data-v="cut" data-p="${esc(p.key || p.id)}" title="every link between you two ends${p.key && v.isGuest(p.key) ? ", and they are no longer a guest (★)" : ""}">Unlink</button>`);
+        if (p.key) btns.push(`<button data-v="ignore" data-key="${esc(p.key)}" data-name="${esc(p.name)}" title="${v.isIgnored(p.key) ? "hear them in chat again" : "their lines in chat never reach you (nothing tells them)"}">${v.isIgnored(p.key) ? "Unignore" : "Ignore"}</button>`);
+        btns.push(`<button data-v="cut" data-p="${esc(p.key || p.id)}" title="every link between you two ends${p.key && v.isPicked(p.key) ? ", and their room leaves your world" : ""}">Unlink</button>`);
         return `<div class="row sub">${seen.length ? `<div class="muted">${[...new Set(seen)].join(" · ")}</div>` : ""}<div class="btns">${btns.join("")}</div></div>`;
       };
       for (const p of [...people.filter(linked), ...people.filter(p => !linked(p))]) {
@@ -4564,7 +4828,7 @@
           const state = p.visit ? "in your room" : p.there || inside ? "you are in their room" : "linked";
           const back = p.there ? `<button data-v="leave">Leave</button>` : inside ? `<button data-v="step_out" data-x="${esc(inside.id)}" title="your own room; theirs back in the corner">Back to my room</button>` : "";
           const who = (p.key && v.userOf(p.key)) || p.name, room = who !== p.name ? ` <span class="muted">(${esc(p.name)})</span>` : "";   // the name they go by, their office's after it
-          rows.push(`<div class="row">${dot}${star(p.key, p.name)}<button class="who grow" data-v="more" data-p="${esc(k)}" title="${open ? "less" : "more: where you see each other, their look, Unlink"}"><b>${esc(who)}</b>${room} <span class="muted">· ${state}</span></button>${back}<button class="caret" data-v="more" data-p="${esc(k)}">${open ? "▾" : "▸"}</button></div>`);
+          rows.push(`<div class="row">${dot}<button class="who grow" data-v="more" data-p="${esc(k)}" title="${open ? "less" : "more: where you see each other, their look, Unlink"}"><b>${esc(who)}</b>${room} <span class="muted">· ${state}</span></button>${back}${pickBtn(p.key, who)}<button class="caret" data-v="more" data-p="${esc(k)}">${open ? "▾" : "▸"}</button></div>`);
           if (open) rows.push(more(p));
           continue;
         }
@@ -4573,9 +4837,14 @@
         const why = !o.ready ? "not ready" : o.status !== "available" ? o.status : !o.links && o.visitors >= o.maxVisitors ? "full" : asking ? "asking…" : "";
         const ou = o.key && v.userOf(o.key);
         const kin = v.groupsWith(o.key);
-        rows.push(`<div class="row">${dot}${star(o.key, o.name)}<span class="grow" title="${esc(o.name)}${kin.length ? ` · in ${esc(kin.join(", "))} with you` : ""}">${ou ? `<b>${esc(ou)}</b> <span class="muted">(${esc(o.name)})</span>` : esc(o.name)}${kin.length ? " ⚑" : ""} <span class="muted">${esc(o.sim.name || "")} ${o.visitors}/${o.maxVisitors}</span>${o.about && o.about.text ? `<br><span class="muted">${esc(o.about.text)}${o.about.tags.length ? " · " + o.about.tags.map(t => "#" + esc(t)).join(" ") : ""}</span>` : ""}</span>
-          <button data-v="knock" data-o="${esc(o.id)}" ${why ? `disabled title="${esc(why)}"` : `title="${o.links ? "see their room in a corner, once they say yes: then go there, or put it in your world" : "an older Visit: you walk into their room once they say yes"}"`}>${asking ? `${word}ing…` : word}</button></div>`);
+        rows.push(`<div class="row">${dot}<span class="grow" title="${esc(o.name)}${kin.length ? ` · in ${esc(kin.join(", "))} with you` : ""}">${ou ? `<b>${esc(ou)}</b> <span class="muted">(${esc(o.name)})</span>` : esc(o.name)}${kin.length ? " ⚑" : ""} <span class="muted">${esc(o.sim.name || "")} ${o.visitors}/${o.maxVisitors}</span>${o.about && o.about.text ? `<br><span class="muted">${esc(o.about.text)}${o.about.tags.length ? " · " + o.about.tags.map(t => "#" + esc(t)).join(" ") : ""}</span>` : ""}</span>
+          ${pickBtn(o.key, ou || o.name)}<button data-v="knock" data-o="${esc(o.id)}" ${why ? `disabled title="${esc(why)}"` : `title="${o.links ? "see their room in a corner, once they say yes: then go there, or put it in your world" : "an older Visit: you walk into their room once they say yes"}"`}>${asking ? `${word}ing…` : word}</button></div>`);
         if (composing === o.id) rows.push(`<form class="row" data-o="${esc(o.id)}"><input maxlength="280" placeholder="a message for ${esc(o.name)}"><button class="go">${word}</button></form>`);
+      }
+      // Picked, and not in the lobby now: their room stays in your world (from its last landscape), to take out here.
+      for (const x of v.picks) if (!people.some(p => p.key === x.key)) {
+        const name = v.userOf(x.key) || x.name || (v.guests.find(g => g.key === x.key) || {}).name || x.key.slice(0, 8);
+        rows.push(`<div class="row"><span class="dot"></span><span class="grow">${esc(name)} <span class="muted">· away${v.isGuest(x.key) ? "" : " · in none of your worlds now"}</span></span>${pickBtn(x.key, name)}</div>`);
       }
       if (v.state === "online" && v.offices.length < 2) rows.push(`<div class="row muted">nobody else is here yet</div>`);
       if (!folded) rows.push(`<div class="row ver"><span class="grow"></span><span class="muted">Visit ${VERSION}</span></div>`);
@@ -4624,9 +4893,9 @@
       else if (act === "g_pw") { passwording = passwording === b.dataset.g ? null : b.dataset.g; draw(); }
       else if (act === "g_public") { if (confirm(`Make ${b.dataset.g} public? Anyone joins then, no password.`)) v.setGroup(b.dataset.g, { open: true }); }
       else if (act === "more") { if (!opened.delete(b.dataset.p)) opened.add(b.dataset.p); draw(); }
-      else if (act === "cut") {   // every link between you two, ended both ways; no longer a guest (their world would come back)
+      else if (act === "cut") {   // every link between you two, ended both ways; out of your world (else its watch would come back)
         const k = b.dataset.p, is = who => !!who && (who.key === k || who.id === k), ends = new Set();
-        if (v.isGuest(k)) v.removeGuest(k);
+        if (v.isPicked(k)) v.unpick(k);
         for (const l of v.links) if (is(l.host)) v.unlink(l.id);
         for (const x of [...v.watchers, ...v.visitors]) if (is(x.visitor)) ends.add(x.id);
         for (const w of v._watches.values()) if (!w.link && is(w.host)) ends.add(w.id);
@@ -4635,9 +4904,6 @@
         opened.delete(k);
       }
       else if (act === "in" || act === "out") {
-        const k = v.knocks.find(x => x.id === b.dataset.k);
-        if (act === "in" && k && always.has(k.id) && k.from.key) v.addGuest(k.from.key, k.from.name);
-        always.delete(b.dataset.k);
         v.answer(b.dataset.k, act === "in");
       }
       else if (act === "leave") v.leave();
@@ -4661,10 +4927,13 @@
       else if (act === "voice_leave") v.joinVoice(null);
       else if (act === "away") v.leaveLobby();
       else if (act === "back") v.joinLobby();
-      else if (act === "guest") v.isGuest(b.dataset.key) ? v.removeGuest(b.dataset.key) : v.addGuest(b.dataset.key, b.dataset.name);
+      else if (act === "pick") v.isPicked(b.dataset.key) ? v.unpick(b.dataset.key) : v.pick(b.dataset.key, b.dataset.name);
+      else if (act === "ignored") { ignoredOpen = !ignoredOpen; draw(); }
+      else if (act === "ig_clear") { if (confirm(`Hear everyone you ignore again (${v.ignored.length})?`)) v.clearIgnored(); }
+      else if (act === "unignore") v.unignore(b.dataset.key, { npc: b.dataset.npc || null });
+      else if (act === "ignore") v.isIgnored(b.dataset.key) ? v.unignore(b.dataset.key) : v.ignore(b.dataset.key, { name: b.dataset.name });
     });
     root.addEventListener("change", e => {
-      if (e.target.dataset.v === "always") { if (e.target.checked) always.add(e.target.dataset.k); else always.delete(e.target.dataset.k); }
       if (e.target.dataset.v === "status") v.setStatus(e.target.value);
       if (e.target.dataset.v === "max") v.setMaxVisitors(Number(e.target.value));
       if (e.target.dataset.v === "door") v.setDoor(e.target.value === "open");
@@ -4786,6 +5055,12 @@
 .visit-chat .day::before, .visit-chat .day::after { content: ""; flex: 1; border-top: 1px solid rgba(255,255,255,.35); }
 .visit-chat .names { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; padding: 0 8px; font-size: 85%; }
 .visit-chat .names:empty { display: none; }
+.visit-chat .who.act { cursor: pointer; pointer-events: auto; } .visit-chat .who.act:hover { text-decoration: underline; }
+.visit-chat .namemenu { position: absolute; z-index: 2; display: flex; flex-direction: column; gap: 3px; min-width: 9em; padding: 6px 8px; font-size: 80%; background: rgba(13,17,23,.96); border: 1px solid #30363d; border-radius: 6px; pointer-events: auto; }
+.visit-chat .namemenu[hidden] { display: none; }
+.visit-chat .namemenu .hd { font-weight: 600; } .visit-chat .namemenu .muted { color: #8b949e; font-weight: 400; }
+.visit-chat .namemenu button { font: inherit; text-align: left; color: #c9d1d9; background: none; border: 1px solid #30363d; border-radius: 4px; padding: 1px 6px; cursor: pointer; }
+.visit-chat .namemenu button:hover { background: #1f2a44; }
 .visit-chat .names button { font: inherit; color: #c9d1d9; background: rgba(22,27,34,.92); border: 1px solid #30363d; border-radius: 4px; padding: 0 6px; cursor: pointer; }
 .visit-chat .names button.on { color: #fff; background: #1f2a44; border-color: #aaaaff; }
 .visit-chat .line.mention { background: rgba(255,200,100,.16); border-left: 3px solid #ffc864; padding-left: calc(1.25em + 5px); border-radius: 3px; }
@@ -4842,6 +5117,57 @@
     } catch (e) { /* no sound here */ }
   }
 
+  // 3.3 (#48): Visit's own card for your user's target (Visit.panel's; card: false, none: your world draws its own), top
+  // middle: its name; a figure's title, line and actions (the room's interaction types: each runs by the room's own
+  // rules); Say (a line aloud, meant for it) and Whisper (a figure: to it alone; a person: through the lobby); a person's
+  // Link or Knock; ✕, no target.
+  const CARD_CSS = `
+.visit-card { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 18; min-width: 220px; max-width: min(420px, calc(100vw - 32px)); padding: 8px 10px; font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; color: #e6edf3; background: rgba(13,17,23,.92); border: 1px solid #30363d; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.4); }
+.visit-card[hidden] { display: none; }
+.visit-card .hd { display: flex; align-items: baseline; gap: 6px; } .visit-card .hd b { font-size: 15px; } .visit-card .ti { color: #8b949e; flex: 1; }
+.visit-card .ab { margin-top: 4px; color: #c9d1d9; } .visit-card .ab.no { color: #8b949e; font-style: italic; }
+.visit-card .bt { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.visit-card button { font: inherit; color: #c9d1d9; background: #21262d; border: 1px solid #30363d; border-radius: 6px; padding: 2px 8px; cursor: pointer; }
+.visit-card button:hover { background: #30363d; } .visit-card button.x { background: none; border: 0; padding: 0 2px; color: #8b949e; }`;
+  function targetCard(v, { chat: withChat = true } = {}) {
+    if (!document.getElementById("visit-card-css")) {
+      const st = document.createElement("style"); st.id = "visit-card-css"; st.textContent = CARD_CSS; document.head.appendChild(st);
+    }
+    const root = document.createElement("div");
+    root.className = "visit-card"; root.hidden = true;
+    document.body.appendChild(root);
+    let drawn = "";
+    const draw = () => {
+      const t = v.target;
+      if (!t) { root.hidden = true; drawn = ""; return; }
+      const o = t.kind === "person" ? v.offices.find(x => x.key === t.id) : null, r = v._room();
+      const inter = r.s ? r.s.interactions : v._interactions;
+      const acts = t.kind === "figure" ? (t.actions || []).filter(a => inter && inter.has(a)).map(a => ({ type: a, label: inter.get(a).label || a })) : [];
+      const talks = t.kind !== "figure" || mayTalk(v, t);
+      const html = `<div class="hd"><b>${esc(t.name || "someone")}</b><span class="ti">${esc(t.kind === "figure" ? t.title || "" : o ? (v.isGuest(o.key) ? "in a world with you" : "") : "")}</span><button type="button" class="x" data-c="clear" title="no target">✕</button></div>`
+        + (t.about ? `<div class="ab">${esc(t.about)}</div>` : "")
+        + (talks ? "" : `<div class="ab no">${t.talk === "owner" ? "only its room's owner may talk to it" : "it does not answer"}</div>`)
+        + `<div class="bt">${acts.map(a => `<button type="button" data-c="act" data-a="${esc(a.type)}">${esc(a.label)}</button>`).join("")}`
+        + (withChat && talks ? `<button type="button" data-c="say" title="a line aloud, meant for ${esc(t.name)}">Say</button>${t.kind === "figure" || (o && o.whisper) ? `<button type="button" data-c="whisper" title="${t.kind === "figure" ? "to it alone" : "to them alone"}">Whisper</button>` : ""}` : "")
+        + (o && o.ready && o.status === "available" ? `<button type="button" data-c="${o.links ? "link" : "knock"}">${o.links ? "Link" : "Knock"}</button>` : "") + `</div>`;
+      if (html !== drawn) { drawn = html; root.innerHTML = html; }
+      root.hidden = false;
+    };
+    root.addEventListener("click", e => {
+      const b = e.target.closest("button[data-c]"), t = v.target;
+      if (!b || !t) return;
+      const c = b.dataset.c, o = t.kind === "person" ? v.offices.find(x => x.key === t.id) : null;
+      if (c === "clear") v.setTarget(null);
+      else if (c === "act") v.act(t.id, b.dataset.a);
+      else if (c === "say") v._emit("chat_box", { scope: "aim", kind: t.kind, id: t.id, name: t.name, room: t.room });
+      else if (c === "whisper" && t.kind === "figure") v._emit("chat_box", { scope: "figure", id: t.id, name: t.name, room: t.room });
+      else if (c === "whisper" && o) v._emit("chat_box", { scope: "whisper", id: o.id, key: o.key, name: o.name });
+      else if ((c === "link" || c === "knock") && o) c === "link" ? v.link(o.id) : v.knock(o.id);
+    });
+    v.on("target", draw); v.on("change", draw);
+    draw();
+    return root;
+  }
   function chat(v, { element = document.body, fade = CHAT_FADE, sound = true } = {}) {
     v._as("user", "chat");
     if (!document.getElementById("visit-chat-css")) {
@@ -4869,16 +5195,16 @@
     const yours = () => ({ scope: "sim", key: v.key || "", name: v.office ? v.office.name : "" });   // your room's chat
     const room = t => t.key === v.key ? "your room" : `${t.name || "a"}'s room`;
     const whom = t => v.whisperTargets.find(o => (t.key && o.key === t.key) || o.id === t.id);   // a whisper's person, now
-    const label = t => t.scope === "lobby" ? "Lobby" : t.scope === "group" ? `World ${t.name}` : t.scope === "whisper" ? `Tell ${t.name}${whom(t) ? "" : " (away)"}` : t.scope === "sim" ? `To ${room(t)}` : "Say";
+    const label = t => t.scope === "aim" ? `Say to ${t.name}` : t.scope === "figure" ? `Tell ${t.name}` : t.scope === "lobby" ? "Lobby" : t.scope === "group" ? `World ${t.name}` : t.scope === "whisper" ? `Tell ${t.name}${whom(t) ? "" : " (away)"}` : t.scope === "sim" ? `To ${room(t)}` : "Say";
     const groupTo = g => ({ scope: "group", key: g.name.toLowerCase(), name: g.name });   // one of your world groups' chat
     const same = (a, b) => a.scope === b.scope && (a.key || a.id || null) === (b.key || b.id || null);
     // A line's text, in parts: a name ({ name, key }), in its own colour, among the rest.
     const parts = l => {
-      const who = { name: `[${l.name || "someone"}]`, key: l.key || l.name };
+      const who = { name: `[${l.name || "someone"}]`, key: l.key || l.name, k: l.key || "", npc: l.npc || null, plain: l.name || "" };
       if (l.scope === "note") return [l.text];
       if (l.scope === "lobby") return ["[Lobby] ", who, `: ${l.text}`];
       if (l.scope === "group") return [`[${l.group}] `, who, `: ${l.text}`];
-      if (l.scope === "whisper") { const t = l.to || {}; return l.mine ? ["To ", { name: `[${t.name || ""}]`, key: t.key || t.name }, `: ${l.text}`] : [who, ` whispers: ${l.text}`]; }
+      if (l.scope === "whisper") { const t = l.to || {}; return l.mine ? ["To ", { name: `[${t.name || ""}]`, key: t.key || t.name, k: t.key || "", npc: t.npc || null, plain: t.name || "" }, `: ${l.text}`] : [who, ` whispers: ${l.text}`]; }
       if (l.scope === "sim") { const r = room(l.to || {}); return [`[${r[0].toUpperCase() + r.slice(1)}] `, who, `: ${l.text}`]; }
       return [who, ` says: ${l.text}`];
     };
@@ -4960,8 +5286,13 @@
         if (typeof p === "string") { d.appendChild(document.createTextNode(p)); continue; }
         const n = document.createElement("span");
         n.className = "who"; n.textContent = p.name; n.style.color = nameColor(p.key || "");
+        if (p.k && !(p.k === v.key && !p.npc)) {   // 3.3: a click, for Whisper and Ignore (nameMenu)
+          n.classList.add("act"); n.dataset.k = p.k; n.dataset.name = p.plain || "";
+          if (p.npc) n.dataset.n = p.npc;
+        }
         d.appendChild(n);
       }
+      if (!l.mine && l.key && l.scope !== "note") { d.dataset.k = l.key; if (l.npc) d.dataset.n = l.npc; }   // (whose: to take out, ignored)
       if (l.at) { d.dataset.at = String(l.at); d.dataset.time = hhmm(l.at); }
       for (const p of l.media || []) d.appendChild(isVoice(p) ? voiceEl(p) : picture(p.id, "pic"));
       for (const c of l.links || []) d.appendChild(card(c));
@@ -5046,6 +5377,52 @@
       const start = list.filter(o => o.name && o.name.toLowerCase().startsWith(all));
       return start.length === 1 ? start[0] : undefined;
     };
+    // 3.3, ignoring (as WoW's): whom a name may be, those who spoke here lately first (a room's figures too), then
+    // whoever is about; and a click on a name in the log, for Whisper and Ignore.
+    const ignorable = () => {
+      const by = new Map();
+      const put = (key, npc, name) => { if (key && name && !(key === v.key && !npc) && !by.has(name.toLowerCase())) by.set(name.toLowerCase(), { key, npc: npc || null, name }); };
+      for (const l of [...v.chatLog].reverse()) if (!l.mine && l.scope !== "note") put(l.key, l.npc, l.name);
+      for (const o of [...v.whisperTargets, ...v.awayTargets, ...v.guests, ...v.chatTargets]) put(o.key, null, o.name);
+      return [...by.values()];
+    };
+    const ignoreSay = who => {
+      if (v.ignored.length >= MAX_IGNORED && !v.isIgnored(who.key, who.npc)) return note(`You ignore ${MAX_IGNORED} already: let one go first (/unignore name, or the panel)`);
+      v.ignore(who.key, { npc: who.npc, name: who.name });
+      note(`Ignoring ${who.name}: ${who.npc ? "its" : "their"} lines no longer reach you (/unignore ${who.name})`);
+    };
+    const nameMenu = document.createElement("div");
+    nameMenu.className = "namemenu"; nameMenu.hidden = true;
+    root.appendChild(nameMenu);
+    log.addEventListener("click", e => {
+      const n = e.target.closest(".who[data-k]");
+      if (!n) return;
+      e.stopPropagation();
+      const key = n.dataset.k, npc = n.dataset.n || null, name = n.dataset.name || "";
+      const w = !npc && [...v.whisperTargets, ...v.awayTargets].find(o => o.key === key);
+      nameMenu.innerHTML = `<div class="hd">${esc(name || "someone")}${npc ? ` <span class="muted">· a room's figure</span>` : ""}</div>${w ? `<button type="button" data-m="w">Whisper</button>` : ""}<button type="button" data-m="ig">${v.isIgnored(key, npc) ? "Unignore" : "Ignore"}</button>`;
+      Object.assign(nameMenu.dataset, { k: key, n: npc || "", name });
+      const r = n.getBoundingClientRect(), rr = root.getBoundingClientRect();
+      nameMenu.style.left = `${Math.max(0, r.left - rr.left)}px`; nameMenu.style.bottom = `${rr.bottom - r.top + 2}px`;
+      nameMenu.hidden = false; wake();
+    });
+    nameMenu.addEventListener("click", e => {
+      const b = e.target.closest("button[data-m]");
+      if (!b) return;
+      const key = nameMenu.dataset.k, npc = nameMenu.dataset.n || null, name = nameMenu.dataset.name;
+      nameMenu.hidden = true;
+      if (b.dataset.m === "w") {
+        const o = [...v.whisperTargets, ...v.awayTargets].find(x => x.key === key);
+        if (o) { to = { scope: "whisper", ...(o.id ? { id: o.id } : {}), key: o.key, name: o.name }; open(); }
+      } else if (v.isIgnored(key, npc)) { v.unignore(key, { npc }); note(`${name}: no longer ignored`); }
+      else ignoreSay({ key, npc, name });
+    });
+    addEventListener("pointerdown", e => { if (!nameMenu.hidden && !nameMenu.contains(e.target)) nameMenu.hidden = true; }, true);
+    // Ignored now: their lines out of the log (they never come again).
+    const onIgnored = () => {
+      for (const d of log.querySelectorAll(".line[data-k]")) if (v.isIgnored(d.dataset.k, d.dataset.n || null)) d.remove();
+      days();
+    };
     // A name being typed after /w (/t, /tell, /whisper) or /room (/sim): the command, and the names it could be.
     const naming = () => {
       const m = /^\/(w|t|whisper|tell|room|sim)\s([\s\S]*)$/i.exec(input.value);
@@ -5059,8 +5436,12 @@
       for (const o of v.chatTargets) put(o.key, o.name);
       for (const x of v.visitors) put(x.visitor.key, x.visitor.name);
       for (const o of v.offices) if (!v.office || o.id !== v.office.id) put(o.key, o.name);
+      for (const f of v.figuresHere) if (mayTalk(v, { ...f, room: v._roomKey() })) put("figure:" + f.id, f.name);   // 3.3 (#48): the room's figures you may talk to
       return [...new Set(by.values())].sort((a, b) => a.localeCompare(b));
     };
+    // 3.3 (#48): the figure of the room you are in that a line mentions (@ and its name, as a word of its own), if any:
+    // the line is meant for it.
+    const mentionedFigure = text => v.figuresHere.filter(f => mayTalk(v, { ...f, room: v._roomKey() })).find(f => new RegExp("(^|[\\s([{\"'])@" + f.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?![\\p{L}\\p{N}_])", "iu").test(text));
     // The names the box could take where it is typed (over it, to pick: up and down, Tab or Enter, or a click): after
     // /w or /room, the name it is to; after @, someone the line mentions. Picked, it stays shut until the box changes.
     let picker = null, picked = null;
@@ -5090,7 +5471,7 @@
       drawPicker();
     };
     names.addEventListener("mousedown", e => { const b = e.target.closest("button[data-i]"); if (b) { e.preventDefault(); take(Number(b.dataset.i)); input.focus(); } });
-    const help = "/s say (everyone who can see you) · /w name (a whisper) · /r reply · /room (your room's chat) · /room name (a linked room's) · /1 the lobby · /g world (a world's chat; /2, /3… yours in order) · /voice (🎧) · @ a name: mention them";
+    const help = "/s say (everyone who can see you) · /w name (a whisper) · /r reply · /room (your room's chat) · /room name (a linked room's) · /1 the lobby · /g world (a world's chat; /2, /3… yours in order) · /voice (🎧) · /ignore name, /unignore name (or click a name) · @ a name: mention them";
     // Pictures for the next line (pasted, or dropped on the window: each kept by the visit-client at once, `media`
     // once kept), and a link's preview (made as the link is typed; ✕: none for it).
     let pending = [], linkCard = null, linkTimer = null;
@@ -5221,6 +5602,14 @@
         else if (!done) return false;
         else note(v.groups.length ? `/${cmd} and one of your worlds: ${v.groups.map(x => x.name).join(", ")}` : "You are in no world: the panel finds them");
       }
+      else if (cmd === "ignore" || cmd === "unignore") {   // 3.3: by name; alone, whom you ignore
+        if (!done) return false;
+        const off = cmd === "unignore", who = rest.trim() ? named(off ? v.ignored : ignorable(), rest, true) : null;
+        if (!rest.trim()) note(v.ignored.length ? `You ignore: ${v.ignored.map(i => i.name || "someone").join(", ")} (/unignore name; the panel clears them)` : "You ignore nobody (/ignore name, or click a name)");
+        else if (!who) note(off ? `You do not ignore anyone called ${rest.trim()}` : `Nobody called ${rest.trim()} has said anything here, or is in the lobby`);
+        else if (off) { v.unignore(who.key, { npc: who.npc }); note(`${who.name}: no longer ignored`); }
+        else ignoreSay(who);
+      }
       else if (["w", "t", "whisper", "tell", "room", "sim"].includes(cmd)) {
         const rooms = cmd === "room" || cmd === "sim", o = named(rooms ? v.chatTargets : v.whisperTargets, rest, done) || (!rooms && named(v.awayTargets, rest, done));
         if (o) { next = rooms ? { scope: "sim", key: o.key, name: o.name } : { scope: "whisper", id: o.id, key: o.key, name: o.name }; rest = rest.slice(o.name.length + 1); }
@@ -5249,6 +5638,17 @@
     pick.addEventListener("change", () => { to = choices[Number(pick.value)] || { scope: "say" }; fill(); input.focus(); });
     // A line said where the box talks to: false (and why, said) if it could not be.
     const send = (t, media, links) => {
+      if (to.scope === "figure" || to.scope === "aim") {   // 3.3 (#48): to a figure alone, or aloud, meant for your target
+        if (to.room && to.room !== v._roomKey()) { note(`${to.name} is not in the room you are in`); to = { scope: "say" }; fill(); return false; }
+        if (to.scope === "figure" && (media.length || links.length)) { note("A whisper to a figure is text only"); return false; }
+        if (v.say(t, to.scope === "figure" ? { whisper: { kind: "figure", id: to.id, name: to.name } } : { target: { kind: to.kind, id: to.id } }, { media, links })) return true;
+        note(`Too fast: at most ${CHATS} lines every ${CHAT_WINDOW / 1000} s`);
+        return false;
+      }
+      if (to.scope === "say") {   // @ a figure of the room you are in: meant for it
+        const f = mentionedFigure(t);
+        if (f) { if (v.say(t, { target: { kind: "figure", id: f.id } }, { media, links })) return true; note(`Too fast: at most ${CHATS} lines every ${CHAT_WINDOW / 1000} s`); return false; }
+      }
       if (to.scope === "group") {
         if (media.length || links.length) { note("Pictures, voice messages and links go to rooms, and to those you are linked with: not through the lobby"); return false; }
         if (!v.groups.some(g => g.name.toLowerCase() === to.key)) { note(`You are no longer in ${to.name}`); to = { scope: "say" }; fill(); return false; }
@@ -5408,7 +5808,7 @@
     const onOnline = info => note(`In ${info.title || "the lobby"}${info.motd ? `: ${info.motd}` : ""}${v.groups.length ? ` · your worlds: ${v.groups.map(g => g.name).join(", ")} (/g)` : ""}`);
     const onSigned = on => note(on ? "Signed in on this workroom: joining the lobby" : "Nobody is signed in on this workroom: out of the lobby until someone is");
     const known = new Set(v.groups.map(g => g.name.toLowerCase()));
-    const onGroup = g => { const k = g.name.toLowerCase(); if (!known.has(k)) { known.add(k); note(`You are in ${g.name} now: its members' rooms sit round yours, and yours round theirs (/g to talk)`); } };
+    const onGroup = g => { const k = g.name.toLowerCase(); if (!known.has(k)) { known.add(k); note(`You are in ${g.name} now: its members walk into your room, and you theirs; 🗺 + puts one's room in your world (/g to talk)`); } };
     const onLeft = l => { known.delete(String(l.group).toLowerCase()); if (l.reason !== "left") note(l.reason === "removed" ? `Taken out of ${l.group}` : l.reason === "banned" ? `Taken out of ${l.group}, and kept out` : `${l.group} has ended`); };
     const onVoice = rv => {   // into a room voice (said once), or out of one (and why)
       const o = rv && rv.out;
@@ -5421,12 +5821,14 @@
     addEventListener("keydown", key);
     v.on("chat", onChat); v.on("error", onError); v.on("room_voice", onVoice); v.on("banned", onBanned); v.on("change", voiceLine); v.on("voice", voiceLine);
     v.on("unseen", mailSay); v.on("held", mailSay); v.on("held_sent", onHeldSent);
-    v.on("online", onOnline); v.on("signed_in", onSigned); v.on("group", onGroup); v.on("group_left", onLeft);
+    v.on("online", onOnline); v.on("signed_in", onSigned); v.on("group", onGroup); v.on("group_left", onLeft); v.on("ignored", onIgnored);
+    // 3.3 (#48): the target card's Say and Whisper: the box talks there.
+    v.on("chat_box", t => { if (!isObj(t)) return; to = t; fill(); open(); });
     mailSay(); look();
     voiceIn = v.roomVoice && !v.roomVoice.joining ? v.roomVoice.key : null;
     voiceLine();
     for (const l of v.chatLog) { add(l); heard(l); }
-    intro = note("Enter to chat · Tab where it goes · @ mention · paste a picture · 🎙 voice message · 🖼 shared · 🎧 voice · /s say · /w whisper · /r reply · /room yours, /room name · /1 lobby · /g world");
+    intro = note("Enter to chat · Tab where it goes · @ mention · paste a picture · 🎙 voice message · 🖼 shared · 🎧 voice · /s say · /w whisper · /r reply · /room yours, /room name · /1 lobby · /g world · click a name: whisper, ignore");
     return {
       element: root, open, close,
       release() {
@@ -5593,7 +5995,7 @@
       if (!p && !theirs) {
         side.innerHTML = `<div class="muted">your room: ${d.mp.size.map(x => Math.round(x * 100) / 100).join(" × ")} units</div>`
           + (d.list.length ? d.list.map(q => pick(q, "")).join("")
-            : `<div class="muted">no friends' rooms in your world yet: star a friend (a guest, with their door open to you), or put a link here</div>`)
+            : `<div class="muted">no friends' rooms in your world yet: 🗺 + someone in a world with you (in the panel), or put a link here</div>`)
           + (others.length ? `<div class="muted">in their worlds, not in yours:</div>` + others.map(q => pick(q, "")).join("") : "");
         return;
       }

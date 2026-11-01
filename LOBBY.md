@@ -99,7 +99,7 @@ What it did well, and what Visit's panel and chat window take from it:
   password game asked for one. Someone's entry shows their line, their tags, how many are in their room out of how
   many it takes, and Knock or Link.
 - **Who is online, for friends.** Its friends list said what each friend was doing, and which game only to mutual
-  friends. Visit marks guests (★) and co-members (⚑) among those online. Where anyone is, the lobby tells nobody
+  friends. Visit marks co-members (⚑: 3.3, its guests) among those online. Where anyone is, the lobby tells nobody
   (its list has no `visiting` in version 4): those they visit know.
 - **A greeting.** Its login said how many were online. Visit's chat says the lobby's message of the day, and how
   many are in it, as it joins.

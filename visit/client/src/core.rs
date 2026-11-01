@@ -20,7 +20,7 @@ use crate::{
     link::{self, LinkCmd, Links, Relays, Role},
     lobby::LobbyOut,
     media,
-    state::{self, Guest, Place, Saved},
+    state::{self, Pick, Place, Saved},
     VERSION,
 };
 
@@ -141,7 +141,7 @@ struct Visit {
     resync_due: bool,
     /// Points taken from the visitor in the current second (host side): at most POINTS_PER_SECOND.
     points: (Instant, u32),
-    /// A guest let in without knocking, through the open door (host side).
+    /// A guest (3.3: someone in one of this office's worlds) let in without knocking, through the open door (host side).
     guest: bool,
     /// A watch (../WORLD.md): the visitor sees the host's plot from outside it, until it steps in (`inside`).
     watch: bool,
@@ -233,12 +233,12 @@ const POINTS_PER_SECOND: u32 = 5;
 const MAX_WHEEL: f64 = 10.0;
 /// How long a guest let in through the open door is waited for, to be agreed as a visit by the lobby.
 const ADMITTED_FOR: Duration = Duration::from_secs(120);
-/// The world (../WORLD.md): a knock to watch a guest's plot not yet answered is not made again for this long;
+/// The world (../WORLD.md): a knock to watch a picked plot not yet answered is not made again for this long;
 /// one declined (or refused by the lobby), for this long.
 const WATCH_PENDING: Duration = Duration::from_secs(15);
 const WATCH_DECLINED: Duration = Duration::from_secs(20);
-/// The most plots an office watches at once (the lobby's own limit is the same).
-const MAX_WATCHING: usize = 8;
+/// The most plots an office watches at once (its picks: the lobby's own limit is the same).
+const MAX_WATCHING: usize = state::MAX_PICKS;
 /// With no page for this long, its world's watches end (they are only for a page to draw); a new page that has
 /// not asked for the world this long after connecting, the same.
 const WORLD_NO_PAGE: Duration = Duration::from_secs(60);
@@ -282,7 +282,7 @@ pub struct Core {
     groups_before: BTreeMap<String, Value>,
     groups_settle: Option<Instant>,
     /// What outlasts a run, kept in `state_file`: whether the page took this office out of the lobby
-    /// (leave_lobby, until join_lobby), its key, its door and its guests.
+    /// (leave_lobby, until join_lobby), its key, its door and whose plots its world shows (its picks).
     saved: Saved,
     state_file: Option<PathBuf>,
     /// The office's key, as others see it: its link endpoint's public key.
@@ -290,7 +290,7 @@ pub struct Core {
     /// Guests let in through the open door (knocker's office id -> its key, and when), until the lobby agrees
     /// their visit: then the visitor's link must be that key.
     admitted: HashMap<String, (String, Instant)>,
-    /// The page draws a world (../WORLD.md): this office watches its guests' plots, by itself. After a page
+    /// The page draws a world (../WORLD.md): this office watches the plots its user picked, by itself. After a page
     /// connects, until it asks for the world again (or WORLD_ASK passes, and the world goes off).
     world: bool,
     world_ask: Option<Instant>,
@@ -473,7 +473,7 @@ impl Core {
                         info!("the page does not draw a world: its watches end");
                         self.set_world(false);
                     }
-                    self.watch_guests();
+                    self.watch_picks();
                     self.deliver_held();
                     if self.idle_exit > 0 && self.host_page.is_none() && self.user_page.is_none() && self.page_gone.elapsed() >= Duration::from_secs(self.idle_exit) {
                         info!("no page for {} s: exiting", self.idle_exit);
@@ -751,7 +751,7 @@ impl Core {
             "type": "ready", "version": VERSION, "office": self.office, "online": self.online, "lobby_chat": self.lobby_chat, "away": self.saved.away, "status": self.status,
             "signed_in": self.signed_in, "lobby_info": self.lobby_info, "groups": self.groups.values().cloned().collect::<Vec<_>>(),
             "about": self.saved.about,
-            "max_visitors": self.max_visitors, "visits": visits, "key": self.key, "door": self.door(), "guests": self.guests(),
+            "max_visitors": self.max_visitors, "visits": visits, "key": self.key, "door": self.door(), "picks": self.saved.picks_json(), "ignored": self.saved.ignored_json(),
             "layout": self.saved.layout_json(), "avatars": self.saved.avatars_json(), "voice_range": VOICE_RANGE, "kept": self.lands.kept_json(),
             "seen": self.seen_in.iter().map(|(k, (name, at))| json!({ "key": k, "name": name, "at": at })).collect::<Vec<_>>(),
             "users": self.users_json(),
@@ -841,13 +841,13 @@ impl Core {
                 None => self.page_error("bad_message", "n must be 0 to 8", Some("max_visitors")),
             },
             "leave_lobby" => self.set_away(true),
-            // The door: open (guests walk in, and its worlds' members watch its plot), or shut (kept in the state file).
+            // The door: open (its worlds' members walk in and watch its plot), or shut (kept in the state file).
             "door" => match m.get("open").and_then(Value::as_bool) {
                 None => self.page_error("bad_message", "open must be true or false", Some("door")),
                 Some(open) => {
                     self.saved.door_open = open;
                     self.save_state();
-                    self.tell_guests();
+                    self.tell_picks();
                     if !open {
                         self.end_watchers(|_| true);   // the door shut: no guest watches this plot any more
                     }
@@ -898,33 +898,109 @@ impl Core {
                     Err(_) => self.page_error("bad_message", &format!("{t} is not as it should be (../SPEC.md 5.2)"), Some(&t)),
                 }
             }
-            "guest_add" => match m.get("key").and_then(Value::as_str).filter(|k| state::key_ok(k)) {
-                Some(k) if k == self.key => self.page_error("bad_message", "that is this office's own key", Some("guest_add")),
+            // 3.3: whose plots this office's world shows, its user's pick (at most MAX_PICKS): watched while they are
+            // in the lobby, their door open to this office (a world's member's), drawn from their last landscape while
+            // away. Unpicked: the watch ends, and nothing of it is kept, not where it was placed either.
+            "pick" => match m.get("key").and_then(Value::as_str).filter(|k| state::key_ok(k)) {
+                Some(k) if k == self.key => self.page_error("bad_message", "that is this office's own key", Some("pick")),
                 Some(k) => {
                     let (k, name) = (k.to_string(), state::clip_name(m.get("name").and_then(Value::as_str).unwrap_or("")));
-                    let full = self.saved.guests.len() >= state::MAX_GUESTS;
-                    match self.saved.guests.iter_mut().find(|g| g.key == k) {
+                    let full = self.saved.picks.len() >= state::MAX_PICKS;
+                    match self.saved.picks.iter_mut().find(|g| g.key == k) {
                         Some(g) => g.name = name,
                         None if full => {
-                            return self.page_error("too_many_guests", &format!("at most {} guests", state::MAX_GUESTS), Some("guest_add"));
+                            return self.page_error("too_many", &format!("at most {} rooms in your world at once: take one out first", state::MAX_PICKS), Some("pick"));
                         }
-                        None => self.saved.guests.push(Guest { key: k, name }),
+                        None => self.saved.picks.push(Pick { key: k.clone(), name }),
                     }
                     self.save_state();
-                    self.tell_guests();
+                    self.tell_picks();
+                    self.watch_declined.remove(&k);   // asked anew
+                    self.watch_picks();
                 }
-                None => self.page_error("bad_message", "key is an office's key, as the lobby lists it", Some("guest_add")),
+                None => self.page_error("bad_message", "key is an office's key, as the lobby lists it", Some("pick")),
             },
-            "guest_remove" => match m.get("key").and_then(Value::as_str) {
+            // 3.3: whom this office's user ignores in chat (a person by their office's key; a room's figure by that room's
+            // key and its id), at most MAX_IGNORED: their lines never reach the page from now on, nor are kept.
+            "ignore" => match state::ignored_from(&m) {
+                Some(i) if i.key == self.key && i.npc.is_none() => self.page_error("bad_message", "that is this office's own key", Some("ignore")),
+                Some(i) => {
+                    let full = self.saved.ignored.len() >= state::MAX_IGNORED;
+                    match self.saved.ignored.iter_mut().find(|x| x.key == i.key && x.npc == i.npc) {
+                        Some(x) => x.name = i.name.clone(),
+                        None if full => {
+                            return self.page_error("too_many", &format!("at most {} ignored: let one go first", state::MAX_IGNORED), Some("ignore"));
+                        }
+                        None => self.saved.ignored.push(i.clone()),
+                    }
+                    self.save_state();
+                    // Theirs kept from before: out of the mailbox (a whisper of theirs: read); the lines are left out of what a
+                    // page is given (to_page) while they are ignored, and back once they are not.
+                    let saved = &self.saved;
+                    let unseen = self.unseen.len();
+                    self.unseen.retain(|l| !saved.ignores(l));
+                    if i.npc.is_none() {
+                        let c = format!("person:{}", i.key);
+                        if self.unseen_by.remove(&c).is_some() {
+                            let _ = self.db.send(DbCmd::Seen { conversation: Some(c) });
+                        }
+                    }
+                    if self.unseen.len() != unseen {
+                        self.unseen_by.clear();
+                        for l in &self.unseen {
+                            *self.unseen_by.entry(l["conversation"].as_str().unwrap_or("").to_string()).or_default() += 1;
+                        }
+                    }
+                    self.tell_ignored();
+                    self.tell_unseen();
+                }
+                None => self.page_error("bad_message", "ignore is { key (an office's), npc? (a room's figure's id), name }", Some("ignore")),
+            },
+            "unignore" => {
+                let (key, npc) = (m.get("key").and_then(Value::as_str).unwrap_or(""), m.get("npc").and_then(Value::as_str));
+                self.saved.ignored.retain(|x| !(x.key == key && x.npc.as_deref() == npc));
+                self.save_state();
+                self.tell_ignored();
+            }
+            // 3.3 (#48): an action of a figure in the room this office's user is in, from its card: to that room's page.
+            "act" => {
+                let (figure, action) = (m.get("figure").and_then(Value::as_str), m.get("action").and_then(Value::as_str));
+                let (Some(f), Some(t)) = (figure.filter(|f| link::possession_id_ok(f)), action.filter(|t| link::possession_id_ok(t))) else {
+                    return self.page_error("bad_message", "act is { figure, action }: a figure's id and an interaction type", Some("act"));
+                };
+                match self.visiting() {
+                    Some(v) => { let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "act": { "figure": f, "action": t } }))); }
+                    None => {
+                        let owner = self.inside_visit().map(|v| v.channel);
+                        self.to_page(json!({ "type": "act", "owner": true, "channel": owner, "figure": f, "action": t }));
+                    }
+                }
+            }
+            "ignore_clear" => {
+                self.saved.ignored.clear();
+                self.save_state();
+                self.tell_ignored();
+            }
+            "unpick" => match m.get("key").and_then(Value::as_str) {
                 Some(k) => {
                     let k = k.to_string();
-                    self.saved.guests.retain(|g| g.key != k);
+                    self.saved.picks.retain(|g| g.key != k);
+                    let placed = self.saved.layout.len();
+                    self.saved.layout.retain(|p| p.key != k);
                     self.save_state();
-                    self.tell_guests();
-                    self.end_watchers(|key| key == k);   // no longer a guest: no longer watching
+                    self.tell_picks();
+                    if self.saved.layout.len() != placed {
+                        self.tell_layout();
+                    }
+                    let watches: Vec<String> = self.visits.values()
+                        .filter(|v| v.role == Role::Visitor && v.watch && !v.link && v.peer.get("key").and_then(Value::as_str) == Some(k.as_str()))
+                        .map(|v| v.id.clone()).collect();
+                    for id in watches {
+                        self.to_lobby(end(&id, None));
+                    }
                     self.forget_plot(&k);   // nor kept in this world while they are away
                 }
-                None => self.page_error("bad_message", "key is the guest's key", Some("guest_remove")),
+                None => self.page_error("bad_message", "key is the picked office's key", Some("unpick")),
             },
             "join_lobby" => self.set_away(false),
             "host" => match m.get("three").and_then(Value::as_str).filter(|r| revision(r)) {
@@ -951,7 +1027,7 @@ impl Core {
                     Err(_) => self.page_error("bad_message", &format!("{t} is not as it should be (../SPEC.md 5.2)"), Some(&t)),
                 }
             }
-            // The world (../WORLD.md): this office watches its guests' plots for its page to draw, steps into one
+            // The world (../WORLD.md): this office watches its picked plots for its page to draw, steps into one
             // (`enter`, where in its own terms) and out again.
             "world" => match m.get("on").and_then(Value::as_bool) {
                 Some(on) => self.set_world(on),
@@ -1122,6 +1198,22 @@ impl Core {
                     return self.page_error("not_found", "this office is in no group of that name", Some("say"));
                 }
                 let key = to.and_then(|t| t.get("key")).and_then(Value::as_str).filter(|k| state::key_ok(k)).map(str::to_string);
+                // 3.3 (#48): { figure }: a whisper to one of the figures of the room this office's user is in, for that room's
+                // page alone (`addressed`); and, said aloud, the figure or person the line is meant for (`target`).
+                let figure = to.and_then(|t| t.get("figure")).and_then(Value::as_str).filter(|id| link::possession_id_ok(id)).map(str::to_string);
+                if to.and_then(|t| t.get("figure")).is_some() && figure.is_none() {
+                    return self.page_error("bad_message", "figure is a room's figure's id (1 to 40 letters, digits, _ . or -)", Some("say"));
+                }
+                let target = match m.get("target").filter(|t| !t.is_null()) {
+                    None => None,
+                    Some(t) => match target_from(t) {
+                        Some(t) if to.is_none() => Some(t),
+                        _ => return self.page_error("bad_message", "target is { kind: \"figure\" | \"person\", id }, on a line said aloud (no to)", Some("say")),
+                    },
+                };
+                if figure.is_some() && shares {
+                    return self.page_error("not_supported", "a whisper to a figure is text only", Some("say"));
+                }
                 // { whisper }: an office's id, or its key (0.22.0): by it, one in the lobby that takes whispers, else
                 // someone away, for whom this office keeps it (text only) until they and it are both in the lobby.
                 let w = to.and_then(|t| t.get("whisper")).and_then(Value::as_str);
@@ -1130,8 +1222,8 @@ impl Core {
                 if key.as_ref().is_some_and(|k| self.banned_by.get(k).is_some_and(|b| b.2)) {
                     return self.page_error("banned", "that room keeps you out of its chat", Some("say"));
                 }
-                if to.is_some() && !lobby && !room && key.is_none() && whisper.is_none() && away.is_none() && group.is_none() {
-                    return self.page_error("bad_message", "to is \"here\", \"room\", \"lobby\", { key } of an office linked with this one, { whisper } an office's id or key, or { group } one of this office's groups", Some("say"));
+                if to.is_some() && !lobby && !room && key.is_none() && whisper.is_none() && away.is_none() && group.is_none() && figure.is_none() {
+                    return self.page_error("bad_message", "to is \"here\", \"room\", \"lobby\", { key } of an office linked with this one, { whisper } an office's id or key, { group } one of this office's groups, or { figure } one of the room's figures", Some("say"));
                 }
                 if let Some(k) = away {
                     let name = to.and_then(|t| t.get("name")).and_then(Value::as_str).map(state::clip_name).map(|n| n.trim().to_string()).unwrap_or_default();
@@ -1195,9 +1287,33 @@ impl Core {
                     mine["to"] = json!({ "key": self.key, "name": self.office.get("name") });
                     mine["conversation"] = json!(format!("room:{}", self.key));
                     self.room_said(&line, None);
+                } else if let Some(fid) = figure {
+                    // To the room this office's user is in: another's (its visit-client gives it to its page alone), or
+                    // their own (to its page here). Kept here as theirs, as a whisper is: nobody else has it.
+                    let fname = to.and_then(|t| t.get("name")).and_then(Value::as_str).map(state::clip_name).map(|n| n.trim().to_string()).unwrap_or_default();
+                    let there = self.visiting().map(|v| (v.cmd.clone(), v.peer.get("key").and_then(Value::as_str).unwrap_or("").to_string()));
+                    let room_key = there.as_ref().map_or_else(|| self.key.clone(), |t| t.1.clone());
+                    mine["scope"] = json!("whisper");
+                    mine["to"] = json!({ "key": room_key, "npc": fid, "name": fname });
+                    mine["conversation"] = json!(format!("room:{room_key}"));
+                    match there {
+                        Some((cmd, _)) => { let _ = cmd.try_send(LinkCmd::Ctl(json!({ "tell": text, "figure": fid }))); }
+                        None => {
+                            let from = json!({ "owner": true, "key": self.key, "name": self.my_name() });
+                            self.addressed(&fid, from, &text, true);
+                        }
+                    }
                 } else {
                     let host = self.visiting().and_then(|v| v.peer.get("key").and_then(Value::as_str)).unwrap_or(&self.key).to_string();
                     mine["conversation"] = json!(format!("room:{host}"));
+                    if let Some(t) = &target {
+                        line["target"] = t.clone();
+                        mine["target"] = t.clone();
+                        if self.visiting().is_none() && t["kind"] == "figure" {   // a line in this room meant for its figure
+                            let from = json!({ "owner": true, "key": self.key, "name": self.my_name() });
+                            self.addressed(t["id"].as_str().unwrap_or(""), from, &text, false);
+                        }
+                    }
                     self.say_out(line);
                 }
                 self.keep_chat(mine);
@@ -1216,10 +1332,33 @@ impl Core {
                 if text.is_empty() {
                     return self.page_error("bad_message", &format!("text is 1 to {SAY_LEN} characters"), Some("say_as"));
                 }
+                // 3.3 (#48): `to`, to one person alone: "owner" (this office's user), or a visit's id in this room.
+                let to = m.get("to").filter(|t| !t.is_null());
+                let alone = match to {
+                    None => None,
+                    Some(t) if t == "owner" => Some(None),
+                    Some(t) => match t.as_str().and_then(|vid| self.visits.values().find(|v| v.id == vid && v.up && v.role == Role::Host && !v.local)) {
+                        Some(v) => Some(Some(v.cmd.clone())),
+                        None => return self.page_error("not_found", "to is \"owner\" or the id of a visit in this room", Some("say_as")),
+                    },
+                };
                 if !counted(self.npc_says.entry(id.clone()).or_insert((Instant::now(), 0))) {
                     return self.page_error("rate_limited", &format!("at most {SAYS} lines every {} s from each", SAY_WINDOW.as_secs()), Some("say_as"));
                 }
                 let line = json!({ "key": self.key, "name": name, "text": text, "npc": id });
+                if let Some(alone) = alone {   // a whisper from the figure: no bubble, nobody else
+                    match alone {
+                        Some(cmd) => { let _ = cmd.try_send(LinkCmd::Ctl(json!({ "said": line, "whisper": true }))); }
+                        None => {
+                            let mut chat = line;
+                            chat["type"] = json!("chat");
+                            chat["scope"] = json!("whisper");
+                            chat["conversation"] = json!(format!("room:{}", self.key));
+                            self.to_page(chat);
+                        }
+                    }
+                    return;
+                }
                 for v in self.visits.values().filter(|v| v.up && v.role == Role::Host && !v.local && !self.chat_banned(v.peer.get("key").and_then(Value::as_str).unwrap_or(""))) {
                     let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "said": line })));
                 }
@@ -1373,7 +1512,7 @@ impl Core {
                     .unwrap_or(""));
                 self.saved.bans.retain(|b| b.key != key);
                 if voice || chat {
-                    if self.saved.bans.len() >= state::MAX_GUESTS {
+                    if self.saved.bans.len() >= state::MAX_PEOPLE {
                         return self.page_error("too_many", "at most 256 kept out", Some("ban"));
                     }
                     self.saved.bans.push(state::Ban { key: key.clone(), name: name.clone(), voice, chat });
@@ -1424,8 +1563,8 @@ impl Core {
                 }
                 self.saved.avatars_by.retain(|(k, _)| *k != key);
                 if let Some(theirs) = use_.filter(|t| *t != self.saved.avatars_theirs) {
-                    if self.saved.avatars_by.len() >= state::MAX_GUESTS {
-                        return self.page_error("too_many", &format!("at most {} apart", state::MAX_GUESTS), Some("avatar_use"));
+                    if self.saved.avatars_by.len() >= state::MAX_PEOPLE {
+                        return self.page_error("too_many", &format!("at most {} apart", state::MAX_PEOPLE), Some("avatar_use"));
                     }
                     self.saved.avatars_by.push((key, theirs));
                 }
@@ -1575,6 +1714,17 @@ impl Core {
     /// to the connection that asked; while a page is welcomed, to it alone.
     fn to_page(&mut self, mut v: Value) {
         let t = v.get("type").and_then(Value::as_str).unwrap_or("").to_string();
+        // 3.3: someone its user ignores: their lines never reach the page (nor bubbles, nor the mailbox), and are not
+        // kept; those kept from before are left out of what the page is given again.
+        if t == "chat" && self.saved.ignores(&v) {
+            return;
+        }
+        if matches!(t.as_str(), "chat_log" | "history") && !self.saved.ignored.is_empty() {
+            if let Some(lines) = v.get_mut("lines").and_then(Value::as_array_mut) {
+                let saved = &self.saved;
+                lines.retain(|l| !saved.ignores(l));
+            }
+        }
         if t == "chat" {
             if v.get("conversation").is_none() {
                 v["conversation"] = json!(self.conversation_of(&v));
@@ -1915,9 +2065,10 @@ impl Core {
             .filter_map(|m| m.get("key").and_then(Value::as_str).map(str::to_string)).filter(|k| *k != self.key).collect()
     }
 
-    /// Whether `key` may watch this office's plot (its door open aside): a guest, or someone in one of its groups.
-    fn may_watch(&self, key: &str) -> bool {
-        self.saved.guests.iter().any(|g| g.key == key) || self.co_members().contains(key)
+    /// Whether `key` is this office's guest (3.3): someone in one of its worlds. Through its open door, a guest
+    /// watches its plot (puts it in their world) and walks in without asking; and it theirs.
+    fn is_guest(&self, key: &str) -> bool {
+        self.co_members().contains(key)
     }
 
     fn save_state(&self) {
@@ -1929,10 +2080,6 @@ impl Core {
 
     fn door(&self) -> &'static str {
         if self.saved.door_open { "open" } else { "closed" }
-    }
-
-    fn guests(&self) -> Value {
-        json!(self.saved.guests.iter().map(|g| json!({ "key": g.key, "name": g.name })).collect::<Vec<_>>())
     }
 
     fn tell_layout(&mut self) {
@@ -2310,6 +2457,9 @@ impl Core {
     fn say_out(&mut self, line: Value) {
         if let Some(v) = self.visiting() {
             let mut ctl = json!({ "say": line["text"] });
+            if !line["target"].is_null() {
+                ctl["target"] = line["target"].clone();
+            }
             attach(&mut ctl, line["media"].as_array().cloned().unwrap_or_default(), line["links"].as_array().cloned().unwrap_or_default());
             let _ = v.cmd.try_send(LinkCmd::Ctl(ctl));
             return;
@@ -2319,6 +2469,14 @@ impl Core {
         for v in self.visits.values().filter(|v| v.up && v.role == Role::Host && !v.local && !self.chat_banned(v.peer.get("key").and_then(Value::as_str).unwrap_or(""))) {
             let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "said": line })));
         }
+    }
+
+    /// A line meant for one of this room's figures (3.3, #48): to this office's room's page (the host's: on the engine too,
+    /// open or not its user's), whoever said it, aloud (`whisper` false: everyone who can see them had it too) or to the
+    /// figure alone. The room answers with say_as, aloud or (`to`) to them alone; whom its figures answer is its own.
+    fn addressed(&mut self, figure: &str, from: Value, text: &str, whisper: bool) {
+        let name = from["name"].clone();
+        self.to_page(json!({ "type": "addressed", "figure": figure, "from": from, "name": name, "text": text, "whisper": whisper }));
     }
 
     /// A line a visitor in this room said: to this office's page, and to everyone else who can see this room (its other
@@ -2379,9 +2537,14 @@ impl Core {
         self.to_page(json!({ "type": "avatars", "default": avatars["default"], "by": avatars["by"] }));
     }
 
-    fn tell_guests(&mut self) {
-        let (door, guests) = (self.door(), self.guests());
-        self.to_page(json!({ "type": "guests", "door": door, "guests": guests }));
+    fn tell_ignored(&mut self) {
+        let ignored = self.saved.ignored_json();
+        self.to_page(json!({ "type": "ignored", "ignored": ignored }));
+    }
+
+    fn tell_picks(&mut self) {
+        let (door, picks) = (self.door(), self.saved.picks_json());
+        self.to_page(json!({ "type": "picks", "door": door, "picks": picks }));
     }
 
     /// Its link to the lobby, so others can visit: only while its page hosts its scene.
@@ -2465,7 +2628,7 @@ impl Core {
                 if self.groups_settle.is_none() {
                     self.watchers_still_allowed();
                 }
-                self.watch_guests();
+                self.watch_picks();
             }
             "group_left" => {
                 if let Some(name) = m.get("group").and_then(Value::as_str) {
@@ -2489,7 +2652,7 @@ impl Core {
             "lobby" => {
                 self.lobby_view = Some(m.clone());
                 self.to_page(m);
-                self.watch_guests();
+                self.watch_picks();
                 self.deliver_held();   // someone a whisper was left for, in it now
             }
             // This office's own knocks to watch, and what became of them: never the page's.
@@ -2584,10 +2747,10 @@ impl Core {
         }
     }
 
-    /// A knock from a guest, with the door open and the room hosted: answered yes here, at once, without the
-    /// page (which hears the visit start). The knocker's key is the lobby's word until the visit is agreed: then
-    /// the visitor's link must be that key (visit_agreed), and the link makes it prove it.
-    /// Through the open door: a guest, always; to watch, someone in one of this office's worlds too.
+    /// A knock from a guest (3.3: someone in one of this office's worlds), with the door open and the room hosted:
+    /// answered yes here, at once, without the page (which hears the visit start), to watch or to visit. The
+    /// knocker's key is the lobby's word until the visit is agreed: then the visitor's link must be that key
+    /// (visit_agreed), and the link makes it prove it.
     fn let_guest_in(&mut self, m: &Value) -> bool {
         let from = m.get("from");
         let (Some(kid), Some(fid), Some(fkey)) = (
@@ -2597,9 +2760,7 @@ impl Core {
         ) else {
             return false;
         };
-        let watch = m.get("watch") == Some(&json!(true));
-        let welcome = if watch { self.may_watch(fkey) } else { self.saved.guests.iter().any(|g| g.key == fkey) };
-        if !self.saved.door_open || self.hosting.is_none() || !welcome {
+        if !self.saved.door_open || self.hosting.is_none() || !self.is_guest(fkey) {
             return false;
         }
         info!(knock = kid, from = fid, "a guest at the open door: let in");
@@ -2790,13 +2951,13 @@ impl Core {
             .get("key").and_then(Value::as_str).map(str::to_string)
     }
 
-    /// The world on (the page draws its guests' plots) or off (its watches end).
+    /// The world on (the page draws its picked plots) or off (its watches end).
     fn set_world(&mut self, on: bool) {
         self.world = on;
         self.world_ask = None;
         if on {
             self.watch_declined.clear();   // asked anew: try everyone again
-            self.watch_guests();
+            self.watch_picks();
         } else {
             let watches: Vec<String> = self.visits.values().filter(|v| v.role == Role::Visitor && v.watch && !v.link).map(|v| v.id.clone()).collect();
             for id in watches {
@@ -2805,9 +2966,10 @@ impl Core {
         }
     }
 
-    /// With the world on: a knock to watch each guest online and ready that this office does not watch yet,
-    /// unless one is waiting or was declined a while ago; at most MAX_WATCHING at once.
-    fn watch_guests(&mut self) {
+    /// With the world on: a knock to watch each office its user picked (3.3), in the lobby, ready and its guest (in a
+    /// world with it), that this office does not watch yet, unless one is waiting or was declined a while ago; at most
+    /// MAX_WATCHING at once (its picks are no more).
+    fn watch_picks(&mut self) {
         if !self.world || !self.online || self.hosting.is_none() || self.link.is_none() {
             return;
         }
@@ -2818,13 +2980,10 @@ impl Core {
         let watched: Vec<String> = self.visits.values().filter(|v| v.role == Role::Visitor && v.watch)
             .filter_map(|v| v.peer.get("id").and_then(Value::as_str).map(str::to_string)).collect();
         let mut room = MAX_WATCHING.saturating_sub(watched.len() + self.watch_pending.len());
-        let mut offices: Vec<Value> = self.lobby_view.as_ref().and_then(|l| l.get("offices")).and_then(Value::as_array).cloned().unwrap_or_default();
-        // Those placed in this world first, then guests, then the rest of its groups (MAX_WATCHING at most).
-        let rank = |o: &Value| {
-            let k = o.get("key").and_then(Value::as_str).unwrap_or("");
-            if self.saved.layout.iter().any(|p| p.key == k) { 0 } else if self.saved.guests.iter().any(|g| g.key == k) { 1 } else { 2 }
-        };
-        offices.sort_by_key(rank);
+        // Nobody's plot by itself: only those picked, in the order picked.
+        let all: Vec<Value> = self.lobby_view.as_ref().and_then(|l| l.get("offices")).and_then(Value::as_array).cloned().unwrap_or_default();
+        let offices: Vec<Value> = self.saved.picks.iter()
+            .filter_map(|p| all.iter().find(|o| o.get("key").and_then(Value::as_str) == Some(p.key.as_str())).cloned()).collect();
         for o in offices {
             if room == 0 {
                 break;
@@ -2833,11 +2992,11 @@ impl Core {
             // Only an office whose visit-client takes knocks to watch (an older one would show them to its page).
             if id == me || o.get("ready").and_then(Value::as_bool) != Some(true) || o.get("world").and_then(Value::as_bool) != Some(true)
                 || watched.iter().any(|w| w == id)
-                || self.watch_pending.contains_key(id) || self.watch_declined.contains_key(key) || !self.may_watch(key)
+                || self.watch_pending.contains_key(id) || self.watch_declined.contains_key(key) || !self.is_guest(key)
             {
                 continue;
             }
-            debug!(to = id, "a knock to watch a guest's plot");
+            debug!(to = id, "a knock to watch a picked plot");
             self.watch_pending.insert(id.to_string(), now);
             self.watch_order.push_back(id.to_string());
             let _ = self.lobby.send(LobbyOut::Msg(ToLobby::Knock { to: Some(id.to_string()), message: None, watch: true, link: false }));
@@ -2845,9 +3004,9 @@ impl Core {
         }
     }
 
-    /// The watches of this office's plot by someone no longer a guest nor in any of its groups: ended.
+    /// The watches of this office's plot by someone no longer its guest (in none of its worlds): ended.
     fn watchers_still_allowed(&mut self) {
-        let allowed: HashSet<String> = self.co_members().into_iter().chain(self.saved.guests.iter().map(|g| g.key.clone())).collect();
+        let allowed: HashSet<String> = self.co_members();
         self.end_watchers(|k| !allowed.contains(k));
     }
 
@@ -3152,8 +3311,40 @@ impl Core {
                     if (!text.is_empty() || !media.is_empty() || !links.is_empty()) && counted(&mut v.says) {
                         let mut line = json!({ "key": v.peer.get("key"), "name": person(v), "id": v.id, "text": text });
                         attach(&mut line, media, links);
+                        let target = m.get("target").and_then(target_from);
+                        if let Some(t) = &target {
+                            line["target"] = t.clone();
+                        }
+                        let from = json!({ "id": v.id, "key": v.peer.get("key"), "name": person(v) });
+                        let banned = self.chat_banned(line["key"].as_str().unwrap_or(""));
                         self.want_media(&line, id);
                         self.say_in(ch, line);
+                        if let Some(t) = target.filter(|t| t["kind"] == "figure" && !banned) {
+                            self.addressed(t["id"].as_str().unwrap_or(""), from, &text, false);
+                        }
+                    }
+                } else if let Some(text) = m.get("tell").filter(|_| v.inside).and_then(Value::as_str).map(said_text) {
+                    // 3.3 (#48): a visitor's whisper to one of this room's figures: to this room's page alone.
+                    let figure = m.get("figure").and_then(Value::as_str).filter(|f| link::possession_id_ok(f)).map(str::to_string);
+                    if let Some(f) = figure.filter(|_| !text.is_empty() && counted(&mut v.says)) {
+                        let from = json!({ "id": v.id, "key": v.peer.get("key"), "name": person(v) });
+                        if !self.chat_banned(from["key"].as_str().unwrap_or("")) {
+                            self.addressed(&f, from, &text, true);
+                        }
+                    }
+                } else if let Some(a) = m.get("act").filter(|_| v.inside) {
+                    // 3.3 (#48): an action of one of this room's figures, from its card (an interaction type the room
+                    // takes): to its page, which runs it as it would a point at the figure, by its own rules.
+                    let (figure, action) = (a.get("figure").and_then(Value::as_str), a.get("action").and_then(Value::as_str));
+                    if let (Some(f), Some(t)) = (figure.filter(|f| link::possession_id_ok(f)), action.filter(|t| link::possession_id_ok(t))) {
+                        if v.points.0.elapsed() >= Duration::from_secs(1) {
+                            v.points = (Instant::now(), 0);
+                        }
+                        if v.points.1 < POINTS_PER_SECOND {
+                            v.points.1 += 1;
+                            let m = json!({ "type": "act", "channel": ch, "figure": f, "action": t });
+                            self.to_page(m);
+                        }
                     }
                 } else if m.get("scene_resync").is_some() {
                     v.resync_due = true;
@@ -3208,6 +3399,13 @@ impl Core {
                     let mut line = line;
                     line["type"] = json!("chat");
                     line["channel"] = json!(ch);
+                    if m.get("whisper") == Some(&json!(true)) && line.get("npc").is_some() {   // 3.3: one of its figures, to this office's user alone
+                        line["scope"] = json!("whisper");
+                        line["conversation"] = json!(format!("room:{}", line["key"].as_str().unwrap_or("")));
+                        if let Some(o) = line.as_object_mut() {
+                            o.remove("target");
+                        }
+                    }
                     self.to_page(line);
                 } else if let Some(near) = m.get("near").filter(|_| v.inside) {   // who is near this office's user in the host's room (8.7)
                     let near = near_from(near);
@@ -3326,13 +3524,13 @@ fn page_for(v: &Value) -> PageRole {
             else if v.get("home") == Some(&json!(true)) || v.get("role") == Some(&json!("visitor")) { PageRole::User }
             else { PageRole::Both }
         }
-        "input" | "point" | "keyframe" | "scene_resync" | "shared_adds" | "landscapes" | "enter" | "exit"
+        "input" | "point" | "keyframe" | "scene_resync" | "shared_adds" | "landscapes" | "enter" | "exit" | "addressed" | "act"
         | "avatar" | "avatar_none" | "possessions" | "possession" => PageRole::Host,
         "chat" | "chat_log" | "unseen" | "held" | "held_sent" | "media_none" | "preview" | "history" | "shared"
         | "voice_near" | "room_voice" | "voice_members" | "user" | "banned" | "seen" | "layout" | "landscape"
         | "plot_forgotten" | "knock" | "knock_sent" | "knock_cancelled" | "answered" | "link_stats" | "scene"
         | "scene_lost" | "host_paused" | "host_resumed" | "enter_refused" | "body" | "call" | "phone" | "lobby_pass" | "browser_pending"
-        | "browser_confirm" | "browsers" => PageRole::User,
+        | "browser_confirm" | "browsers" | "ignored" => PageRole::User,
         _ => PageRole::Both,
     }
 }
@@ -3342,7 +3540,7 @@ fn page_for(v: &Value) -> PageRole {
 fn role_may(role: PageRole, t: &str) -> bool {
     const HOST: &[&str] = &["host", "pose", "avatar_want", "possession_want", "phone", "body", "say_as"];
     const USER: &[&str] = &["input", "point", "keyframe", "scene_resync", "avatar_clear", "possessions", "user", "say", "attention", "read",
-        "unhold", "media_get", "preview", "history", "shared", "voice_join", "call", "speaker", "world", "enter", "exit", "place", "unplace",
+        "unhold", "media_get", "preview", "history", "shared", "voice_join", "call", "speaker", "world", "enter", "exit", "pick", "unpick", "place", "unplace", "ignore", "unignore", "ignore_clear", "act",
         "seen", "plot_keep", "plot_load", "plot_forget", "link_where", "knock", "answer", "leave_lobby", "join_lobby", "status", "rename",
         "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set", "group_owner", "group_delete", "groups", "admin",
         "lobby_pass", "browser_code", "browser_allow", "browsers", "browser_revoke"];
@@ -3447,7 +3645,21 @@ fn said_from(v: &Value) -> Option<Value> {
     } else if v["owner"] == json!(true) {
         out["owner"] = json!(true);
     }
+    if let Some(t) = v.get("target").and_then(target_from) {
+        out["target"] = t;
+    }
     Some(out)
+}
+
+/// What a line said aloud is meant for (3.3, #48): { kind: "figure", id: a room's figure's id } or { kind: "person", id:
+/// an office's key (or another short id) }.
+fn target_from(t: &Value) -> Option<Value> {
+    let id = t.get("id").and_then(Value::as_str)?;
+    match t.get("kind").and_then(Value::as_str)? {
+        "figure" if link::possession_id_ok(id) => Some(json!({ "kind": "figure", "id": id })),
+        "person" if !id.is_empty() && id.len() <= 100 && !id.chars().any(char::is_control) => Some(json!({ "kind": "person", "id": id })),
+        _ => None,
+    }
 }
 
 /// One more in a window of SAYS a SAY_WINDOW: true if it may go.

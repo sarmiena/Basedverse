@@ -10,6 +10,67 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v3.3.0 — 2026-11-01 — worlds are who may come in; you pick whose rooms are round yours; ignore people and figures in chat; targets and lines meant for a room's figures
+
+- **A world's members are each other's guests** ([visit/SPEC.md](visit/SPEC.md) 3, points 9 and 14; 6.6). While your
+  door is open, anyone in a world with you walks into your room without asking, and may put it in their world;
+  closed, everyone knocks. The ★ guest list is gone (`guest_add`, `guest_remove`, `v.addGuest`, `v.removeGuest`, the
+  panel's ☆ and "★ always"): `v.guests` is now whoever shares a world with you, and `v.isGuest(key)` says so.
+- **Nobody's room is in your world by itself** (8.4). Before, every guest's and world member's plot came round yours
+  on its own, up to 8. Now you pick them: **🗺 +** by someone in a world with you (their row in the panel, or the
+  world's member list) puts their room round yours, **🗺 ✓** takes it out; at most 8, so each person keeps their own
+  machine's load. `v.pick(key, name)`, `v.unpick(key)`, `v.picks`, `v.isPicked(key)`, `v.maxPicks`; `pick`,
+  `unpick` and `picks` on the page's socket (`picks` replaces `guests`, with the door). Unpicked, its watch ends and
+  where you had placed it is forgotten. Your state file keeps your picks; one from before 3.3 picks the plots you had
+  placed (Map), and lets the guest list go.
+- **Ignore someone in chat, as in WoW** (8.9). Click a name in the chat window: **Whisper**, **Ignore** (or
+  **Unignore**); or `/ignore name`, `/unignore name`, `/ignore` alone to list them. A person is ignored by their
+  office's key; one of a room's figures (`say_as`) by that room's key and its id, so muting one room's guide mutes no
+  other's. Their lines never reach you from then on, in any scope (say, a room's chat, the lobby, a world, whispers),
+  nor their bubbles, nor your mailbox; they are not kept, and their lines from before are left out of your history
+  while you ignore them. Nothing tells them. At most 50. The panel lists them (**Show**, **Unignore** each, **Clear**),
+  and a person's opened row has **Ignore**. `v.ignore(key, { npc, name })`, `v.unignore(key, { npc })`,
+  `v.clearIgnored()`, `v.ignored`, `v.isIgnored(key, npc)`, `"ignored"`; `ignore`, `unignore`, `ignore_clear` and
+  `ignored` on the page's socket. Voice is not ignored (your room's bans still keep someone out of its voice).
+- **Targets, and lines meant for a room's figures** (#48; [visit/SPEC.md](visit/SPEC.md) 8.9, "Targets"): the
+  plumbing, each world deciding the rest. Your user may have a target in the room they are in: one of its people, or
+  one of its figures (sayAs's). It is theirs alone (`v.target`, `v.setTarget`, "target"), and goes when they leave the
+  room or it does. Visit picks it the room's way (`v.host({ targeting: "click" | "near" | "none" })`, click by
+  default), or a page picks its own (`v.targeting(false)`). A room describes its figures as data that goes with its
+  scene (`v.figures`: name, title, line, actions, and `talk`, whom it answers: everyone, its owner, or none; 32 at
+  most, 8 KB). Visit's panel shows a small card for the target
+  (its name, title, line, actions, Say, Whisper; a person's Link or Knock); `Visit.panel(…, { card: false })`, none.
+  A line said aloud can be meant for a figure (`v.say(text, { target })`; the chat window's `@` offers the room's
+  figures, and a line that mentions one is meant for it): everyone has it, and the room's page hears it too
+  (`addressed`). A whisper to a figure (`v.say(text, { whisper: { kind: "figure", id } })`, the card's Whisper) goes
+  to the room's page alone. The room's page has them on the engine too, whether or not its user's page is open,
+  with who said them (`from`: their visit's id, or `owner`). It answers with `sayAs`, aloud, or to one person alone
+  (`v.sayAs(id, name, text, { to })`: a whisper from the figure, no bubble). Whom its figures answer is the room's
+  own. A card's action runs by its interaction type's own rules (`v.act`). Chat lines carry `target`.
+- The lobby is 3.2.3's (nothing of it changed): no new deploy.
+
+**What an integration does:** for targets (#48), nothing unless your room has figures. With figures, step by step:
+1. Describe them, if you like: `v.figures([{ id, name, title, about, actions, talk }])` on your room's page (the server
+   page on the engine), again whenever they change. A figure that answers only your user: `talk: "owner"` (Visit's
+   card then offers Say and Whisper to nobody else, and says why; the `@` picker leaves it out for them).
+2. Say how Visit picks a target in your room: `v.host({ ..., targeting })` (`"click"` by default; `"none"` if your
+   world picks its own). If your page picks its own (your own click, say), call `v.setTarget({ kind: "figure", id,
+   name })` from it, and `v.targeting(false)` on your user's page.
+3. If your world draws its own target card: `Visit.panel(element, v, { card: false })`, and draw yours from
+   `v.on("target", t => …)` (`v.target`).
+4. On your room's page, answer lines meant for your figures: `v.on("addressed", ({ figure, from, name, text, whisper }) =>
+   …)`. It comes whether or not your user's page is open. `from.owner` is your user; `from.id` someone in your room.
+   Decide whom each figure answers. The text is as it was said (a leading "@Name" included).
+5. Answer aloud with `v.sayAs(id, name, text)`, or to that one person with `v.sayAs(id, name, text, { to: from.id ||
+   "owner" })`. A figure's bubble shows 4 rows: cut long answers into lines that fit, one `sayAs` each.
+6. A route of your own that caught your user's "@Name" lines from `v.on("chat")` on their page can go: `addressed`
+   brings them to your room's page.
+
+For the rest: a page that called `v.addGuest` or `v.removeGuest`, or showed `v.guests` as a list you
+edit, uses worlds and `v.pick` instead (the panel does both); a page of its own that sends `guest_add` gets
+`bad_message`. A page with its own chat window may give names a click for `v.ignore`. Nothing else: Visit's panel and
+chat window have it all.
+
 ## v3.2.3 — 2026-11-01 — a friend's plot out of view left out of the frame, its shadows on a beat; a browser unlinks itself with its room off
 
 - **Your world draws only what you can see** (kfatehi, #43, from #42; [visit/SPEC.md](visit/SPEC.md) 8.4,
