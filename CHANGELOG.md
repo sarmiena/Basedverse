@@ -10,6 +10,20 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v3.2.2 — 2026-11-01 — scan your room's QR code with your phone, and the browser waiting on your computer goes in
+
+- **The room's QR code is for your phone to scan, for the browser you are linking** ([visit/SPEC.md](visit/SPEC.md)
+  6.11). Open basedverse.app on your computer, type its code in your room, scan the QR code your room shows with your
+  phone: the page on your computer goes in as your workroom by itself. Your phone shows what it confirmed ("Chrome on
+  Linux 🍿🐙🐯 is linked to Duckroom") and is not linked. (3.2.0 and 3.2.1 linked the device that scanned it, not the
+  one waiting.) Typing the 6 digits on the computer's page still works, without a phone.
+- **The lobby's page:** "get Basedverse" (the project's page on GitHub) in place of "get Visit".
+- **The panel says which QR code is which:** the one after Link it confirms the browser you typed the code of; **📱 On
+  my phone** (it was 📱 Phone) puts the lobby on your phone.
+- **The lobby** (`lobby` 3.2.2): a `hello` with `verify` from any device confirms the browser that waits for it
+  (`browser_confirmed` to that device, which is not linked); scans that match nothing, 10 every 10 minutes from one
+  address. Deploy it (`bin/deploy-lobby`).
+
 ## v3.2.1 — 2026-11-01 — the room's QR code links the browser that scans it, however the phone opens it
 
 - **Scanning your room's QR code now finishes the link** ([visit/SPEC.md](visit/SPEC.md) 6.11). In 3.2.0 it could do

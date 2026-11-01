@@ -598,6 +598,9 @@ pub enum FromLobby {
     BrowserConfirm { code: String, key: String, confirm: String, expires_in: u64 },
     /// 3.2, to a browser waiting with a code: this office would link it; it shows the room's confirmation to be linked.
     BrowserConfirming { office: String, expires_in: u64 },
+    /// 3.2.2, to a device that scanned a room's QR code for another browser (a phone, say): that browser is linked now,
+    /// to that office; this device is not (its connection closes).
+    BrowserConfirmed { office: String, agent: String, pictures: String },
     /// 3.1, to an office: its linked browsers (on asking, and as one is linked, unlinked, comes or goes).
     Browsers { browsers: Vec<Linked> },
     /// Version 4, to an operator: the lobby's bans (not a room's: Visit's own `bans` are those).

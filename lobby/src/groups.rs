@@ -443,6 +443,11 @@ impl Links {
         }
     }
 
+    /// What a linked browser said it was.
+    pub fn agent(&self, key: &str) -> Option<String> {
+        self.list.iter().find(|l| l.key == key).map(|l| l.agent.clone())
+    }
+
     /// The office a browser speaks for.
     pub fn office(&self, key: &str) -> Option<String> {
         self.list.iter().find(|l| l.key == key).map(|l| l.office.clone())

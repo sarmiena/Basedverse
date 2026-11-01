@@ -221,17 +221,21 @@ footer button { font: inherit; color: var(--blue); background: none; border: 0; 
             <p class="small">your room shows these pictures too: check they match. The code lasts 10 minutes.</p>
           </div>
           <div id="confirming" hidden>
-            <p><b id="confwho">Your workroom</b> would link this browser. To prove it is you: <b>scan the QR code your room shows now</b> with this device's camera, or type its digits:</p>
+            <p><b id="confwho">Your workroom</b> would link this browser. Confirm it: <b>scan the QR code your room shows with your phone</b> (this page then goes in by itself), or type its 6 digits here:</p>
             <form class="confirm" id="confform"><input id="confdigits" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="000 000"><button class="btn" type="submit">Link</button></form>
             <p class="small" id="confnote">it lasts 5 minutes</p>
-            <p class="small">If your camera opens it in another browser than this one, type the digits here instead.</p>
           </div>
-          <p class="small">Or from your room: <b>🌐 Lobby</b> opens this page linked; <b>📱 Phone</b> shows a QR code for your phone's camera.</p>
+          <p class="small">Or from your room: <b>🌐 Lobby</b> opens this page linked; <b>📱 On my phone</b> puts the lobby on your phone.</p>
           <div class="row" id="again" hidden><button class="btn blue" id="newcode" type="button">New code</button></div>
+          <div id="confirmed" hidden>
+            <div class="code">✓</div>
+            <p><b id="cfwhat">That browser</b> <span class="pics" id="cfpics" style="font-size:18px"></span> is linked to <b id="cfoffice">your workroom</b> now: it is in the lobby there.</p>
+            <p class="small">This device is not linked (nothing to do here): you can close this tab.</p>
+          </div>
         </div>
         <hr>
         <p class="small">No workroom in this lobby yet? Visit runs your room; in its <code>.env</code>: <code id="url"></code></p>
-        <div class="row"><button class="btn dim" id="copy" type="button">Copy</button><a href="https://github.com/sarmiena/Basedverse/releases/latest" rel="noopener">get Visit</a></div>
+        <div class="row"><button class="btn dim" id="copy" type="button">Copy</button><a href="https://github.com/sarmiena/Basedverse" rel="noopener">get Basedverse</a></div>
       </div>
       <form class="say" id="say" hidden><span class="to" id="to"></span><input id="text" maxlength="200" autocomplete="off" placeholder="say something (/w name, /r, /g world)"><button class="btn" type="submit">Say</button></form>
     </section>
@@ -584,7 +588,7 @@ footer button { font: inherit; color: var(--blue); background: none; border: 0; 
   // The card in place of the chat, unlinked: why, and its code (or why there is none).
   function linkCard(why, code, pics, again) {
     $("linkwhy").textContent = why;
-    $("confirming").hidden = true;
+    $("confirming").hidden = true; $("confirmed").hidden = true;
     $("pairing").hidden = !code;
     if (code) { $("code").textContent = code.slice(0, 4) + "-" + code.slice(4); $("pics").textContent = pics || ""; }
     $("again").hidden = !again;
@@ -612,6 +616,7 @@ footer button { font: inherit; color: var(--blue); background: none; border: 0; 
       S.ws = null;
       if (was) readOnly();
       if (e.code === 1000 && e.reason === "unlinked") { await forgetKey(); note("This browser is unlinked: its key forgotten"); return connect(); }
+      if (e.code === 1000 && e.reason === "confirmed") return;   // this device confirmed another browser: done here
       if (e.code === 4403) { linkCard("Your room unlinked this browser. Link it again with a new code:", null, null, false); return later(1500); }
       if (e.code === 4410) {   // linked, its workroom not in the lobby (or it left): in again when it is
         const name = kept("lobby:name") || "Your workroom";
@@ -648,7 +653,12 @@ footer button { font: inherit; color: var(--blue); background: none; border: 0; 
         S.code = m.code; S.retries = 0;
         linkCard("This browser is not linked to a workroom yet.", m.code, m.pictures, false);
         break;
-      case "browser_confirming":   // 3.2: a room typed our code; we show its confirmation (its QR code scanned here, or typed)
+      case "browser_confirmed":   // 3.2.2: this device (a phone) scanned a room's QR code for another browser: that one is in
+        $("pairing").hidden = true; $("confirming").hidden = true; $("again").hidden = true; $("confirmed").hidden = false;
+        $("linkwhy").textContent = "Confirmed.";
+        $("cfwhat").textContent = m.agent || "That browser"; $("cfpics").textContent = m.pictures || ""; $("cfoffice").textContent = m.office || "your workroom";
+        break;
+      case "browser_confirming":   // 3.2: a room typed our code; we show its confirmation (its QR code scanned by a phone, or typed)
         $("pairing").hidden = true; $("again").hidden = true; $("confirming").hidden = false;
         $("confwho").textContent = m.office || "Your workroom";
         $("confnote").textContent = `it lasts ${Math.round((m.expires_in || 300) / 60)} minutes`; $("confnote").className = "small";

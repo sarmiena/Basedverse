@@ -694,7 +694,7 @@ async def browser(lob, sk=None, pass_=None, host=None, verify=None):
     await c.send(type="prove", signature=sk.sign(("%s browser\n%s\n%s\n%s" % (P4, host or "127.0.0.1:%d" % lob.port, m["nonce"], key)).encode()).hex())
     while True:
         m = json.loads(await asyncio.wait_for(c.ws.recv(), 2))
-        if m["type"] in ("web_welcome", "browser_code", "error"):
+        if m["type"] in ("web_welcome", "browser_code", "browser_confirmed", "error"):
             return c, m
 
 
@@ -856,12 +856,21 @@ async def t_browsers_confirmed(L):
     cf = await a.expect("browser_confirm")
     await w.expect("browser_confirming")
     x, e = await browser(L, verify=cf["confirm"])
-    check("another browser, with that confirmation (its QR code scanned elsewhere): refused, closed", (e.get("code"), await closed_code(x)), ("no_confirm", 4401))
-    t, wel = await browser(L, sk=w.sk, verify=cf["confirm"])
-    check("a tab of that browser, the QR code's (#verify=): linked, in as A", (wel["type"], wel.get("name")), ("web_welcome", "Conf A"))
-    check("and its waiting tab is in too", (await w.expect("web_welcome"))["name"], "Conf A")
-    await t.close()
+    check("3.2.2: a phone scans the room's QR code (another browser): told what it confirmed, not linked, closed",
+          (e["type"], e.get("office"), e.get("agent"), e.get("pictures"), await closed_code(x)), ("browser_confirmed", "Conf A", "Firefox on Linux", code["pictures"], 1000))
+    check("and the browser that waits for it is in, by itself", (await w.expect("web_welcome"))["name"], "Conf A")
+    x2, e = await browser(L, verify=cf["confirm"])
+    check("the same QR code again: spent", (e.get("code"), await closed_code(x2)), ("no_confirm", 4401))
     await w.close()
+    w1, code = await browser(L)
+    await a.send(type="browser_allow", code=code["code"])
+    cf = await a.expect("browser_confirm", skip=("lobby", "browsers"))
+    await w1.expect("browser_confirming")
+    t, wel = await browser(L, sk=w1.sk, verify=cf["confirm"])
+    check("a tab of that browser itself, the QR code's (#verify=): linked, in as A", (wel["type"], wel.get("name")), ("web_welcome", "Conf A"))
+    check("and its waiting tab is in too", (await w1.expect("web_welcome"))["name"], "Conf A")
+    await t.close()
+    await w1.close()
     w2, code = await browser(L)
     await a.send(type="browser_allow", code=code["code"])
     cf = await a.expect("browser_confirm", skip=("lobby", "browsers"))
