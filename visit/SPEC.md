@@ -783,7 +783,10 @@ own to come back by.
   browser hears who would link it (`browser_confirming`). It shows the confirmation one of two ways: its device's
   camera scans the QR code, which opens the lobby's page in it (the same browser: the same key), and that tab says
   `hello` with `verify`; or the digits are typed on its page (`browser_verify`). Then it is linked, and in (the
-  waiting tab and the QR code's both). Another browser's tab with them is refused (`no_confirm`, 4401); a wrong one
+  waiting tab and the QR code's both). A confirmation is the browser's key's, not one connection's (3.2.1): a waiting
+  tab that comes back after a drop hears `browser_confirming` again, a QR code's tab links with none waiting, and the
+  page takes `#verify=` when only its address's end changes (a phone opening it in the same tab). Another browser's
+  tab with them is refused (`no_confirm`, 4401); a wrong one
   is counted (`bad_confirm`), and at 5 every confirmation of that browser is off (its rooms ask again). A browser has
   at most 3 rooms' confirmations waiting (a code is anyone's who sees it: the confirmation decides).
 - **What the browser does** is the office's: `chat`, `whisper`, `group_say`, every `group_*`, `groups`, `about`,

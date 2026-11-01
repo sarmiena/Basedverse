@@ -224,6 +224,7 @@ footer button { font: inherit; color: var(--blue); background: none; border: 0; 
             <p><b id="confwho">Your workroom</b> would link this browser. To prove it is you: <b>scan the QR code your room shows now</b> with this device's camera, or type its digits:</p>
             <form class="confirm" id="confform"><input id="confdigits" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="000 000"><button class="btn" type="submit">Link</button></form>
             <p class="small" id="confnote">it lasts 5 minutes</p>
+            <p class="small">If your camera opens it in another browser than this one, type the digits here instead.</p>
           </div>
           <p class="small">Or from your room: <b>🌐 Lobby</b> opens this page linked; <b>📱 Phone</b> shows a QR code for your phone's camera.</p>
           <div class="row" id="again" hidden><button class="btn blue" id="newcode" type="button">New code</button></div>
@@ -623,9 +624,9 @@ footer button { font: inherit; color: var(--blue); background: none; border: 0; 
         return yes ? connect(pass, true) : connect();
       }
       if (e.code === 4401 && pass) return later(500);   // that link was spent, or old: as this browser alone
-      if (e.code === 4401 && verify) {   // a room's QR code, opened in a browser not the one waiting for it
-        linkCard(S.confirmWhy || "That QR code is for the browser waiting with a code: scan it with that device's camera, or type its digits there.", null, null, false);
-        return later(4000);
+      if (e.code === 4401 && verify) {   // a room's QR code, opened in a browser not the one waiting for it: said, and left to its person
+        linkCard(S.confirmWhy || "This browser is not the one waiting for that QR code: type the 6 digits your room shows on the page that waits.", null, null, true);
+        return;
       }
       if (e.code === 4429) { linkCard("Your workroom has as many browsers in the lobby as it may: close one.", null, null, true); return; }
       S.retries++;
@@ -716,11 +717,22 @@ footer button { font: inherit; color: var(--blue); background: none; border: 0; 
 
   // A pass in the address (#pass=key.expires.nonce.signature), from your room: it links this browser, once; then gone
   // from the address (and history). Without one: this browser's key alone (linked already, or a code to link it).
-  const hash = /^#pass=([0-9a-f]{64})\.(\d{1,12})\.([0-9a-f]{32})\.([0-9a-f]{128})$/.exec(location.hash);
-  const verify = /^#verify=(\d{6})$/.exec(location.hash);   // 3.2: a room's QR code, scanned by this device's camera
+  const passOf = h => (m => m && { key: m[1], expires: Number(m[2]), nonce: m[3], signature: m[4] })(/^#pass=([0-9a-f]{64})\.(\d{1,12})\.([0-9a-f]{32})\.([0-9a-f]{128})$/.exec(h));
+  const verifyOf = h => (m => m && m[1])(/^#verify=(\d{6})$/.exec(h));   // 3.2: a room's QR code, scanned by this device's camera
+  const pass = passOf(location.hash), verify = verifyOf(location.hash);
   if (location.hash) history.replaceState(null, "", location.pathname + location.search);
   readOnly();
-  connect(hash ? { key: hash[1], expires: Number(hash[2]), nonce: hash[3], signature: hash[4] } : null, false, verify ? verify[1] : null);
+  connect(pass, false, verify);
+  // A pass or a QR code's address opened in this very tab (a phone's browser often reuses a tab of the same page): only
+  // the address's end changes, and the page is not loaded again. Taken here, as at a load.
+  addEventListener("hashchange", () => {
+    const p = passOf(location.hash), v = verifyOf(location.hash);
+    if (!p && !v) return;
+    history.replaceState(null, "", location.pathname + location.search);
+    if (v && S.ws && S.ws.readyState === 1 && !S.me) send({ type: "browser_verify", confirm: v });   // the waiting page itself
+    else if (v) connect(null, false, v);
+    else connect(p);
+  });
 })();
 
 // ---------- the world behind it ----------
