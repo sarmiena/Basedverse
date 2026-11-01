@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Deploy the lobby (lobby/, LOBBY.md) to a server over ssh, and update it later the same way.
 #
-#   bin/deploy-lobby ubuntu@203.0.113.5     get the lobby for the server (one static file: the release of this
-#                                           checkout's version, its checksum checked), copy it there with
-#                                           lobby/deploy/, and run its setup: the lobby and Caddy (TLS) under
-#                                           systemd. Nothing to install here or there. Run again to update.
+#   bin/deploy-lobby ubuntu@203.0.113.5     get the lobby for the server (one static file: the latest release's
+#                                           on GitHub, its checksum checked), copy it there with lobby/deploy/,
+#                                           and run its setup: the lobby and Caddy (TLS) under systemd. Nothing
+#                                           to install here or there. Run again to update.
 #   bin/deploy-lobby                        the same, to the server it last deployed to, with the same key
 #                                           (LOBBY_DEPLOY and LOBBY_DEPLOY_KEY in .env)
 #   --version v3.0.0                        another release's lobby
@@ -87,8 +87,12 @@ case "$REMOTE_DIR" in *[!A-Za-z0-9._-]*) die "LOBBY_DEPLOY_DIR $REMOTE_DIR is no
 case "$target" in *[!A-Za-z0-9@._:-]*) die "$target does not look like user@host" ;; esac
 case "$version" in ""|v[0-9]*.[0-9]*.[0-9]*) ;; *) die "--version $version: a release, like v3.0.0" ;; esac
 [ -n "$build" ] && [ -n "$version" ] && die "--build or --version, not both"
-# The release of this checkout's version, unless told another (or to build): the scripts and the lobby agree.
-[ -n "$build" ] || [ -n "$version" ] || version="v$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/lobby/Cargo.toml" | head -n 1)"
+# The latest release, unless told another (or to build): GitHub's /releases/latest redirects to its tag. The tag is
+# taken first, so the lobby and its SHA256SUMS come from one release even if another is published meanwhile.
+latest_release() {
+  local u; u="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$RELEASES/latest")" || return 1
+  u="${u##*/}"; case "$u" in v[0-9]*.[0-9]*.[0-9]*) printf '%s' "$u" ;; *) return 1 ;; esac
+}
 
 ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
 [ -n "$key" ] && ssh_opts+=(-i "$key")
@@ -112,7 +116,8 @@ arch="$(on_server "$target" uname -m)" || die "could not reach $target (can you 
 case "$arch" in x86_64|amd64) rt=x86_64-unknown-linux-musl ;; aarch64|arm64) rt=aarch64-unknown-linux-musl ;; *) die "$target is $arch: x86_64 or ARM64 only" ;; esac
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/lobby"
-if [ -n "$version" ]; then
+if [ -z "$build" ]; then
+  [ -n "$version" ] || version="$(latest_release)" || die "could not find the latest release ($RELEASES/latest): --version vX.Y.Z, or --build (Docker)"
   echo "getting the lobby of $version for $rt"
   curl -fsSL -o "$work/lobby.tar.gz" "$RELEASES/download/$version/lobby-$rt.tar.gz" \
     || die "$version has no lobby-$rt.tar.gz (not released yet? $RELEASES): wait for it, or --build (Docker) from this checkout"
@@ -120,9 +125,9 @@ if [ -n "$version" ]; then
   (cd "$work" && grep " lobby-$rt.tar.gz\$" SHA256SUMS | sed "s# lobby-$rt.tar.gz\$# lobby.tar.gz#" | sha256sum -c --quiet -) || die "its checksum does not match"
   tar -xzf "$work/lobby.tar.gz" -C "$work/lobby" lobby
 else
-  command -v docker >/dev/null 2>&1 || die "--build takes Docker here (without it: the release's lobby, the default)"
+  command -v docker >/dev/null 2>&1 || die "--build takes Docker here (without it: the latest release's lobby, the default)"
   here_arch="$(uname -m)"; case "$here_arch" in arm64) here_arch=aarch64 ;; amd64) here_arch=x86_64 ;; esac
-  [ "${rt%%-*}" = "$here_arch" ] || die "$target is ${rt%%-*}, this machine $here_arch: --build only for a server like this machine (the release's lobby: the default)"
+  [ "${rt%%-*}" = "$here_arch" ] || die "$target is ${rt%%-*}, this machine $here_arch: --build only for a server like this machine (the latest release's lobby: the default)"
   echo "building the lobby for $rt (Docker; the first build takes a few minutes)"
   docker build -q -f "$ROOT/lobby/Dockerfile.dist" --build-arg TARGET="$rt" --target out --output "type=local,dest=$work/lobby" "$ROOT" >/dev/null
 fi

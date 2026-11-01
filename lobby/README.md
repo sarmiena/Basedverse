@@ -48,9 +48,9 @@ From your machine, in this repository (nothing to install, here or on the server
 LOBBY_DOMAIN=lobby.example.org bin/deploy-lobby ubuntu@203.0.113.5     # -i ~/.ssh/key.pem if ssh needs it
 ```
 
-It takes the release's `lobby` for the server's architecture (the release of this checkout's version, its checksum
-checked; `--version` another; `--build` one built from this checkout, with Docker), copies it there with
-`deploy/`, and runs `deploy/setup.sh`, which:
+It takes the latest release's `lobby` on GitHub for the server's architecture (its checksum checked; `--version
+v3.0.0` another release's; `--build` one built from this checkout, with Docker), copies it there with this
+checkout's `deploy/`, and runs `deploy/setup.sh`, which:
 
 1. stops a lobby of before, if there is one (Visit 2.x's: Python, Caddy and coturn in Docker);
 2. installs the lobby (`/usr/local/bin/basedverse-lobby`) and Caddy (a pinned release, its checksum checked), and a
@@ -79,7 +79,7 @@ kept in this repository's `.env`) is kept on the server:
 
 | command | what it does |
 |---|---|
-| `bin/deploy-lobby` | update it: the lobby of this checkout's release, the same settings; its groups and bans kept |
+| `bin/deploy-lobby` | update it: the latest release's lobby, the same settings; its groups and bans kept |
 | `bin/deploy-lobby --status` | its services, and whether `wss://…/health` answers from here |
 | `bin/deploy-lobby --logs` | the lobby's and Caddy's logs, followed (Ctrl-C stops) |
 | `bin/deploy-lobby --down` | stop it |
