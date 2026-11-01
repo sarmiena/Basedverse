@@ -875,6 +875,28 @@ async def t_browsers_confirmed(L):
     await w2.send(type="browser_verify", confirm=cf["confirm"])
     check("then even the right one is refused (its rooms ask again)", (await w2.expect("error", skip=("browser_confirming",)))["code"], "bad_confirm")
     await w2.close()
+    # 3.2.1: a confirmation is its browser's (its key's), not one connection's: a phone that drops its waiting tab
+    # (its camera opened, say) finds it again; a QR code's tab links with no tab waiting at all.
+    w3, code = await browser(L)
+    await a.send(type="browser_allow", code=code["code"])
+    cf = await a.expect("browser_confirm", skip=("lobby", "browsers"))
+    await w3.expect("browser_confirming")
+    await w3.close()
+    await asyncio.sleep(0.2)
+    w4, code4 = await browser(L, sk=w3.sk)
+    again = await w4.expect("browser_confirming")
+    check("its waiting tab back after a drop: a new code, and the confirmation still asked", (code4["type"], again["office"]), ("browser_code", "Conf A"))
+    await w4.send(type="browser_verify", confirm=cf["confirm"])
+    check("shown then: linked", (await w4.expect("web_welcome"))["name"], "Conf A")
+    await w4.close()
+    w5, code = await browser(L)
+    await a.send(type="browser_allow", code=code["code"])
+    cf = await a.expect("browser_confirm", skip=("lobby", "browsers"))
+    await w5.close()
+    await asyncio.sleep(0.2)
+    t5, wel = await browser(L, sk=w5.sk, verify=cf["confirm"])
+    check("the QR code's tab, no tab of it waiting any more: linked", (wel["type"], wel.get("name")), ("web_welcome", "Conf A"))
+    await t5.close()
     for c in (a, b):
         await c.send(type="bye")
 

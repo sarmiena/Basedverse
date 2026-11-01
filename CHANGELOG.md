@@ -10,6 +10,18 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v3.2.1 — 2026-11-01 — the room's QR code links the browser that scans it, however the phone opens it
+
+- **Scanning your room's QR code now finishes the link** ([visit/SPEC.md](visit/SPEC.md) 6.11). In 3.2.0 it could do
+  nothing on a phone: its browser often opens the scanned address in the tab already showing the lobby's page (only
+  the address's end changes, and the page did not look), or drops that tab's connection while the camera is open
+  (and the lobby forgot what it waited for). Now the page takes a changed address as it takes a load, and a
+  confirmation belongs to the browser (its key), not to one connection: the tab back after a drop is asked again,
+  and the QR code's own tab links with no other tab waiting.
+- **Opened in another browser** (the camera's default, not the one waiting), the page says so and stays: type the
+  6 digits on the page that waits.
+- **The lobby** (`lobby` 3.2.1); deploy it (`bin/deploy-lobby`). Visit is unchanged but for its version.
+
 ## v3.2.0 — 2026-11-01 — the lobby's page as a world browser; linking a browser by its code, confirmed both ways
 
 - **A code typed in your room no longer links the browser by itself** ([visit/SPEC.md](visit/SPEC.md) 6.11, 3,

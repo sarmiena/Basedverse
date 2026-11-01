@@ -159,10 +159,18 @@ struct Browser {
     office: Option<String>,
     code: Option<String>,
     gone: bool,
-    /// 3.2, waiting with a code: the confirmations its rooms show (at most 3), and the wrong ones it has shown.
+}
+
+/// What waits for one browser key to show (3.2.1: its key's, not one connection's, so a tab the QR code opens, or the
+/// waiting tab back after its phone dropped it, finds it): its rooms' confirmations (at most 3), its wrong ones.
+#[derive(Default)]
+struct Awaiting {
     confirms: Vec<Confirm>,
     wrong: u8,
 }
+
+/// Browser keys with confirmations waiting, at most.
+const MOST_AWAITING: usize = 5000;
 
 /// A room's confirmation of a waiting browser (3.2): its digits, the office, until when.
 struct Confirm {
@@ -285,6 +293,8 @@ pub struct Core {
     browsers: HashMap<u64, Browser>,
     pending: HashMap<String, u64>,
     pending_from: HashMap<std::net::IpAddr, usize>,
+    /// 3.2.1: confirmations waiting for a browser key to show them.
+    awaiting: HashMap<String, Awaiting>,
     /// Passwords being hashed now; and each world's wrong passwords, lately (by its name in lower case).
     hashing: usize,
     wrong: HashMap<String, VecDeque<Instant>>,
@@ -338,7 +348,7 @@ impl Core {
         Core {
             cfg, limits3, limits4, me, offices: HashMap::new(), by_name: HashMap::new(), by_key: HashMap::new(), resumes: HashMap::new(),
             knocks: HashMap::new(), knock_order: Vec::new(), visits: HashMap::new(), visit_order: Vec::new(), bans, groups, lie: None, replying: None,
-            passes: HashMap::new(), links, browsers: HashMap::new(), pending: HashMap::new(), pending_from: HashMap::new(), hashing: 0,
+            passes: HashMap::new(), links, browsers: HashMap::new(), pending: HashMap::new(), pending_from: HashMap::new(), awaiting: HashMap::new(), hashing: 0,
             wrong: HashMap::new(),
         }
     }
@@ -419,6 +429,7 @@ impl Core {
                     }
                     self.pending.clear();
                     self.pending_from.clear();
+                    self.awaiting.clear();
                     self.wrong.clear();
                     self.groups.reset();
                     self.bans.reset();
@@ -736,15 +747,15 @@ impl Core {
                 Some(office)
             }
             None if verify.is_some() => {
-                // 3.2: a tab its room's QR code opened (`#verify=`), in the browser whose tab waits with a code: that
-                // room's confirmation, shown, links it, and both tabs are in.
-                let Some(waiting) = self.browsers.iter().find(|(_, b)| b.key == key && b.code.is_some() && !b.gone).map(|(id, _)| *id) else {
-                    return refuse("no_confirm", "nothing waits to be linked in this browser: open the lobby's page here, and type its code in your room".into(),
-                                  4401, "nothing to confirm");
-                };
+                // 3.2: a tab its room's QR code opened (`#verify=`): its room's confirmation of this browser's key,
+                // shown, links it; this tab and any of it waiting are in.
+                if !self.awaiting.contains_key(&key) {
+                    return refuse("no_confirm", "This browser is not the one waiting for that QR code (your camera may have opened it in another browser): \
+                                   type the 6 digits your room shows on the page that waits, or link this browser with its own code".into(), 4401, "nothing to confirm");
+                }
                 let id = conn.id;
-                self.browsers.insert(id, Browser { conn: conn.clone(), key, agent, ip, office: None, code: None, gone: false, confirms: vec![], wrong: 0 });
-                let on = self.verify(waiting, verify, Some(id));
+                self.browsers.insert(id, Browser { conn: conn.clone(), key: key.clone(), agent, ip, office: None, code: None, gone: false });
+                let on = self.verify(&key, verify, &conn);
                 if !on {
                     self.browsers.remove(&id);
                     conn.close(4401, "not confirmed");
@@ -754,7 +765,7 @@ impl Core {
             None => self.links.office(&key),
         };
         let id = conn.id;
-        self.browsers.insert(id, Browser { conn: conn.clone(), key: key.clone(), agent, ip, office: None, code: None, gone: false, confirms: vec![], wrong: 0 });
+        self.browsers.insert(id, Browser { conn: conn.clone(), key: key.clone(), agent, ip, office: None, code: None, gone: false });
         match office {
             Some(office) => match self.online(&office).map(str::to_string) {
                 Some(oid) => {
@@ -786,6 +797,11 @@ impl Core {
                 *self.pending_from.entry(from).or_insert(0) += 1;
                 self.browsers.get_mut(&id).expect("there").code = Some(code.clone());
                 conn.send(&FromLobby::BrowserCode { code: code.clone(), pictures: proto::pictures(&key), expires_in: proto::PASS_TTL });
+                // A confirmation already waiting for this browser (its tab back after its phone dropped it, say): asked again.
+                if let Some(c) = self.awaiting.get(&key).and_then(|a| a.confirms.iter().filter(|c| c.until > Instant::now()).last()) {
+                    let name = self.offices.get(&c.oid).map(|o| o.name.clone()).unwrap_or_default();
+                    conn.send(&FromLobby::BrowserConfirming { office: name, expires_in: c.until.saturating_duration_since(Instant::now()).as_secs() });
+                }
                 let me = self.me.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(proto::PASS_TTL)).await;
@@ -904,8 +920,8 @@ impl Core {
                 return c.close(1000, "bye");
             }
             if t == "browser_verify" && b.code.is_some() {   // 3.2: its room's confirmation, typed on its page
-                let confirm = m.get("confirm").and_then(Value::as_str).map(str::to_string);
-                self.verify(id, confirm, None);
+                let (key, confirm) = (b.key.clone(), m.get("confirm").and_then(Value::as_str).map(str::to_string));
+                self.verify(&key, confirm, &c);
                 return;
             }
             return c.send(&FromLobby::error("not_linked", "this browser is not linked yet: type its code in your room (Visit panel: Link a browser)", Some(&t)));
@@ -942,43 +958,48 @@ impl Core {
         self.replying = None;
     }
 
-    /// A waiting browser shows a confirmation (3.2): typed on its page (`browser_verify`), or by a tab of it its room's
-    /// QR code opened (`via`). One of its rooms' that still waits: linked to that office, and in (that tab too). A wrong
-    /// one is counted: at CONFIRM_TRIES, every confirmation of it is off (its rooms ask again).
-    fn verify(&mut self, id: u64, secret: Option<String>, via: Option<u64>) -> bool {
+    /// A browser shows a confirmation (3.2): typed on its page (`browser_verify`), or by a tab of it its room's QR code
+    /// opened (`hello` with `verify`), on `to`. One of its rooms' that still waits for its key: linked to that office,
+    /// and every tab of it waiting is in. A wrong one is counted: at CONFIRM_TRIES, every confirmation of it is off.
+    fn verify(&mut self, key: &str, secret: Option<String>, to: &Conn) -> bool {
         let now = Instant::now();
-        let asker = via.and_then(|v| self.browsers.get(&v)).map(|b| b.conn.clone());
-        let Some(b) = self.browsers.get_mut(&id).filter(|b| !b.gone && b.code.is_some()) else { return false };
-        let to = asker.unwrap_or_else(|| b.conn.clone());
-        b.confirms.retain(|c| c.until > now);
-        let hit = secret.as_deref().and_then(proto::confirm_of).and_then(|s| b.confirms.iter().position(|c| c.secret == s));
+        let Some(a) = self.awaiting.get_mut(key) else {
+            to.send(&FromLobby::error("bad_confirm", "no confirmation waits for this browser now: in your room, Link a browser and its code again", Some("browser_verify")));
+            return false;
+        };
+        a.confirms.retain(|c| c.until > now);
+        let hit = secret.as_deref().and_then(proto::confirm_of).and_then(|s| a.confirms.iter().position(|c| c.secret == s));
         let Some(i) = hit else {
-            b.wrong = b.wrong.saturating_add(1);
-            let off = b.wrong >= proto::CONFIRM_TRIES || b.confirms.is_empty();
-            if b.wrong >= proto::CONFIRM_TRIES {
-                b.confirms.clear();
+            a.wrong = a.wrong.saturating_add(1);
+            let off = a.wrong >= proto::CONFIRM_TRIES || a.confirms.is_empty();
+            if off {
+                self.awaiting.remove(key);
             }
-            let text = if b.confirms.is_empty() && off { "no confirmation waits for this browser now: in your room, Link a browser and its code again" }
-                       else { "that is not what your room shows" };
+            let text = if off { "no confirmation waits for this browser now: in your room, Link a browser and its code again" } else { "that is not what your room shows" };
             to.send(&FromLobby::error("bad_confirm", text, Some("browser_verify")));
             return false;
         };
-        let c = b.confirms.remove(i);
-        b.confirms.clear();
-        b.wrong = 0;
-        let (key, agent) = (b.key.clone(), b.agent.clone());
+        let c = a.confirms.remove(i);
+        self.awaiting.remove(key);
         if !self.offices.get(&c.oid).is_some_and(|o| o.key.as_deref() == Some(c.okey.as_str())) {
             to.send(&FromLobby::error("not_in_lobby", "the workroom that would link this browser has left the lobby", Some("browser_verify")));
             return false;
         }
-        for k in self.links.add(&key, &c.okey, &agent, self.limits4.browsers.unwrap_or(10)) {
+        let agent = self.browsers.get(&to.id).map(|b| b.agent.clone()).unwrap_or_default();
+        for k in self.links.add(key, &c.okey, &agent, self.limits4.browsers.unwrap_or(10)) {
             self.detach_key(&k, "unlinked: its workroom linked a newer browser");
         }
-        let waiting = self.attach(id, &c.oid);
-        match via {
-            Some(v) => self.attach(v, &c.oid),
-            None => waiting,
+        // Every tab of this browser not in yet (the one that showed it first): in, as that office.
+        let mut tabs: Vec<u64> = self.browsers.iter().filter(|(_, b)| b.key == key && b.office.is_none() && !b.gone).map(|(id, _)| *id).collect();
+        tabs.sort_by_key(|id| *id != to.id);
+        let mut on = false;
+        for id in tabs {
+            let ok = self.attach(id, &c.oid);
+            if id == to.id {
+                on = ok;
+            }
         }
+        on
     }
 
     /// An office's own: the browser waiting with a code (`allow`: 3.2, a confirmation for it to show), its linked
@@ -1014,13 +1035,23 @@ impl Core {
                 let secret = six_digits();
                 let key = b.key.clone();
                 let name = self.offices[oid].name.clone();
-                let b = self.browsers.get_mut(&id).expect("there");
-                b.confirms.retain(|c| c.oid != oid);
-                if b.confirms.len() >= 3 {
-                    b.confirms.remove(0);
+                let now = Instant::now();
+                if !self.awaiting.contains_key(&key) && self.awaiting.len() >= MOST_AWAITING {
+                    self.awaiting.retain(|_, a| a.confirms.iter().any(|c| c.until > now));
+                    if self.awaiting.len() >= MOST_AWAITING {
+                        return self.error(oid, "busy", "too many browsers are being linked: try again in a while", Some(r));
+                    }
                 }
-                b.confirms.push(Confirm { secret: secret.clone(), oid: oid.to_string(), okey: okey.clone(), until: Instant::now() + Duration::from_secs(proto::CONFIRM_TTL) });
-                b.conn.send(&FromLobby::BrowserConfirming { office: name, expires_in: proto::CONFIRM_TTL });
+                let a = self.awaiting.entry(key.clone()).or_default();
+                a.confirms.retain(|c| c.oid != oid && c.until > now);
+                if a.confirms.len() >= 3 {
+                    a.confirms.remove(0);
+                }
+                a.confirms.push(Confirm { secret: secret.clone(), oid: oid.to_string(), okey: okey.clone(), until: now + Duration::from_secs(proto::CONFIRM_TTL) });
+                // Every tab of it waiting hears who would link it.
+                for t in self.browsers.values().filter(|t| t.key == key && t.office.is_none() && !t.gone) {
+                    t.conn.send(&FromLobby::BrowserConfirming { office: name.clone(), expires_in: proto::CONFIRM_TTL });
+                }
                 self.answer(oid, &FromLobby::BrowserConfirm { code, key, confirm: secret, expires_in: proto::CONFIRM_TTL });
             }
             ToLobby::BrowserRevoke { key } => {
