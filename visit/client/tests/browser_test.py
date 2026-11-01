@@ -1320,6 +1320,11 @@ async def run(a, b, url):
         check("🔈 clicked: off in this browser (🔇), and the loop stopped", await a.until("!v.roomSounds && v._loops.size === 0 && document.querySelector('.visit-panel button[data-v=sounds]').textContent === '🔇'"), True)
         await a.js("document.querySelector('.visit-panel button[data-v=sounds]').click()")
         check("and on again: the loop back", await a.until("v.roomSounds && [...v._loops.values()].some(L => L.kind === 'hum' && !!L.src)", 15), True)
+        check("B, at home in its own room, hears its hum too (Visit plays a room's sounds for its own user)", await b.until("[...v._loops.values()].some(L => L.kind === 'hum' && !!L.src)", 15), True)
+        await b.js("v.ownSounds(false)")
+        check("v.ownSounds(false): B's page plays its own room's itself; Visit's loop there stops, A's goes on", (await b.until("v._loops.size === 0"),
+              await a.js("[...v._loops.values()].some(L => L.kind === 'hum' && !!L.src)")), (True, True))
+        await b.js("v.ownSounds(true)")
         await b.js("room.scene.remove(room.scene.getObjectByName('hummer'))")
         check("B takes the humming thing away: A's loop stops", await a.until("![...v._loops.values()].some(L => L.kind === 'hum')", 15), True)
         await a.js("v.setTarget({ kind: 'figure', id: 'guide' })")

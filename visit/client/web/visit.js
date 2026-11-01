@@ -751,7 +751,7 @@
       // 3.4 (#36): a room's own sounds, as this page plays them: on or off (the panel's 🔈, kept in this browser); the
       // loops playing (by room and object), the one-shots, the clips decoded (by id).
       this._roomSoundsOn = (() => { try { return localStorage.getItem("visit:room-sounds") !== "off"; } catch (e) { return true; } })();
-      this._loops = new Map(); this._shots = []; this._buffers = new Map(); this._shotsPlayed = 0;
+      this._loops = new Map(); this._shots = []; this._buffers = new Map(); this._shotsPlayed = 0; this._ownSounds = true;
       this._targeting = true;  //   and whether Visit picks it itself, the room's way (v.targeting(false): your page does)
       this.knocks = [];        // on your door: { id, from, message, until, link }
       this.knocking = [];      // yours, waiting: { id, to, link }
@@ -2520,11 +2520,14 @@
       if (!this._roomSoundsOn) this._soundStop();
       this._changed();
     }
+    // Your own room's sounds on this page (true, the default), or not (false): your page plays them itself, its own way
+    // (a mixer, an echo), and Visit plays them for your visitors only. Every other room's, as ever. Not kept.
+    ownSounds(on) { this._ownSounds = on !== false; }
     // The room your user is in, for its sounds: its scene (your own, at home on a page that hosts it), its sounds, how many
-    // metres one of the frame's units is, and the channel its clips come by.
+    // metres one of the frame's units is, and the channel its clips come by. None: your own, if your page plays it itself.
     _soundRoom() {
       const r = this._room();
-      if (!r.ears) return null;
+      if (!r.ears || (!this._ownSounds && this._roomKey() === (this.key || ""))) return null;
       if (r.s) return { r, s: r.s, table: r.s.sounds || new Map(), k: r.k, channel: r.w ? r.w.channel : null, key: r.w ? "c" + r.w.channel : "home" };
       const hk = this._hooks;
       if (!hk) return null;

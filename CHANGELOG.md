@@ -21,7 +21,8 @@ keep the names, so offices on different versions still meet and visit each other
   hears about the same part. **One-shots**: `v.soundAt(objectOrPoint, kind, { volume, ref, far })`, sent to everyone
   in the room (10 a second at most). Files, never code: a room that synthesizes renders each sound to a file once
   (`OfflineAudioContext`). The panel's 🔈 turns a room's sounds off or on in that browser (`v.setRoomSounds`), apart
-  from voices. Nothing goes quieter under voices yet.
+  from voices. A page that plays its own room's sounds itself (its own synth, a mixer, an echo) calls
+  `v.ownSounds(false)`: Visit plays them for its visitors only. Nothing goes quieter under voices yet.
 - The lobby is 3.3.0's (only its version): no new deploy.
 
 **What an integration does:** nothing, unless your room has sounds of its own. With some, step by step:
@@ -33,6 +34,7 @@ keep the names, so offices on different versions still meet and visit each other
    one heard everywhere in your room.
 3. Play the moments once: `v.soundAt(objectOrPoint, "shot", { volume, ref, far })`.
 4. Your own page's sound code for those can go: Visit plays them for your user too (the panel's 🔈 turns them off).
+   Or keep it, and call `v.ownSounds(false)` on your user's page: Visit plays your room's sounds for your visitors only.
 
 ## v3.3.0 — 2026-11-01 — worlds are who may come in; you pick whose rooms are round yours; ignore people and figures in chat; targets and lines meant for a room's figures
 
