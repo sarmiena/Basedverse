@@ -440,7 +440,7 @@ pub async fn run_with(a: Args, stop: impl std::future::Future<Output = ()> + Sen
     tokio::spawn(db::run(database, client, db_rx, core_tx.clone()));
     let away = saved.away;
     let hello = lobby::Hello { name: a.name.clone(), sim, status: "available".into(), max_visitors: a.max_visitors,
-                               about: saved.about.clone(), public: saved.public };
+                               about: saved.about.clone() };
     match a.lobby.clone() {
         Some(url) => {
             tokio::spawn(lobby::run(url, saved.key.clone(), hello, lobby_rx, core_tx.clone(), away));
@@ -526,7 +526,7 @@ pub async fn run_with(a: Args, stop: impl std::future::Future<Output = ()> + Sen
 
     println!("{}", json!({ "ready": true, "port": a.port, "version": VERSION, "proto": page::PROTO }));
     let lands = land::Lands::open(Some(cache));
-    let code = core::Core::new(lobby_tx, core_tx, relays, a.max_visitors, a.idle_exit, saved, fresh, Some(state_file), lands, db_tx, loaded).run(core_rx).await;
+    let code = core::Core::new(a.lobby.clone(), lobby_tx, core_tx, relays, a.max_visitors, a.idle_exit, saved, fresh, Some(state_file), lands, db_tx, loaded).run(core_rx).await;
     let _ = engine_stop.send(true);
     if let Some(t) = engine_task {
         let _ = t.await;

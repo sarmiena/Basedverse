@@ -13,11 +13,27 @@ use std::{
 
 use axum::extract::ws::Utf8Bytes;
 use lobby_proto::{self as proto, About, Ban, FromLobby, Knocker, Knocking, Limits, LinkTo, Office, Peer, Sayer, Sim, ToLobby};
+
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
-use crate::groups::Groups;
+use crate::groups::{Groups, Joining, Links};
+
+/// Browsers an office may have in its lobby at once (3.1: linked browsers).
+const WEB_SESSIONS: usize = 4;
+/// Browsers waiting with a pairing code, at most: lobby-wide, and from one address (an IPv6 one: its /64).
+const MOST_PENDING: usize = 5000;
+const PENDING_PER_IP: usize = 4;
+/// Web passes remembered as used (until they expire), at most.
+const MOST_PASSES: usize = 20_000;
+/// Passwords tried or set (each a slow hash), and pairing codes typed, a minute, by one office.
+const PASSWORDS_A_MINUTE: usize = 5;
+const CODES_A_MINUTE: usize = 5;
+/// Passwords hashed at once, at most (each Argon2id: some 19 MiB and a processor's tens of milliseconds); and wrong
+/// passwords one world takes an hour, from everyone together (keys are free to make: a world's guard is its own).
+const HASHING_AT_ONCE: usize = 4;
+const WRONG_PER_WORLD_HOUR: usize = 30;
 
 /// What a connection is told to do.
 pub enum Out {
@@ -78,6 +94,20 @@ pub enum Ev {
     Msg { conn: u64, office: String, m: Value },
     /// A connection closed: its office (if this is still its connection) is held for the resume window.
     Closed { conn: u64, office: String },
+    /// 3.1: a browser, its own key proved (conn.rs), and the web pass it brought, if any (the office's key, until
+    /// when, its nonce: its signature checked already). The reply: whether its connection goes on (linked, or waiting
+    /// with a pairing code), else refused (said, and closed, on `conn`).
+    /// `switch`: the page agreed to a pass that links this browser, linked to another office, to the pass's instead.
+    /// `verify` (3.2): a tab its room's QR code opened, showing that room's confirmation of the browser's waiting tab.
+    /// `forget` (3.2.3): the browser unlinks itself, its office in the lobby or not.
+    BrowserHello { conn: Conn, key: String, agent: String, ip: std::net::IpAddr, pass: Option<(String, u64, String)>, switch: bool, verify: Option<String>,
+                   forget: bool, reply: oneshot::Sender<bool> },
+    BrowserMsg { conn: u64, m: Value },
+    BrowserClosed { conn: u64 },
+    /// A pairing code's time is up.
+    CodeExpired(String),
+    /// A password hashed, or checked, off this task (slow on purpose): the message it was for, again, with it.
+    Password { oid: String, key: String, replying: Option<Conn>, m: ToLobby, pw: Pw },
     KnockExpired(String),
     HoldExpired(String, u64),
     /// For /health: the offices in the lobby, every version.
@@ -92,6 +122,8 @@ pub enum Ev {
     DebugDrop(String, oneshot::Sender<bool>),
     DebugReset(oneshot::Sender<()>),
     DebugLie(Option<String>),
+    /// 3.4.3: the lobby as it is now, to everyone, held back since the last went out (ANNOUNCE_EVERY).
+    Announce,
 }
 
 /// What a run is given.
@@ -105,6 +137,78 @@ pub struct Config {
     pub admins: HashSet<String>,
     pub title: Option<String>,
     pub motd: Option<String>,
+    /// The members a world takes.
+    pub world_size: usize,
+}
+
+/// A password's work, done off the core's task: hashed (none: it could not be), or checked (against this hash).
+pub enum Pw {
+    Hashed(Option<String>),
+    Right(bool, String),
+}
+
+enum PwJob {
+    Hash(String),
+    Check(String, String),
+}
+
+/// A browser's connection (3.1): its key, what it says it is, where from, and whom it speaks for, once linked (else
+/// its code); `gone`: unlinked, closing: nothing more of it is taken.
+struct Browser {
+    conn: Conn,
+    key: String,
+    agent: String,
+    ip: std::net::IpAddr,
+    office: Option<String>,
+    code: Option<String>,
+    gone: bool,
+}
+
+/// What waits for one browser key to show (3.2.1: its key's, not one connection's, so a tab the QR code opens, or the
+/// waiting tab back after its phone dropped it, finds it): its rooms' confirmations (at most 3), its wrong ones.
+#[derive(Default)]
+struct Awaiting {
+    confirms: Vec<Confirm>,
+    wrong: u8,
+}
+
+/// Browser keys with confirmations waiting, at most.
+const MOST_AWAITING: usize = 5000;
+/// Scans of a room's QR code that match nothing, from one address (an IPv6 one: its /64), in 10 minutes, at most.
+const SCAN_MISSES: usize = 10;
+
+/// A room's confirmation of a waiting browser (3.2): its digits, the office, until when.
+struct Confirm {
+    secret: String,
+    oid: String,
+    okey: String,
+    until: Instant,
+}
+
+/// 6 digits, each as likely (4,294,000,000 is a whole number of millions).
+fn six_digits() -> String {
+    loop {
+        let mut b = [0u8; 4];
+        getrandom::fill(&mut b).expect("the OS's random numbers");
+        let n = u32::from_le_bytes(b);
+        if n < 4_294_000_000 {
+            return format!("{:06}", n % 1_000_000);
+        }
+    }
+}
+
+/// An address as pairing codes count it: an IPv4 one, or an IPv6 one's /64 (one host has a whole /64).
+fn bucket(ip: std::net::IpAddr) -> std::net::IpAddr {
+    match ip {
+        std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.into(),
+            None => {
+                let s = v6.segments();
+                std::net::Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0).into()
+            }
+        },
+        v4 => v4,
+    }
 }
 
 const STATUSES: [&str; 2] = ["available", "busy"];
@@ -130,7 +234,6 @@ struct Session {
     chat: bool,
     whisper: bool,
     about: Option<About>,
-    public: bool,
     admin: bool,
     said: VecDeque<Instant>,
     visiting: Option<String>,
@@ -139,11 +242,15 @@ struct Session {
     watched: HashSet<String>,
     knocked: VecDeque<Instant>,
     knocked_watch: VecDeque<Instant>,
-    /// When it last made groups (a few an hour at most).
+    /// When it last made worlds (a few an hour at most), tried or set a password, typed a pairing code.
     made: VecDeque<Instant>,
+    passwords: VecDeque<Instant>,
+    codes: VecDeque<Instant>,
     /// Counts holds: a hold's expiry that finds another number was cancelled.
     held: u64,
     holding: bool,
+    /// 3.1: its linked browsers in the lobby now (the lobby's page, as this office).
+    web: Vec<Conn>,
 }
 
 struct Knock {
@@ -182,13 +289,57 @@ pub struct Core {
     bans: crate::groups::Bans,
     groups: Groups,
     lie: Option<String>,
+    /// The connection whose message is being handled, when a browser's: its refusals are said to it.
+    replying: Option<Conn>,
+    /// Web passes used (nonce, until when): each once.
+    passes: HashMap<String, u64>,
+    /// 3.1: linked browsers (kept), browsers connected (by connection), and those waiting by their pairing codes.
+    links: Links,
+    browsers: HashMap<u64, Browser>,
+    pending: HashMap<String, u64>,
+    pending_from: HashMap<std::net::IpAddr, usize>,
+    /// 3.2.1: confirmations waiting for a browser key to show them.
+    awaiting: HashMap<String, Awaiting>,
+    /// 3.2.2: scans that matched no confirmation, lately, by address.
+    scan_misses: HashMap<std::net::IpAddr, VecDeque<Instant>>,
+    /// Passwords being hashed now; and each world's wrong passwords, lately (by its name in lower case).
+    hashing: usize,
+    wrong: HashMap<String, VecDeque<Instant>>,
+    /// 3.4.3: when the lobby last went out to everyone, and whether one is held back to go when ANNOUNCE_EVERY is up.
+    announced: Option<Instant>,
+    announce_held: bool,
 }
+
+/// 3.4.3: the lobby goes out to everyone at most this often (each time it is the whole list, to every office and
+/// browser): what changes in between goes out together, once, when it is up. A connection that keeps changing its
+/// status (or anything else everyone sees) costs the lobby no more than one that does it four times a second.
+const ANNOUNCE_EVERY: Duration = Duration::from_millis(250);
 
 /// `n` random bytes, as lower-case hex.
 pub fn hex(n: usize) -> String {
     let mut b = vec![0u8; n];
     getrandom::fill(&mut b).expect("the OS's random numbers");
     b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// A pairing code: 8 of `CODE_ALPHABET` (32 of them: every byte maps evenly).
+fn pairing_code() -> String {
+    let mut b = [0u8; 8];
+    getrandom::fill(&mut b).expect("the OS's random numbers");
+    b.iter().map(|x| proto::CODE_ALPHABET[(x % 32) as usize] as char).collect()
+}
+
+/// Whether one more of these may be done now: at most `most` a minute.
+fn within(times: &mut VecDeque<Instant>, most: usize) -> bool {
+    let now = Instant::now();
+    while times.front().is_some_and(|t| now.duration_since(*t) > Duration::from_secs(60)) {
+        times.pop_front();
+    }
+    if times.len() >= most {
+        return false;
+    }
+    times.push_back(now);
+    true
 }
 
 pub fn now_unix() -> u64 {
@@ -205,12 +356,15 @@ fn ref_of(m: &Value) -> String {
 }
 
 impl Core {
-    pub fn new(cfg: Config, me: mpsc::UnboundedSender<Ev>, bans: crate::groups::Bans, groups: Groups) -> Core {
+    pub fn new(cfg: Config, me: mpsc::UnboundedSender<Ev>, bans: crate::groups::Bans, groups: Groups, links: Links) -> Core {
         let (mut limits3, mut limits4) = (Limits::v3(cfg.knock_ttl), Limits::v4(cfg.knock_ttl));
         (limits3.resume, limits4.resume) = (cfg.resume, cfg.resume);
+        limits4.group_members = Some(cfg.world_size);
         Core {
             cfg, limits3, limits4, me, offices: HashMap::new(), by_name: HashMap::new(), by_key: HashMap::new(), resumes: HashMap::new(),
-            knocks: HashMap::new(), knock_order: Vec::new(), visits: HashMap::new(), visit_order: Vec::new(), bans, groups, lie: None,
+            knocks: HashMap::new(), knock_order: Vec::new(), visits: HashMap::new(), visit_order: Vec::new(), bans, groups, lie: None, replying: None,
+            passes: HashMap::new(), links, browsers: HashMap::new(), pending: HashMap::new(), pending_from: HashMap::new(), awaiting: HashMap::new(), scan_misses: HashMap::new(), hashing: 0,
+            wrong: HashMap::new(), announced: None, announce_held: false,
         }
     }
 
@@ -223,6 +377,30 @@ impl Core {
                 }
                 Ev::Msg { conn, office, m } => self.msg(conn, &office, m),
                 Ev::Closed { conn, office } => self.closed(conn, &office),
+                Ev::BrowserHello { conn, key, agent, ip, pass, switch, verify, forget, reply } => {
+                    let on = if forget { self.browser_unlink(conn, key) } else { self.browser_hello(conn, key, agent, ip, pass, switch, verify) };
+                    let _ = reply.send(on);
+                }
+                Ev::BrowserMsg { conn, m } => self.browser_msg(conn, m),
+                Ev::BrowserClosed { conn } => self.browser_closed(conn),
+                Ev::CodeExpired(code) => {
+                    if let Some(id) = self.pending.get(&code).copied() {
+                        self.unpend(id);
+                        let c = &self.browsers[&id].conn;
+                        c.send(&FromLobby::error("code_expired", "this code's time is up: ask for a new one", None));
+                        c.close(4408, "code expired");
+                    }
+                }
+                Ev::Password { oid, key, replying, m, pw } => {
+                    self.hashing = self.hashing.saturating_sub(1);
+                    // Its office still the same, and, a browser's, that browser still in as it (not unlinked meanwhile).
+                    let asker = replying.as_ref().is_none_or(|c| self.browsers.get(&c.id).is_some_and(|b| !b.gone && b.office.as_deref() == Some(oid.as_str())));
+                    if asker && self.offices.get(&oid).is_some_and(|o| o.key.as_deref() == Some(key.as_str())) {
+                        self.replying = replying;
+                        self.on_group(&oid, m, Some(pw));
+                        self.replying = None;
+                    }
+                }
                 Ev::KnockExpired(kid) => self.knock_expired(&kid),
                 Ev::HoldExpired(oid, n) => {
                     if self.offices.get(&oid).is_some_and(|o| o.holding && o.held == n) {
@@ -245,7 +423,7 @@ impl Core {
                         "watching": o.watching.len(), "watched": o.watched.len() })).collect();
                     let by_name: serde_json::Map<String, Value> = self.offices.values().map(|o| (o.name.clone(), json!(o.id))).collect();
                     let _ = r.send(json!({ "offices": offices, "by_name": by_name, "visits": self.visits.len(), "knocks": self.knocks.len(),
-                        "groups": self.groups.names() }));
+                        "groups": self.groups.names(), "browsers": self.browsers.len(), "pending": self.pending.len() }));
                 }
                 Ev::DebugDrop(oid, r) => {
                     let c = self.offices.get(&oid).and_then(|o| o.conn.clone());
@@ -261,11 +439,24 @@ impl Core {
                         }
                         self.depart(&oid);
                     }
+                    for b in self.browsers.values() {
+                        b.conn.close(1001, "reset (a test)");
+                    }
+                    self.pending.clear();
+                    self.pending_from.clear();
+                    self.awaiting.clear();
+                    self.scan_misses.clear();
+                    self.wrong.clear();
                     self.groups.reset();
                     self.bans.reset();
+                    self.links.reset();
                     let _ = r.send(());
                 }
                 Ev::DebugLie(key) => self.lie = key,
+                Ev::Announce => {
+                    self.announce_held = false;
+                    self.announce_now();
+                }
             }
         }
     }
@@ -275,14 +466,40 @@ impl Core {
     }
 
     // ---------- sending ----------
+    /// To an office: its own connection, and (3.1) the browsers speaking for it, what a browser is told (`for_web`).
     fn tell(&self, oid: &str, m: &FromLobby) {
-        if let Some(c) = self.offices.get(oid).and_then(|o| o.conn.as_ref()) {
+        let Some(o) = self.offices.get(oid) else { return };
+        if let Some(c) = &o.conn {
             c.send(m);
+        }
+        if !o.web.is_empty() && for_web(m) {
+            let text: Utf8Bytes = m.text().into();
+            for c in &o.web {
+                c.send_text(&text);
+            }
         }
     }
 
+    /// The connections that hear an office's lines: its own, and its browsers'.
+    fn hearers<'a>(&'a self, o: &'a Session) -> impl Iterator<Item = &'a Conn> {
+        o.conn.iter().chain(o.web.iter())
+    }
+
+    /// A refusal, to whoever asked: the browser whose message this is, else the office's own connection.
     fn error(&self, oid: &str, code: &str, text: impl Into<String>, reference: Option<&str>) {
-        self.tell(oid, &FromLobby::error(code, text, reference));
+        self.answer(oid, &FromLobby::error(code, text, reference));
+    }
+
+    /// An answer (the group list, the bans, a refusal), to whoever asked alone.
+    fn answer(&self, oid: &str, e: &FromLobby) {
+        match &self.replying {
+            Some(c) => c.send(e),
+            None => {
+                if let Some(c) = self.offices.get(oid).and_then(|o| o.conn.as_ref()) {
+                    c.send(e);
+                }
+            }
+        }
     }
 
     fn view(&self, p: Proto) -> FromLobby {
@@ -294,15 +511,35 @@ impl Core {
             // Version 4 says nobody's whereabouts to everyone (LOBBY.md 3): those they visit know.
             visiting: if p == Proto::V4 { None } else { o.visiting.as_ref().and_then(|v| self.visits.get(v)).map(|v| v.host.clone()) },
             ready: o.link.is_some(), key: o.key.clone(), watchers: o.watched.len(), world: o.world, links: o.links, whisper: o.whisper,
-            about: if p == Proto::V4 { o.about.clone() } else { None }, public: (p == Proto::V4).then_some(o.public),
+            about: if p == Proto::V4 { o.about.clone() } else { None },
         }).collect();
         FromLobby::Lobby { offices }
     }
 
+    /// Everyone hears the lobby as it is now: at once, unless it last went out less than ANNOUNCE_EVERY ago; then
+    /// once, when that is up (with whatever else changed meanwhile).
+    fn announce(&mut self) {
+        if self.announce_held {
+            return;
+        }
+        match self.announced.map(|t| t.elapsed()).filter(|e| *e < ANNOUNCE_EVERY) {
+            None => self.announce_now(),
+            Some(e) => {
+                self.announce_held = true;
+                let me = self.me.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(ANNOUNCE_EVERY - e).await;
+                    let _ = me.send(Ev::Announce);
+                });
+            }
+        }
+    }
+
     /// Everyone hears the lobby as it is now, each version its own.
-    fn announce(&self) {
+    fn announce_now(&mut self) {
+        self.announced = Some(Instant::now());
         for p in [Proto::V3, Proto::V4] {
-            let conns: Vec<&Conn> = self.offices.values().filter(|o| o.proto == p).filter_map(|o| o.conn.as_ref()).collect();
+            let conns: Vec<&Conn> = self.offices.values().filter(|o| o.proto == p).flat_map(|o| self.hearers(o)).collect();
             if conns.is_empty() {
                 continue;
             }
@@ -313,15 +550,15 @@ impl Core {
         }
     }
 
-    /// What the public page shows (LOBBY.md 2, rule 10): the rooms that have described themselves (no keys, nor
-    /// where anyone is), the groups with their sizes, and how many offices are in the lobby.
+    /// What the public page shows (LOBBY.md 2, rule 10): who is here and has written a line (no keys, nor where
+    /// anyone is), the worlds with their sizes, and how many offices are in the lobby.
     fn public(&self) -> Value {
-        let mut rooms: Vec<&Session> = self.offices.values().filter(|o| o.proto == Proto::V4 && o.about.is_some()).collect();
-        rooms.sort_by_key(|o| o.name.to_ascii_lowercase());
-        let rooms: Vec<Value> = rooms.into_iter().map(|o| json!({ "name": o.name, "sim": o.sim, "about": o.about, "status": o.status,
-            "visitors": o.hosting.len(), "max_visitors": o.max_visitors, "public": o.public, "ready": o.link.is_some() })).collect();
+        let mut users: Vec<&Session> = self.offices.values().filter(|o| o.proto == Proto::V4 && o.about.is_some()).collect();
+        users.sort_by_key(|o| o.name.to_ascii_lowercase());
+        let users: Vec<Value> = users.into_iter().map(|o| json!({ "name": o.name, "sim": o.sim, "about": o.about, "status": o.status,
+            "visitors": o.hosting.len(), "max_visitors": o.max_visitors, "ready": o.link.is_some() })).collect();
         let online = self.offices.values().filter(|o| o.proto == Proto::V4).count();
-        json!({ "online": online, "rooms": rooms, "groups": self.groups.listed(|k| self.online(k).is_some()) })
+        json!({ "online": online, "users": users, "worlds": self.groups.listed(|k| self.online(k).is_some()) })
     }
 
     // ---------- hello ----------
@@ -412,9 +649,10 @@ impl Core {
         let s = Session {
             id: id.clone(), proto: p, conn: Some(conn), name: name.to_string(), status: status.to_string(), sim: sim_of(m.get("sim")),
             max_visitors, resume: String::new(), link: None, key: key.clone(), world: flag("world"), links: flag("links"), chat: flag("chat"),
-            whisper: flag("whisper"), about, public: p == Proto::V4 && m.get("public") == Some(&Value::Bool(true)), admin,
+            whisper: flag("whisper"), about, admin,
             said: VecDeque::new(), visiting: None, hosting: HashSet::new(), watching: HashSet::new(), watched: HashSet::new(),
-            knocked: VecDeque::new(), knocked_watch: VecDeque::new(), made: VecDeque::new(), held: 0, holding: false,
+            knocked: VecDeque::new(), knocked_watch: VecDeque::new(), made: VecDeque::new(), passwords: VecDeque::new(), codes: VecDeque::new(),
+            held: 0, holding: false, web: Vec::new(),
         };
         self.by_name.insert(name.to_ascii_lowercase(), id.clone());
         if let Some(k) = &key {
@@ -453,6 +691,10 @@ impl Core {
     /// A session ends for good: its knocks are withdrawn, its visits end `gone`.
     fn depart(&mut self, oid: &str) {
         let Some(me) = self.offices.remove(oid) else { return };
+        for c in &me.web {   // its browsers: it is gone, and so are they (they come back with it)
+            c.send(&FromLobby::error("office_gone", format!("{} has left the lobby: this page comes back in when it does", me.name), None));
+            c.close(4410, "its office left the lobby");
+        }
         self.by_name.remove(&me.name.to_ascii_lowercase());
         self.resumes.remove(&me.resume);
         if let Some(k) = &me.key {
@@ -499,6 +741,419 @@ impl Core {
         });
     }
 
+    // ---------- browsers (3.1: SPEC 6.11) ----------
+    /// A browser, its own key proved: linked by the web pass it brought (its office's, checked by conn.rs: good once,
+    /// within its time, its office in the lobby); else linked already; else it waits with a pairing code, for its
+    /// office to type in its room. A linked browser speaks for its office while the office is in the lobby.
+    fn browser_hello(&mut self, conn: Conn, key: String, agent: String, ip: std::net::IpAddr, pass: Option<(String, u64, String)>, switch: bool,
+                     verify: Option<String>) -> bool {
+        let refuse = |code: &str, text: String, close: u16, why: &'static str| {
+            conn.send(&FromLobby::error(code, text, Some("hello")));
+            conn.close(close, why);
+            false
+        };
+        let now = now_unix();
+        if self.passes.len() >= MOST_PASSES / 2 {
+            self.passes.retain(|_, until| *until > now);
+        }
+        let office = match pass {
+            Some((office, expires, nonce)) => {
+                if expires <= now || expires > now + proto::PASS_TTL + 60 {
+                    return refuse("bad_proof", "this link has expired: open the lobby from your Visit panel again".into(), 4401, "pass expired");
+                }
+                if self.passes.contains_key(&nonce) {
+                    return refuse("bad_proof", "this link was used already: open the lobby from your Visit panel again".into(), 4401, "pass used");
+                }
+                if self.online(&office).is_none() {
+                    return refuse("not_in_lobby", "the workroom this link is from is not in the lobby now".into(), 4410, "not in the lobby");
+                }
+                // Linked to another office already: never moved by a link alone (one sent by someone else, say), only
+                // when the page has asked its person and they agreed (`switch`). The pass is not spent meanwhile.
+                if let Some(other) = self.links.office(&key).filter(|o| *o != office && !switch) {
+                    let (was, to) = (self.name_by_key(&other), self.name_by_key(&office));
+                    return refuse("linked_elsewhere", format!("This browser is {was}'s in the lobby; this link would make it {to}'s"), 4409, "linked elsewhere");
+                }
+                if self.passes.len() >= MOST_PASSES {
+                    return refuse("busy", "too many links at once: try again in a while".into(), 1013, "busy");
+                }
+                self.passes.insert(nonce, expires);
+                if self.links.office(&key).is_some_and(|o| o != office) {
+                    self.detach_key(&key, "this browser was linked to another workroom");   // its other tabs, the old office's
+                }
+                let gone = self.links.add(&key, &office, &agent, self.limits4.browsers.unwrap_or(10));
+                for k in gone {
+                    self.detach_key(&k, "unlinked: its workroom linked a newer browser");
+                }
+                Some(office)
+            }
+            None if verify.is_some() => {
+                // 3.2.2: a room's QR code, scanned (`#verify=`): by any device (a phone, mostly). The browser that waits for
+                // that confirmation is linked, and its waiting tabs are in. The scanner is in too if it is that browser;
+                // else it is told what it confirmed (`browser_confirmed`), and is not linked.
+                let now = Instant::now();
+                let from = bucket(ip);
+                let misses = self.scan_misses.entry(from).or_default();
+                while misses.front().is_some_and(|t| now.duration_since(*t) > Duration::from_secs(600)) {
+                    misses.pop_front();
+                }
+                if misses.len() >= SCAN_MISSES {
+                    return refuse("rate_limited", "too many codes that match nothing, from here: try again in a while".into(), 4429, "too many misses");
+                }
+                let secret = verify.as_deref().and_then(proto::confirm_of);
+                let target = secret.as_ref().and_then(|s| self.awaiting.iter().find(|(_, a)| a.confirms.iter().any(|c| c.secret == *s && c.until > now)).map(|(k, _)| k.clone()));
+                let Some(target) = target else {
+                    self.scan_misses.entry(from).or_default().push_back(now);
+                    if self.scan_misses.len() > MOST_PENDING {
+                        self.scan_misses.retain(|_, m| m.back().is_some_and(|t| now.duration_since(*t) < Duration::from_secs(600)));
+                    }
+                    return refuse("no_confirm", "That QR code confirms nothing now (it lasts 5 minutes, once): in your room, Link a browser and its code again".into(),
+                                  4401, "nothing to confirm");
+                };
+                let id = conn.id;
+                self.browsers.insert(id, Browser { conn: conn.clone(), key: key.clone(), agent, ip, office: None, code: None, gone: false });
+                let Some(oid) = self.verify(&target, verify, &conn) else {
+                    self.browsers.remove(&id);
+                    conn.close(4401, "not confirmed");
+                    return false;
+                };
+                if target == key {
+                    return self.browsers.get(&id).is_some_and(|b| b.office.is_some());   // this browser: in (unless refused, 4429)
+                }
+                let office = self.offices.get(&oid).map(|o| o.name.clone()).unwrap_or_default();
+                let agent = self.links.agent(&target).unwrap_or_else(|| "A browser".into());
+                conn.send(&FromLobby::BrowserConfirmed { office, agent, pictures: proto::pictures(&target) });
+                conn.close(1000, "confirmed");
+                self.browsers.remove(&id);
+                return false;
+            }
+            None => self.links.office(&key),
+        };
+        let id = conn.id;
+        self.browsers.insert(id, Browser { conn: conn.clone(), key: key.clone(), agent, ip, office: None, code: None, gone: false });
+        match office {
+            Some(office) => match self.online(&office).map(str::to_string) {
+                Some(oid) => {
+                    let on = self.attach(id, &oid);
+                    if !on {
+                        self.browsers.remove(&id);   // refused, closed: its connection says no more (never in)
+                    }
+                    on
+                }
+                None => {
+                    self.browsers.remove(&id);
+                    refuse("not_in_lobby", "the workroom this browser is linked to is not in the lobby now: it comes in when the workroom does".into(), 4410,
+                           "its office is not in the lobby")
+                }
+            },
+            None => {
+                let from = bucket(ip);
+                if self.pending.len() >= MOST_PENDING || self.pending_from.get(&from).copied().unwrap_or(0) >= PENDING_PER_IP {
+                    self.browsers.remove(&id);
+                    return refuse("busy", "too many browsers are waiting to be linked: try again in a while".into(), 1013, "busy");
+                }
+                let code = loop {
+                    let c = pairing_code();
+                    if !self.pending.contains_key(&c) {
+                        break c;
+                    }
+                };
+                self.pending.insert(code.clone(), id);
+                *self.pending_from.entry(from).or_insert(0) += 1;
+                self.browsers.get_mut(&id).expect("there").code = Some(code.clone());
+                conn.send(&FromLobby::BrowserCode { code: code.clone(), pictures: proto::pictures(&key), expires_in: proto::PASS_TTL });
+                // A confirmation already waiting for this browser (its tab back after its phone dropped it, say): asked again.
+                if let Some(c) = self.awaiting.get(&key).and_then(|a| a.confirms.iter().filter(|c| c.until > Instant::now()).last()) {
+                    let name = self.offices.get(&c.oid).map(|o| o.name.clone()).unwrap_or_default();
+                    conn.send(&FromLobby::BrowserConfirming { office: name, expires_in: c.until.saturating_duration_since(Instant::now()).as_secs() });
+                }
+                let me = self.me.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(proto::PASS_TTL)).await;
+                    let _ = me.send(Ev::CodeExpired(code));
+                });
+                true
+            }
+        }
+    }
+
+    /// A browser unlinking itself, its key proved (3.2.3: `hello` with `forget`): its link gone, whichever office it was
+    /// (in the lobby or not: a browser whose room is off can still let go of it), its tabs out, a confirmation waiting
+    /// for it off; closed 1000 `unlinked`, as `browser_forget` is, and its page forgets its key. Its office, if in the
+    /// lobby, hears its list. Never in: it says nothing more.
+    fn browser_unlink(&mut self, conn: Conn, key: String) -> bool {
+        let office = self.links.office(&key);
+        self.links.remove(&key, None);
+        self.awaiting.remove(&key);
+        self.detach_key(&key, "this browser unlinked itself");
+        if let Some(oid) = office.as_deref().and_then(|o| self.online(o)).map(str::to_string) {
+            self.tell_browsers(&oid);
+        }
+        conn.close(1000, "unlinked");
+        false
+    }
+
+    /// The name an office goes by: in the lobby now, else as its worlds last knew it, else "another workroom".
+    fn name_by_key(&self, key: &str) -> String {
+        self.by_key.get(key).and_then(|id| self.offices.get(id)).map(|o| o.name.clone()).unwrap_or_else(|| "another workroom".into())
+    }
+
+    /// A browser's code, no longer waiting (linked, expired, or gone).
+    fn unpend(&mut self, id: u64) {
+        let Some(b) = self.browsers.get_mut(&id) else { return };
+        let Some(code) = b.code.take() else { return };
+        self.pending.remove(&code);
+        let from = bucket(b.ip);
+        if let Some(n) = self.pending_from.get_mut(&from) {
+            *n -= 1;
+            if *n == 0 {
+                self.pending_from.remove(&from);
+            }
+        }
+    }
+
+    /// Every connection of a browser's key out of the lobby at once (unlinked, or linked elsewhere now): told why,
+    /// closed (4403), off its office's list of browsers in the lobby; nothing more of it is taken, nor said to it.
+    fn detach_key(&mut self, key: &str, why: &str) {
+        let ids: Vec<u64> = self.browsers.iter().filter(|(_, b)| b.key == key && !b.gone).map(|(id, _)| *id).collect();
+        let mut told = HashSet::new();
+        for id in ids {
+            self.unpend(id);
+            let b = self.browsers.get_mut(&id).expect("there");
+            b.gone = true;
+            b.conn.send(&FromLobby::error("unlinked", why, None));
+            b.conn.close(4403, "unlinked");
+            if let Some(oid) = b.office.take() {
+                if let Some(o) = self.offices.get_mut(&oid) {
+                    o.web.retain(|c| c.id != id);
+                }
+                told.insert(oid);
+            }
+        }
+        for oid in told {
+            self.tell_browsers(&oid);
+        }
+    }
+
+    /// A linked browser in, as its office: welcomed, the lobby and the office's worlds; its office hears its list.
+    fn attach(&mut self, id: u64, oid: &str) -> bool {
+        let b = self.browsers.get_mut(&id).expect("a browser");
+        if self.offices[oid].web.len() >= WEB_SESSIONS {
+            b.conn.send(&FromLobby::error("too_many", format!("at most {WEB_SESSIONS} browsers in the lobby for one workroom at once"), Some("hello")));
+            b.conn.close(4429, "too many browsers");
+            return false;
+        }
+        b.office = Some(oid.to_string());
+        self.unpend(id);
+        let b = &self.browsers[&id];
+        let (conn, key, agent) = (b.conn.clone(), b.key.clone(), b.agent.clone());
+        self.links.used(&key, &agent);
+        self.offices.get_mut(oid).expect("there").web.push(conn.clone());
+        let o = &self.offices[oid];
+        conn.send(&FromLobby::WebWelcome {
+            proto: proto::PROTO4.into(), id: o.id.clone(), name: o.name.clone(), key: o.key.clone().unwrap_or_default(), limits: self.limits4.clone(),
+            admin: o.admin, title: self.cfg.title.clone(), motd: self.cfg.motd.clone(),
+        });
+        conn.send(&self.view(Proto::V4));
+        if let Some(k) = &o.key {
+            for g in self.groups.of(k) {
+                conn.send(&self.groups.view(&g, k));
+            }
+        }
+        info!("+ a browser for {} ({agent})", o.name);
+        self.tell_browsers(oid);
+        true
+    }
+
+    fn browser_closed(&mut self, id: u64) {
+        self.unpend(id);
+        let Some(b) = self.browsers.remove(&id) else { return };
+        if let Some(oid) = &b.office {
+            if let Some(o) = self.offices.get_mut(oid) {
+                o.web.retain(|c| c.id != id);
+                self.tell_browsers(oid);
+            }
+        }
+    }
+
+    /// An office's linked browsers, to its own connection (as one comes, goes, is linked or unlinked); `answer`: to
+    /// whoever asked.
+    fn browsers_of(&self, oid: &str) -> FromLobby {
+        let key = self.offices[oid].key.clone().unwrap_or_default();
+        let on: HashSet<&str> = self.offices[oid].web.iter().filter_map(|c| self.browsers.get(&c.id)).map(|b| b.key.as_str()).collect();
+        FromLobby::Browsers { browsers: self.links.of(&key, |k| on.contains(k)) }
+    }
+
+    fn tell_browsers(&self, oid: &str) {
+        if let Some(c) = self.offices.get(oid).and_then(|o| o.conn.as_ref()) {
+            c.send(&self.browsers_of(oid));
+        }
+    }
+
+    /// A browser's message: linked, what a browser may do for its office (talk, worlds, the list, knock to walk into
+    /// a room or link), never what lets anyone into its room (answering, its door) or moves its visits; refusals to it.
+    /// Waiting with a code: nothing but bye.
+    fn browser_msg(&mut self, id: u64, m: Value) {
+        let Some(b) = self.browsers.get(&id).filter(|b| !b.gone) else { return };
+        let (c, t) = (b.conn.clone(), ref_of(&m));
+        let Some(oid) = b.office.clone().filter(|o| self.offices.contains_key(o)) else {
+            if t == "bye" {
+                return c.close(1000, "bye");
+            }
+            if t == "browser_verify" && b.code.is_some() {   // 3.2: its room's confirmation, typed on its page
+                let (key, confirm) = (b.key.clone(), m.get("confirm").and_then(Value::as_str).map(str::to_string));
+                self.verify(&key, confirm, &c);
+                return;
+            }
+            return c.send(&FromLobby::error("not_linked", "this browser is not linked yet: type its code in your room (Visit panel: Link a browser)", Some(&t)));
+        };
+        const WEB: [&str; 17] = ["chat", "whisper", "group_say", "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set",
+                                 "group_owner", "group_delete", "groups", "about", "admin", "knock", "bye", "browser_forget"];
+        if !WEB.contains(&t.as_str()) {
+            return c.send(&FromLobby::error("not_from_web", format!("{t} is your workroom's to do, from its room"), Some(&t)));
+        }
+        if t == "bye" {
+            return c.close(1000, "bye");
+        }
+        if t == "browser_forget" {   // unlinked by itself: its key forgotten here, as it forgets it; its other tabs out too
+            let b = self.browsers.get_mut(&id).expect("there");
+            b.gone = true;
+            b.office = None;
+            let key = b.key.clone();
+            self.offices.get_mut(&oid).expect("there").web.retain(|x| x.id != id);
+            self.links.remove(&key, None);
+            c.close(1000, "unlinked");
+            self.detach_key(&key, "this browser unlinked itself");
+            return self.tell_browsers(&oid);
+        }
+        if t == "knock" && (m.get("watch") == Some(&Value::Bool(true))) {
+            return c.send(&FromLobby::error("not_from_web", "watching is your workroom's own (its world)", Some("knock")));
+        }
+        self.replying = Some(c);
+        let conn_id = self.offices[&oid].conn.as_ref().map(|c| c.id);
+        match conn_id {
+            // As the office's own message, its refusals to this browser: the office need not be connected (held).
+            Some(cid) => self.msg(cid, &oid, m),
+            None => self.msg_held(&oid, m),
+        }
+        self.replying = None;
+    }
+
+    /// A browser's confirmation shown (3.2): typed on its page (`browser_verify`), or its room's QR code scanned (`hello`
+    /// with `verify`: by it, or by any device for it), on `to`. One of its rooms' that still waits for its key: linked
+    /// to that office (returned), and every tab of it waiting is in. A wrong one is counted: at CONFIRM_TRIES, every
+    /// confirmation of it is off.
+    fn verify(&mut self, key: &str, secret: Option<String>, to: &Conn) -> Option<String> {
+        let now = Instant::now();
+        let Some(a) = self.awaiting.get_mut(key) else {
+            to.send(&FromLobby::error("bad_confirm", "no confirmation waits for this browser now: in your room, Link a browser and its code again", Some("browser_verify")));
+            return None;
+        };
+        a.confirms.retain(|c| c.until > now);
+        let hit = secret.as_deref().and_then(proto::confirm_of).and_then(|s| a.confirms.iter().position(|c| c.secret == s));
+        let Some(i) = hit else {
+            a.wrong = a.wrong.saturating_add(1);
+            let off = a.wrong >= proto::CONFIRM_TRIES || a.confirms.is_empty();
+            if off {
+                self.awaiting.remove(key);
+            }
+            let text = if off { "no confirmation waits for this browser now: in your room, Link a browser and its code again" } else { "that is not what your room shows" };
+            to.send(&FromLobby::error("bad_confirm", text, Some("browser_verify")));
+            return None;
+        };
+        let c = a.confirms.remove(i);
+        self.awaiting.remove(key);
+        if !self.offices.get(&c.oid).is_some_and(|o| o.key.as_deref() == Some(c.okey.as_str())) {
+            to.send(&FromLobby::error("not_in_lobby", "the workroom that would link this browser has left the lobby", Some("browser_verify")));
+            return None;
+        }
+        // What the browser is: as its own waiting tab said (not the device that scanned for it).
+        let agent = self.browsers.values().find(|b| b.key == key && !b.gone).map(|b| b.agent.clone())
+            .or_else(|| self.links.agent(key)).unwrap_or_else(|| "A browser".into());
+        for k in self.links.add(key, &c.okey, &agent, self.limits4.browsers.unwrap_or(10)) {
+            self.detach_key(&k, "unlinked: its workroom linked a newer browser");
+        }
+        // Every tab of this browser not in yet (the one that showed it first): in, as that office.
+        let mut tabs: Vec<u64> = self.browsers.iter().filter(|(_, b)| b.key == key && b.office.is_none() && !b.gone).map(|(id, _)| *id).collect();
+        tabs.sort_by_key(|id| *id != to.id);
+        for id in tabs {
+            self.attach(id, &c.oid);
+        }
+        Some(c.oid)
+    }
+
+    /// An office's own: the browser waiting with a code (`allow`: 3.2, a confirmation for it to show), its linked
+    /// browsers, one unlinked.
+    fn on_browser(&mut self, oid: &str, m: ToLobby) {
+        let r = match &m {
+            ToLobby::BrowserCode { .. } => "browser_code",
+            ToLobby::BrowserAllow { .. } => "browser_allow",
+            ToLobby::BrowserRevoke { .. } => "browser_revoke",
+            _ => "browsers",
+        };
+        let Some(okey) = self.offices[oid].key.clone() else { return };
+        match m {
+            ToLobby::BrowserCode { code } | ToLobby::BrowserAllow { code } => {
+                let allow = r == "browser_allow";
+                if !within(&mut self.offices.get_mut(oid).expect("here").codes, CODES_A_MINUTE) {
+                    return self.error(oid, "rate_limited", format!("at most {CODES_A_MINUTE} codes a minute"), Some(r));
+                }
+                let Some(code) = code.as_deref().and_then(proto::code_of) else {
+                    return self.error(oid, "bad_message", "a code is 8 letters and digits, as the lobby's page shows it", Some(r));
+                };
+                let Some(id) = self.pending.get(&code).copied() else {
+                    return self.error(oid, "not_found", "no browser waits with that code (a code lasts 10 minutes: the page shows a new one)", Some(r));
+                };
+                let b = &self.browsers[&id];
+                if !allow {
+                    let p = FromLobby::BrowserPending { code: code.clone(), key: b.key.clone(), agent: b.agent.clone(), pictures: proto::pictures(&b.key) };
+                    return self.answer(oid, &p);
+                }
+                // 3.2: not linked yet. The room gets a confirmation to show (its QR code, its digits); the browser is
+                // linked once it shows it: its tab the QR code opens, or the digits typed on its page. So linking takes
+                // both ways: the room saw the browser's code, and the browser saw the room's screen.
+                let secret = six_digits();
+                let key = b.key.clone();
+                let name = self.offices[oid].name.clone();
+                let now = Instant::now();
+                if !self.awaiting.contains_key(&key) && self.awaiting.len() >= MOST_AWAITING {
+                    self.awaiting.retain(|_, a| a.confirms.iter().any(|c| c.until > now));
+                    if self.awaiting.len() >= MOST_AWAITING {
+                        return self.error(oid, "busy", "too many browsers are being linked: try again in a while", Some(r));
+                    }
+                }
+                let a = self.awaiting.entry(key.clone()).or_default();
+                a.confirms.retain(|c| c.oid != oid && c.until > now);
+                if a.confirms.len() >= 3 {
+                    a.confirms.remove(0);
+                }
+                a.confirms.push(Confirm { secret: secret.clone(), oid: oid.to_string(), okey: okey.clone(), until: now + Duration::from_secs(proto::CONFIRM_TTL) });
+                // Every tab of it waiting hears who would link it.
+                for t in self.browsers.values().filter(|t| t.key == key && t.office.is_none() && !t.gone) {
+                    t.conn.send(&FromLobby::BrowserConfirming { office: name.clone(), expires_in: proto::CONFIRM_TTL });
+                }
+                self.answer(oid, &FromLobby::BrowserConfirm { code, key, confirm: secret, expires_in: proto::CONFIRM_TTL });
+            }
+            ToLobby::BrowserRevoke { key } => {
+                let Some(key) = key.filter(|k| self.links.remove(k, Some(&okey))) else {
+                    return self.error(oid, "not_found", "no browser linked to this workroom with that key", Some(r));
+                };
+                let name = self.offices[oid].name.clone();
+                self.detach_key(&key, &format!("{name} unlinked this browser"));
+                self.tell_browsers(oid);
+            }
+            _ => self.answer(oid, &self.browsers_of(oid)),
+        }
+    }
+
+    /// A browser's message while its office's connection is down (held for resuming): handled as the office's.
+    fn msg_held(&mut self, oid: &str, m: Value) {
+        let t = ref_of(&m);
+        match serde_json::from_value::<ToLobby>(m) {
+            Ok(x) => self.handle(oid, x),
+            Err(_) => self.error(oid, "bad_message", format!("{t} is not as it should be"), Some(&t)),
+        }
+    }
+
     // ---------- messages ----------
     fn msg(&mut self, conn: u64, oid: &str, m: Value) {
         if self.offices.get(oid).is_none_or(|o| o.conn.as_ref().is_none_or(|c| c.id != conn)) {
@@ -518,6 +1173,12 @@ impl Core {
             | ToLobby::Answer { .. } | ToLobby::End { .. } | ToLobby::Rename { .. } | ToLobby::Chat { .. } | ToLobby::Whisper { .. } | ToLobby::Bye | ToLobby::Hello { .. }) {
             return self.error(oid, "unknown_type", format!("no message type {t:?}"), Some(&t));
         }
+        self.handle(oid, msg);
+    }
+
+    /// A message from an office (or a browser speaking for it), its shape checked.
+    fn handle(&mut self, oid: &str, msg: ToLobby) {
+        let p = self.offices[oid].proto;
         match msg {
             ToLobby::Hello { .. } => self.error(oid, "already_hello", format!("this connection is already in the lobby as {}", self.offices[oid].name), Some("hello")),
             ToLobby::Prove { .. } => self.error(oid, "already_hello", "this connection has proved its key already", Some("prove")),
@@ -531,15 +1192,25 @@ impl Core {
             ToLobby::Link { endpoint, addr } => self.on_link(oid, endpoint, addr),
             ToLobby::Status { status } => match status.filter(|s| STATUSES.contains(&s.as_str())) {
                 Some(s) => {
-                    self.offices.get_mut(oid).expect("here").status = s;
-                    self.announce();
+                    let o = self.offices.get_mut(oid).expect("here");
+                    if o.status != s {
+                        o.status = s;
+                        self.announce();
+                    } else {   // (3.4.3: the same again changes nothing for anyone else: the lobby to it alone)
+                        self.tell(oid, &self.view(p));
+                    }
                 }
                 None => self.error(oid, "bad_message", "status must be one of available, busy", Some("status")),
             },
             ToLobby::MaxVisitors { n } => match n.filter(|n| *n <= self.limits(p).max_visitors) {
                 Some(n) => {
-                    self.offices.get_mut(oid).expect("here").max_visitors = n;   // lower than the visitors it has ends no visit
-                    self.announce();
+                    let o = self.offices.get_mut(oid).expect("here");
+                    if o.max_visitors != n {   // lower than the visitors it has ends no visit
+                        o.max_visitors = n;
+                        self.announce();
+                    } else {
+                        self.tell(oid, &self.view(p));
+                    }
                 }
                 None => self.error(oid, "bad_message", format!("n must be 0 to {}", self.limits(p).max_visitors), Some("max_visitors")),
             },
@@ -554,18 +1225,20 @@ impl Core {
                     Ok(a) => a,
                     Err(e) => return self.error(oid, "bad_message", e, Some("about")),
                 };
-                self.offices.get_mut(oid).expect("here").about = a;
-                self.announce();
-            }
-            ToLobby::Door { public } => match public {
-                Some(public) => {
-                    self.offices.get_mut(oid).expect("here").public = public;
+                let o = self.offices.get_mut(oid).expect("here");
+                if o.about != a {
+                    o.about = a;
                     self.announce();
+                } else {
+                    self.tell(oid, &self.view(p));
                 }
-                None => self.error(oid, "bad_message", "public is true or false", Some("door")),
-            },
+            }
+            ToLobby::Door { .. } => {}   // 3.0's door open to anyone: public worlds since 3.1
             ToLobby::Admin { action, key, minutes, text } => self.on_admin(oid, action, key, minutes, text),
-            g => self.on_group(oid, g),
+            m @ (ToLobby::BrowserCode { .. } | ToLobby::BrowserAllow { .. } | ToLobby::Browsers | ToLobby::BrowserRevoke { .. }) => self.on_browser(oid, m),
+            ToLobby::BrowserForget => self.error(oid, "bad_message", "browser_forget is a linked browser's", Some("browser_forget")),
+            ToLobby::BrowserVerify { .. } => self.error(oid, "bad_message", "browser_verify is a waiting browser's", Some("browser_verify")),
+            g => self.on_group(oid, g, None),
         }
     }
 
@@ -872,7 +1545,7 @@ impl Core {
         let p = self.offices[oid].proto;
         let line: Utf8Bytes = FromLobby::LobbyChat { from: self.sayer(oid), text }.text().into();
         for o in self.offices.values().filter(|o| o.chat && o.proto == p) {
-            if let Some(c) = &o.conn {
+            for c in self.hearers(o) {
                 c.send_text(&line);
             }
         }
@@ -907,8 +1580,9 @@ impl Core {
                 let minutes = minutes.map(|m| m.min(10 * 365 * 24 * 60));   // ten years at most: longer is for good
                 self.bans.add(Ban { key: key.clone(), until: minutes.map(|m| now_unix().saturating_add(m * 60)), reason: reason.clone() });
                 if let Some(them) = self.by_key.get(&key).cloned() {
-                    self.error(&them, "banned", format!("banned from this lobby{}", if reason.is_empty() { String::new() } else { format!(": {reason}") }), None);
+                    // To the banned office's own connection (never to whoever banned it: `error` answers the asker).
                     if let Some(c) = self.offices[&them].conn.clone() {
+                        c.send(&FromLobby::error("banned", format!("banned from this lobby{}", if reason.is_empty() { String::new() } else { format!(": {reason}") }), None));
                         c.close(4403, "banned");
                     }
                     self.depart(&them);
@@ -924,7 +1598,7 @@ impl Core {
         }
         if self.offices.contains_key(oid) {
             let bans = self.bans.list();
-            self.tell(oid, &FromLobby::LobbyBans { bans });
+            self.answer(oid, &FromLobby::LobbyBans { bans });
         }
     }
 
@@ -951,7 +1625,10 @@ impl Core {
         }
     }
 
-    fn on_group(&mut self, oid: &str, m: ToLobby) {
+    /// A world's message. One with a password (making a world with one, giving it one, joining one that takes one)
+    /// goes through twice: first its password is hashed or checked off this task (`later`), then it comes back as
+    /// `Ev::Password` with `pw`, and is done (everything checked again: the lobby may have changed meanwhile).
+    fn on_group(&mut self, oid: &str, m: ToLobby, pw: Option<Pw>) {
         let Some(me) = self.offices[oid].key.clone() else { return };
         let name = self.offices[oid].name.clone();
         let admin = self.offices[oid].admin;
@@ -960,10 +1637,10 @@ impl Core {
             ToLobby::GroupCreate { .. } => "group_create",
             ToLobby::GroupJoin { .. } => "group_join",
             ToLobby::GroupLeave { .. } => "group_leave",
-            ToLobby::GroupAnswer { .. } => "group_answer",
             ToLobby::GroupRemove { .. } => "group_remove",
+            ToLobby::GroupUnban { .. } => "group_unban",
             ToLobby::GroupSet { .. } => "group_set",
-            ToLobby::GroupOp { .. } => "group_op",
+            ToLobby::GroupOwner { .. } => "group_owner",
             ToLobby::GroupDelete { .. } => "group_delete",
             ToLobby::GroupSay { .. } => "group_say",
             _ => "groups",
@@ -971,39 +1648,102 @@ impl Core {
         let res = match m {
             ToLobby::Groups => {
                 let list = self.groups.listed(|k| self.online(k).is_some());
-                return self.tell(oid, &FromLobby::Groups { groups: list });
+                return self.answer(oid, &FromLobby::Groups { groups: list });
             }
             ToLobby::GroupSay { group, text } => {
                 let Some(g) = group.and_then(|g| self.groups.find(&g)).filter(|g| self.groups.is_member(g, &me)) else {
-                    return self.error(oid, "not_found", "you are in no group of that name", Some(r));
+                    return self.error(oid, "not_found", "you are in no world of that name", Some(r));
                 };
                 let Some(text) = self.chat_text(oid, text, r) else { return };
                 let line: Utf8Bytes = FromLobby::GroupChat { group: g.clone(), from: self.sayer(oid), text }.text().into();
                 for k in self.groups.member_keys(&g) {
-                    if let Some(c) = self.online(&k).and_then(|id| self.offices[id].conn.as_ref()) {
-                        c.send_text(&line);
+                    if let Some(o) = self.online(&k).map(|id| &self.offices[id]) {
+                        for c in self.hearers(o) {
+                            c.send_text(&line);
+                        }
                     }
                 }
                 return;
             }
-            ToLobby::GroupCreate { group, about, open } => {
+            ToLobby::GroupCreate { group, about, open, password } => {
                 let (now, hour) = (Instant::now(), Duration::from_secs(3600));
                 let made = &mut self.offices.get_mut(oid).expect("here").made;
                 while made.front().is_some_and(|t| now.duration_since(*t) > hour) {
                     made.pop_front();
                 }
                 if made.len() >= GROUPS_AN_HOUR && !admin {
-                    return self.error(oid, "rate_limited", format!("at most {GROUPS_AN_HOUR} new groups an hour"), Some(r));
+                    return self.error(oid, "rate_limited", format!("at most {GROUPS_AN_HOUR} new worlds an hour"), Some(r));
                 }
-                made.push_back(now);
-                self.groups.create(&me, &name, group, about, open, &lim)
+                let hash = match (password, pw) {
+                    (Some(p), None) => {
+                        let ok = crate::groups::password_ok(&p, &lim).and_then(|_| self.groups.may_create(&me, &group, &lim).map(|_| ()));
+                        if let Err((code, text)) = ok {
+                            return self.error(oid, code, text, Some(r));
+                        }
+                        let m = ToLobby::GroupCreate { group, about, open: false, password: Some(String::new()) };
+                        return self.later(oid, &me, m, PwJob::Hash(p), r);
+                    }
+                    (Some(_), Some(Pw::Hashed(Some(h)))) => Some(h),
+                    (Some(_), Some(_)) => return self.error(oid, "server_error", "the password could not be kept: try again", Some(r)),
+                    (None, _) if open => None,
+                    (None, _) => return self.error(oid, "bad_message", "a world is public (open), or has a password (Visit 3.1 makes either)", Some(r)),
+                };
+                let done = self.groups.create(&me, &name, group, about, hash, &lim);
+                if done.is_ok() {
+                    self.offices.get_mut(oid).expect("here").made.push_back(now);
+                }
+                done
             }
-            ToLobby::GroupJoin { group } => self.groups.join(&me, &name, group, &lim),
+            ToLobby::GroupJoin { group, password } => match self.groups.may_join(&me, group.clone(), &lim) {
+                Err(e) => Err(e),
+                Ok((_, Joining::Open)) => self.groups.join(&me, &name, group, false, &lim),
+                Ok((g, Joining::Password(hash))) => {
+                    let low = g.to_ascii_lowercase();
+                    let lately = self.wrong.entry(low.clone()).or_default();
+                    while lately.front().is_some_and(|t| t.elapsed() > Duration::from_secs(3600)) {
+                        lately.pop_front();
+                    }
+                    if lately.is_empty() {
+                        self.wrong.remove(&low);
+                    }
+                    match (password, pw) {
+                        (None, _) => Err(("password_required", format!("{g} takes a password"))),
+                        (Some(_), _) if self.wrong.get(&low).is_some_and(|w| w.len() >= WRONG_PER_WORLD_HOUR) => {
+                            Err(("rate_limited", format!("{g} has had too many wrong passwords lately: try again in a while")))
+                        }
+                        (Some(p), None) => {
+                            let m = ToLobby::GroupJoin { group, password: Some(String::new()) };
+                            return self.later(oid, &me, m, PwJob::Check(p, hash), r);
+                        }
+                        // Checked against the hash it has now: one changed meanwhile, a right answer to it is not.
+                        (Some(_), Some(Pw::Right(right, was))) if was == hash => {
+                            if !right {
+                                self.wrong.entry(low).or_default().push_back(Instant::now());
+                            }
+                            self.groups.join(&me, &name, group, right, &lim)
+                        }
+                        (Some(_), Some(Pw::Right(..))) => Err(("wrong_password", format!("{g}'s password changed meanwhile: try again"))),
+                        (Some(_), Some(_)) => return,
+                    }
+                }
+            },
             ToLobby::GroupLeave { group } => self.groups.leave(&me, group),
-            ToLobby::GroupAnswer { group, key, accept } => self.groups.answer(&me, admin, group, key, accept, &lim),
-            ToLobby::GroupRemove { group, key } => self.groups.remove(&me, admin, group, key),
-            ToLobby::GroupSet { group, about, open } => self.groups.set(&me, admin, group, about, open, &lim),
-            ToLobby::GroupOp { group, key, op } => self.groups.op(&me, admin, group, key, op),
+            ToLobby::GroupRemove { group, key, ban } => self.groups.remove(&me, admin, group, key, ban),
+            ToLobby::GroupUnban { group, key } => self.groups.unban(&me, admin, group, key),
+            ToLobby::GroupSet { group, about, open, password } => match (password, pw) {
+                (Some(p), None) => {
+                    let ok = crate::groups::password_ok(&p, &lim).and_then(|_| self.groups.may_set(&me, admin, group.clone()).map(|_| ()));
+                    if let Err((code, text)) = ok {
+                        return self.error(oid, code, text, Some(r));
+                    }
+                    let m = ToLobby::GroupSet { group, about, open, password: Some(String::new()) };
+                    return self.later(oid, &me, m, PwJob::Hash(p), r);
+                }
+                (Some(_), Some(Pw::Hashed(Some(h)))) => self.groups.set(&me, admin, group, about, open, Some(h), &lim),
+                (Some(_), Some(_)) => return self.error(oid, "server_error", "the password could not be kept: try again", Some(r)),
+                (None, _) => self.groups.set(&me, admin, group, about, open, None, &lim),
+            },
+            ToLobby::GroupOwner { group, key } => self.groups.owner(&me, admin, group, key),
             ToLobby::GroupDelete { group } => self.groups.delete(&me, admin, group),
             _ => return,
         };
@@ -1011,6 +1751,26 @@ impl Core {
             Err((code, text)) => self.error(oid, code, text, Some(r)),
             Ok(done) => self.group_done(done),
         }
+    }
+
+    /// A password hashed or checked on a thread for slow work, then its message again (`Ev::Password`), its refusals
+    /// to whoever asked. A few a minute for one office: each is a fraction of a second of a processor's time.
+    fn later(&mut self, oid: &str, key: &str, m: ToLobby, job: PwJob, r: &str) {
+        if self.hashing >= HASHING_AT_ONCE {
+            return self.error(oid, "busy", "the lobby is checking other passwords: try again in a moment", Some(r));
+        }
+        if !within(&mut self.offices.get_mut(oid).expect("here").passwords, PASSWORDS_A_MINUTE) {
+            return self.error(oid, "rate_limited", format!("at most {PASSWORDS_A_MINUTE} passwords a minute"), Some(r));
+        }
+        self.hashing += 1;
+        let (tx, oid, key, replying) = (self.me.clone(), oid.to_string(), key.to_string(), self.replying.clone());
+        tokio::task::spawn_blocking(move || {
+            let pw = match job {
+                PwJob::Hash(p) => Pw::Hashed(crate::groups::hash_password(&p)),
+                PwJob::Check(p, hash) => Pw::Right(crate::groups::password_is(&p, &hash), hash),
+            };
+            let _ = tx.send(Ev::Password { oid, key, replying, m, pw });
+        });
     }
 
     /// What a change to a group means for whom: everyone in it hears it whole; whoever left it, why; an op, a request.
@@ -1026,10 +1786,19 @@ impl Core {
     }
 }
 
+/// What a browser speaking for an office hears of what the office does (3.1): the lobby and its talk, the office's
+/// worlds, its knocks and their answers. Not its visits' tickets and links: those are its visit-client's alone.
+fn for_web(m: &FromLobby) -> bool {
+    matches!(m, FromLobby::Lobby { .. } | FromLobby::LobbyChat { .. } | FromLobby::Whisper { .. } | FromLobby::Group { .. }
+        | FromLobby::GroupLeft { .. } | FromLobby::GroupChat { .. }
+        | FromLobby::Knock { .. } | FromLobby::KnockSent { .. }
+        | FromLobby::KnockCancelled { .. } | FromLobby::Answered { .. } | FromLobby::VisitEnded { .. })
+}
+
 fn is_type(t: &str) -> bool {
-    const TYPES: [&str; 25] = ["hello", "prove", "link", "status", "max_visitors", "knock", "answer", "end", "rename", "chat", "whisper", "bye",
-        "about", "door", "group_create", "group_join", "group_leave", "group_answer", "group_remove", "group_set", "group_op", "group_delete",
-        "group_say", "groups", "admin"];
+    const TYPES: [&str; 31] = ["hello", "prove", "link", "status", "max_visitors", "knock", "answer", "end", "rename", "chat", "whisper", "bye",
+        "about", "door", "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set", "group_owner", "group_delete",
+        "group_say", "groups", "admin", "browser_code", "browser_allow", "browsers", "browser_revoke", "browser_forget", "browser_verify"];
     TYPES.contains(&t)
 }
 

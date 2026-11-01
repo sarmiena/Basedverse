@@ -39,7 +39,7 @@ struct Args {
     #[arg(long, env = "LOBBY_DATA_DIR")]
     data_dir: Option<PathBuf>,
     /// The lobby's operators: keys, comma-separated (an office's key: its panel shows it). They ban keys and run
-    /// every group.
+    /// every world.
     #[arg(long, env = "LOBBY_ADMINS", value_delimiter = ',')]
     admin: Vec<String>,
     /// The lobby's name, for its page and its welcome.
@@ -48,6 +48,9 @@ struct Args {
     /// A message for everyone joining (its welcome), and its page.
     #[arg(long, env = "LOBBY_MOTD")]
     motd: Option<String>,
+    /// The members a world takes, at most: each member's plot is in every other member's world.
+    #[arg(long, env = "LOBBY_WORLD_SIZE", default_value_t = lobby_proto::WORLD_SIZE)]
+    world_size: usize,
     /// The authorities this lobby is reached at (host, or host:port; 80 and 443 left out), comma-separated: what a
     /// version-4 hello must have signed. None: the Host each connection came with.
     #[arg(long, env = "LOBBY_HOSTS", value_delimiter = ',')]
@@ -169,9 +172,10 @@ async fn main() -> ExitCode {
             return bad(format!("--data-dir {}: {e}", d.display()));
         }
     }
-    let (groups, bans) = match (groups::Groups::open(a.data_dir.as_deref()), groups::Bans::open(a.data_dir.as_deref())) {
-        (Ok(g), Ok(b)) => (g, b),
-        (Err(e), _) | (_, Err(e)) => {
+    let dir = a.data_dir.as_deref();
+    let (groups, bans, links) = match (groups::Groups::open(dir), groups::Bans::open(dir), groups::Links::open(dir)) {
+        (Ok(g), Ok(b), Ok(l)) => (g, b, l),
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
             eprintln!("lobby: {e:#}");
             return ExitCode::from(5);
         }
@@ -188,8 +192,11 @@ async fn main() -> ExitCode {
         return bad("--relay-cert: for the relay (--relay-port)".into());
     }
     let (tx, rx) = mpsc::unbounded_channel();
-    let cfg = core::Config { knock_ttl: a.knock_ttl, resume: a.resume, relays, admins, title: a.title.clone(), motd: a.motd.clone() };
-    tokio::spawn(core::Core::new(cfg, tx.clone(), bans, groups).run(rx));
+    if !(2..=1000).contains(&a.world_size) {
+        return bad("--world-size is 2 to 1000".into());
+    }
+    let cfg = core::Config { knock_ttl: a.knock_ttl, resume: a.resume, relays, admins, title: a.title.clone(), motd: a.motd.clone(), world_size: a.world_size };
+    tokio::spawn(core::Core::new(cfg, tx.clone(), bans, groups, links).run(rx));
     let _relay = match a.relay_port {
         Some(port) => {
             let quic = a.relay_cert.clone().zip(a.relay_key.clone()).map(|(c, k)| ((std::net::Ipv4Addr::UNSPECIFIED, a.relay_quic_port).into(), c, k));

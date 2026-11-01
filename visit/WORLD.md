@@ -13,8 +13,13 @@ What we agreed on, and what we did not need to:
 
 - **Every room stays its owner's.** Nobody's room becomes part of a shared codebase: each is its own three.js
   scene, made however its owner likes. What is shared is where plots sit, never what is on them.
-- **A friend walks in without knocking.** You keep a guest list (a star by an office, in the panel) and a door:
-  open, your guests come in at once, and see your plot from theirs; shut, everyone knocks, and nobody sees it.
+- **A friend walks in without knocking.** Your friends are whoever is in a world with you (Visit 3.3: worlds are
+  the lobby's groups, public or with a password), and your door decides: open, they come in at once, and may put
+  your plot in their world; shut, everyone knocks, and nobody sees it. (Before 3.3, a guest list: a star by an
+  office.)
+- **You pick whose rooms are round yours.** Nobody's plot is in your world by itself (3.3): by someone in a world
+  with you, 🗺 + in the panel puts their room round yours, 🗺 ✓ takes it out; at most 8. So each person keeps their
+  own machine's load, and a world is the community they can pick from; its chat (`/g`) is everyone's.
 - **Nobody has to agree on a map.** Where your friends' plots sit round yours is your choice (by yourself: a
   ring round yours; or where you put them), and theirs is theirs. Walking from one to another can look odd to
   someone whose layout differs: you leave by one wall and come in by another. That is fine.
@@ -23,8 +28,8 @@ What we agreed on, and what we did not need to:
   walking across is seamless; nobody has to agree to it. (Visit 0.7 to 0.9 had edges, agreed by both: gone.)
 - **A friend away is still there.** A room's landscape (what never changes: SPEC 8.10) is kept by its guests: when
   its office goes offline, your world keeps drawing it where it was, marked offline, and you can walk into it (not
-  through its walls). If they shut their door to you, or un-star you, it goes.
-- **Someone you are not guests with** can still be in your world for a while: link with them (Visit 0.8, SPEC
+  through its walls). If they shut their door to you, or you no longer share a world, or you take it out, it goes.
+- **Someone you share no world with** can still be in your world for a while: link with them (Visit 0.8, SPEC
   8.5), and once they say yes, their room shows in your corner; **Put in my world** makes it a plot round yours
   until the link ends.
 
@@ -32,9 +37,9 @@ What we agreed on, and what we did not need to:
 
 1. **Keys.** An office's lasting identity is its link endpoint's public key, kept in its state file. Names are
    first come, first served; keys cannot be taken, because every link proves them.
-2. **Watching.** With its world on, a visit-client watches each guest's plot: a visit that sees the room from
-   outside, sending nothing. The host's visit-client admits only its guests, through its open door, and never
-   asks its page. Several at once, while being in at most one room.
+2. **Watching.** With its world on, a visit-client watches each plot its user picked: a visit that sees the room
+   from outside, sending nothing. The host's visit-client admits only its guests (in a world with it), through
+   its open door, and never asks its page. Several at once (at most 8), while being in at most one room.
 3. **Drawing.** Your page draws your room, then each plot where your layout puts it, with *your* three.js (a
    neighbour's scene is data, read by your release; lights across r155 scaled to keep their look), each clipped
    to its rectangle and lit by its own lights, into one depth buffer.

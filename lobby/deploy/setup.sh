@@ -16,6 +16,7 @@
 #                    they upgrade; 0: Visit 3 only
 #   LOBBY_TITLE, LOBBY_MOTD   its name (default: basedverse for basedverse.app, else the domain) and its message of
 #                    the day (default: a welcome); LOBBY_ADMINS, operators' keys (default: none)
+#   LOBBY_WORLD_SIZE the members a world takes (default: the lobby's own, 50)
 #
 # 1. Stops a lobby of before (Visit 2.x's: Python, Caddy and coturn in Docker), if there is one.
 # 2. Installs the lobby (/usr/local/bin/basedverse-lobby) and Caddy (/usr/local/bin/basedverse-caddy, a pinned
@@ -50,7 +51,9 @@ domain="$(pick LOBBY_DOMAIN basedverse.app)"
 [[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die "LOBBY_DOMAIN $domain is not a DNS name"
 [ "$domain" = basedverse.app ] && name=basedverse || name="$domain"
 title="$(pick LOBBY_TITLE "$name")" admins="$(pick LOBBY_ADMINS)" v3="$(pick LOBBY_V3 1)" ip="$(pick LOBBY_IP auto)"
-motd="$(pick LOBBY_MOTD "Welcome. Find a world group in your panel (Find), or make one of your own (New): the rooms of its members sit round yours.")"
+motd="$(pick LOBBY_MOTD "Welcome. Find a world in your panel (Find), or make one of your own (New): the rooms of its members sit round yours.")"
+world="$(pick LOBBY_WORLD_SIZE)"
+[ -z "$world" ] || { [[ "$world" =~ ^[0-9]{1,4}$ ]] && [ "$world" -ge 2 ] && [ "$world" -le 1000 ]; } || die "LOBBY_WORLD_SIZE $world: 2 to 1000"
 for x in "$title" "$motd" "$admins" "$v3"; do case "$x" in *$'\n'*) die "a setting is one line" ;; esac; done
 if [ "$ip" = auto ]; then   # this server's public IPv4: the EC2 instance's own word, else what the internet sees
   tok=$(curl -fsS -m 2 -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 60" 2>/dev/null || true)
@@ -107,6 +110,7 @@ LOBBY_RELAY_URL=https://$domain/
 LOBBY_RELAY_CERT=$cert_dir/$domain.crt
 LOBBY_RELAY_KEY=$cert_dir/$domain.key
 EOF
+[ -z "$world" ] || echo "LOBBY_WORLD_SIZE=$world" >> "$ETC/env"   # (none: the lobby's own, 50; a blank one would not parse)
 chgrp "$USER_NAME" "$ETC/env"
 umask 022
 # Caddy: TLS for the lobby's name (a free Let's Encrypt certificate, renewed by Caddy, kept where the relay reads it

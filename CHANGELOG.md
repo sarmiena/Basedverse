@@ -10,6 +10,244 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v3.4.3 — 2026-11-01 — security fixes: calls, the panel, pictures, the lobby's broadcasts
+
+**Every workroom upgrades**, and the lobby is deployed again. Nothing in the protocols changes name.
+
+- **A call is on only when the side that was rung answers it** ([visit/SPEC.md](visit/SPEC.md) 8.8). Before, a
+  linked office could send an answer to a call nobody rang, and from then on it had your voice whenever you were on
+  a call with anyone. Now an answer counts only for a ring the other side made, and a page answering a call nobody
+  rang is refused (`no_call`).
+- **The panel shows what a room says of your model as text** (Visit.panel: "yours can't be shown: …"). Before, a
+  room's owner could put HTML in it, and it ran in your page when you opened their row.
+- **Pictures sent over a link are capped** (8.12). At most 30 asked a minute a link, at most 16 MB on their way to
+  one link and 64 MB to all, one picture not twice at once, 60 s each to go. Before, a linked office could ask for the
+  same picture over and over, without reading it, until your `visit` ran out of memory.
+- **The lobby goes out to everyone at most every 250 ms** (6.3). What changes in between goes out together, once.
+  A `status`, `max_visitors` or `about` that changes nothing goes back to the office that sent it alone. Before,
+  one connection changing its status 20 times a second sent the whole office list to every office and browser
+  each time.
+
+**What an integration does:** upgrade (`VISIT_VERSION=v3.4.3`); the lobby's operator deploys it. Nothing in a page
+changes, unless it answered calls nobody rang (Visit's own phone never does).
+
+## v3.4.2 — 2026-11-01 — a line said aloud is heard within 45 m of its sayer, as their voice is (#54)
+
+- **Say goes by distance** ([visit/SPEC.md](visit/SPEC.md) 8.9; [#54](https://github.com/sarmiena/Basedverse/issues/54)).
+  `/s` (the default, `v.say(text)`) reaches whoever would hear its sayer's voice in person: everyone in the room within
+  45 m of them, and, for a user at home, a friend near them across their plots' side (near in both worlds, as voice
+  has it). Not someone farther off in the same room, nor a watcher whose world shows the plot, nor a corner. The bubble
+  follows the line: it shows only for those who had it. The room's visit-client decides, by where the room places
+  everyone (`voice_where`, as for voice); someone it has not placed has every line, as before, so a room that places
+  nobody is as it was. A visitor's line goes no farther than the room. The room's own page still has every line said
+  in it, for its logic: one its user is not near comes as "said_far" (`far` on the wire), never in its chat, as a
+  bubble, or kept. The room's figures (`say_as`) are heard in the whole room, as before. Wider reach keeps its scopes:
+  `/room`, `/w`, `/1`, `/g`.
+- The lobby is 3.4.1's (only its version): no new deploy.
+
+**What an integration does:** nothing, if your page reports where everyone is for voice (`voice_where`: Visit's world
+does it for you). A room page that listened to `chat` for lines said anywhere in the room (an NPC that answers what
+it hears, say) listens to `"said_far"` too, or to `"addressed"` for lines meant for its figures. Offices on older
+releases still send their lines to everyone in their rooms.
+
+## v3.4.1 — 2026-11-01 — a room's own sounds, heard by everyone in it, from where they are (#36)
+
+v3.4.0 was tagged but never released (a room hosted on its own page threw every tick: fixed here). Upgrade from 3.3.0
+straight to this.
+
+- **Room sounds** ([visit/SPEC.md](visit/SPEC.md) 8.13; [#36](https://github.com/sarmiena/Basedverse/issues/36)). A
+  room's page gives its sounds as files, by name (`v.sounds({ kind: file })`: WAV or MP3 up to 4 MB, Ogg, WebM or MP4
+  up to 2 MB, 32 at most). Its visit-client keeps each once, and everyone in the room fetches it from there over the
+  link the first time they hear it (no URL of the room's: visitors cannot reach it). **Loops** come from anything in
+  its scene marked `userData.visitSound = { kind, volume, ref, far }` (`bed: true`: everywhere in the room the same),
+  heard by distance and side as voices are, the nearest 8 at once, each started where the wall clock has it so everyone
+  hears about the same part. **One-shots**: `v.soundAt(objectOrPoint, kind, { volume, ref, far })`, sent to everyone
+  in the room (10 a second at most). Files, never code: a room that synthesizes renders each sound to a file once
+  (`OfflineAudioContext`). The panel's 🔈 turns a room's sounds off or on in that browser (`v.setRoomSounds`), apart
+  from voices. A page that plays its own room's sounds itself (its own synth, a mixer, an echo) calls
+  `v.ownSounds(false)`: Visit plays them for its visitors only. Nothing goes quieter under voices yet.
+- The lobby is 3.3.0's (only its version): no new deploy.
+
+**What an integration does:** nothing, unless your room has sounds of its own. With some, step by step:
+1. On your room's page (the server page on the engine), give them once as files: `await v.sounds({ waterfall: blob,
+   shot: blob })` (a Blob, an ArrayBuffer, or a URL your page can fetch). Sounds made with Web Audio: render each once
+   with an `OfflineAudioContext` and encode it as a WAV.
+2. Mark each thing that sounds over and over, before it goes into your scene: `object.userData.visitSound = { kind:
+   "waterfall", volume, ref, far }` (`ref`: metres heard at full volume; `far`: not at all past it), or `bed: true` for
+   one heard everywhere in your room.
+3. Play the moments once: `v.soundAt(objectOrPoint, "shot", { volume, ref, far })`.
+4. Your own page's sound code for those can go: Visit plays them for your user too (the panel's 🔈 turns them off).
+   Or keep it, and call `v.ownSounds(false)` on your user's page: Visit plays your room's sounds for your visitors only.
+
+## v3.3.0 — 2026-11-01 — worlds are who may come in; you pick whose rooms are round yours; ignore people and figures in chat; targets and lines meant for a room's figures
+
+- **A world's members are each other's guests** ([visit/SPEC.md](visit/SPEC.md) 3, points 9 and 14; 6.6). While your
+  door is open, anyone in a world with you walks into your room without asking, and may put it in their world;
+  closed, everyone knocks. The ★ guest list is gone (`guest_add`, `guest_remove`, `v.addGuest`, `v.removeGuest`, the
+  panel's ☆ and "★ always"): `v.guests` is now whoever shares a world with you, and `v.isGuest(key)` says so.
+- **Nobody's room is in your world by itself** (8.4). Before, every guest's and world member's plot came round yours
+  on its own, up to 8. Now you pick them: **🗺 +** by someone in a world with you (their row in the panel, or the
+  world's member list) puts their room round yours, **🗺 ✓** takes it out; at most 8, so each person keeps their own
+  machine's load. `v.pick(key, name)`, `v.unpick(key)`, `v.picks`, `v.isPicked(key)`, `v.maxPicks`; `pick`,
+  `unpick` and `picks` on the page's socket (`picks` replaces `guests`, with the door). Unpicked, its watch ends and
+  where you had placed it is forgotten. Your state file keeps your picks; one from before 3.3 picks the plots you had
+  placed (Map), and lets the guest list go. A room you picked comes out from the Map too (its room panel's **Take out of my world**),
+  in the lobby or away, as from the panel's 🗺 ✓ (one away has a row of its own there, "away").
+- **Ignore someone in chat, as in WoW** (8.9). Click a name in the chat window: **Whisper**, **Ignore** (or
+  **Unignore**); or `/ignore name`, `/unignore name`, `/ignore` alone to list them. A person is ignored by their
+  office's key; one of a room's figures (`say_as`) by that room's key and its id, so muting one room's guide mutes no
+  other's. Their lines never reach you from then on, in any scope (say, a room's chat, the lobby, a world, whispers),
+  nor their bubbles, nor your mailbox; they are not kept, and their lines from before are left out of your history
+  while you ignore them. Nothing tells them. At most 50. The panel lists them (**Show**, **Unignore** each, **Clear**),
+  and a person's opened row has **Ignore**. `v.ignore(key, { npc, name })`, `v.unignore(key, { npc })`,
+  `v.clearIgnored()`, `v.ignored`, `v.isIgnored(key, npc)`, `"ignored"`; `ignore`, `unignore`, `ignore_clear` and
+  `ignored` on the page's socket. Voice is not ignored (your room's bans still keep someone out of its voice).
+- **Targets, and lines meant for a room's figures** (#48; [visit/SPEC.md](visit/SPEC.md) 8.9, "Targets"): the
+  plumbing, each world deciding the rest. Your user may have a target in the room they are in: one of its people, or
+  one of its figures (sayAs's). It is theirs alone (`v.target`, `v.setTarget`, "target"), and goes when they leave the
+  room or it does. Visit picks it the room's way (`v.host({ targeting: "click" | "near" | "none" })`, click by
+  default), or a page picks its own (`v.targeting(false)`). A room describes its figures as data that goes with its
+  scene (`v.figures`: name, title, line, actions, and `talk`, whom it answers: everyone, its owner, or none; 32 at
+  most, 8 KB). Visit's panel shows a small card for the target
+  (its name, title, line, actions, Say, Whisper; a person's Link or Knock); `Visit.panel(…, { card: false })`, none.
+  A line said aloud can be meant for a figure (`v.say(text, { target })`; the chat window's `@` offers the room's
+  figures, and a line that mentions one is meant for it): everyone has it, and the room's page hears it too
+  (`addressed`). A whisper to a figure (`v.say(text, { whisper: { kind: "figure", id } })`, the card's Whisper) goes
+  to the room's page alone. The room's page has them on the engine too, whether or not its user's page is open,
+  with who said them (`from`: their visit's id, or `owner`). It answers with `sayAs`, aloud, or to one person alone
+  (`v.sayAs(id, name, text, { to })`: a whisper from the figure, no bubble). Whom its figures answer is the room's
+  own. A card's action runs by its interaction type's own rules (`v.act`). Chat lines carry `target`.
+- The lobby is 3.2.3's (nothing of it changed): no new deploy.
+
+**What an integration does:** for targets (#48), nothing unless your room has figures. With figures, step by step:
+1. Describe them, if you like: `v.figures([{ id, name, title, about, actions, talk }])` on your room's page (the server
+   page on the engine), again whenever they change. A figure that answers only your user: `talk: "owner"` (Visit's
+   card then offers Say and Whisper to nobody else, and says why; the `@` picker leaves it out for them).
+2. Say how Visit picks a target in your room: `v.host({ ..., targeting })` (`"click"` by default; `"none"` if your
+   world picks its own). If your page picks its own (your own click, say), call `v.setTarget({ kind: "figure", id,
+   name })` from it, and `v.targeting(false)` on your user's page.
+3. If your world draws its own target card: `Visit.panel(element, v, { card: false })`, and draw yours from
+   `v.on("target", t => …)` (`v.target`).
+4. On your room's page, answer lines meant for your figures: `v.on("addressed", ({ figure, from, name, text, whisper }) =>
+   …)`. It comes whether or not your user's page is open. `from.owner` is your user; `from.id` someone in your room.
+   Decide whom each figure answers. The text is as it was said (a leading "@Name" included).
+5. Answer aloud with `v.sayAs(id, name, text)`, or to that one person with `v.sayAs(id, name, text, { to: from.id ||
+   "owner" })`. A figure's bubble shows 4 rows: cut long answers into lines that fit, one `sayAs` each.
+6. A route of your own that caught your user's "@Name" lines from `v.on("chat")` on their page can go: `addressed`
+   brings them to your room's page.
+
+For the rest: a page that called `v.addGuest` or `v.removeGuest`, or showed `v.guests` as a list you
+edit, uses worlds and `v.pick` instead (the panel does both); a page of its own that sends `guest_add` gets
+`bad_message`. A page with its own chat window may give names a click for `v.ignore`. Nothing else: Visit's panel and
+chat window have it all.
+
+## v3.2.3 — 2026-11-01 — a friend's plot out of view left out of the frame, its shadows on a beat; a browser unlinks itself with its room off
+
+- **Your world draws only what you can see** (kfatehi, #43, from #42; [visit/SPEC.md](visit/SPEC.md) 8.4,
+  "Drawing"). A friend's plot wholly out of the camera's view (its rectangle, as high and low as its scene reaches) is
+  left out of the frame, its shadows too: they only ever land inside it. A friend's plot's lights work out their
+  shadows every 250 ms, each plot on its own beat, not every frame. Your own room and the plot you are in are always
+  drawn, with every-frame shadows. Measured on a dense neighbour (3,490 meshes): 1,616–1,901 draws a frame down to
+  654–1,027, render 8.4–10.3 ms down to 4.8–6.8 ms. `v.world({ cull, shadowMs })` turns either off;
+  `world.drawn` says how many plots a frame drew and left out.
+- **A browser unlinks itself while its room is not in the lobby** ([visit/SPEC.md](visit/SPEC.md) 6.11). The page that
+  waits for its workroom ("… is not in the lobby now") has **Unlink this browser**: it says `hello` with `forget`, its
+  key proved, and the lobby lets go of the link (its other tabs out, a confirmation waiting for it off); the page
+  forgets its key and shows a new code. Before, only the room could unlink it then, and only once it was back.
+- The lobby changed (that `forget`): deploy it (`! bin/deploy-lobby`). A 3.2.2 lobby ignores `forget`, so its page,
+  which is its own, never offers it.
+
+**What an integration does:** nothing.
+
+## v3.2.2 — 2026-11-01 — scan your room's QR code with your phone, and the browser waiting on your computer goes in
+
+- **The room's QR code is for your phone to scan, for the browser you are linking** ([visit/SPEC.md](visit/SPEC.md)
+  6.11). Open basedverse.app on your computer, type its code in your room, scan the QR code your room shows with your
+  phone: the page on your computer goes in as your workroom by itself. Your phone shows what it confirmed ("Chrome on
+  Linux 🍿🐙🐯 is linked to Duckroom") and is not linked. (3.2.0 and 3.2.1 linked the device that scanned it, not the
+  one waiting.) Typing the 6 digits on the computer's page still works, without a phone.
+- **The lobby's page:** "get Basedverse" (the project's page on GitHub) in place of "get Visit".
+- **The panel says which QR code is which:** the one after Link it confirms the browser you typed the code of; **📱 On
+  my phone** (it was 📱 Phone) puts the lobby on your phone.
+- **The lobby** (`lobby` 3.2.2): a `hello` with `verify` from any device confirms the browser that waits for it
+  (`browser_confirmed` to that device, which is not linked); scans that match nothing, 10 every 10 minutes from one
+  address. Deploy it (`bin/deploy-lobby`).
+
+## v3.2.1 — 2026-11-01 — the room's QR code links the browser that scans it, however the phone opens it
+
+- **Scanning your room's QR code now finishes the link** ([visit/SPEC.md](visit/SPEC.md) 6.11). In 3.2.0 it could do
+  nothing on a phone: its browser often opens the scanned address in the tab already showing the lobby's page (only
+  the address's end changes, and the page did not look), or drops that tab's connection while the camera is open
+  (and the lobby forgot what it waited for). Now the page takes a changed address as it takes a load, and a
+  confirmation belongs to the browser (its key), not to one connection: the tab back after a drop is asked again,
+  and the QR code's own tab links with no other tab waiting.
+- **Opened in another browser** (the camera's default, not the one waiting), the page says so and stays: type the
+  6 digits on the page that waits.
+- **The lobby** (`lobby` 3.2.1); deploy it (`bin/deploy-lobby`). Visit is unchanged but for its version.
+
+## v3.2.0 — 2026-11-01 — the lobby's page as a world browser; linking a browser by its code, confirmed both ways
+
+- **A code typed in your room no longer links the browser by itself** ([visit/SPEC.md](visit/SPEC.md) 6.11, 3,
+  point 15). After **Link it**, your room shows a QR code and 6 digits for that browser alone (5 minutes): scan the
+  QR code with that device's camera (it opens the lobby's page in the same browser, which finishes the link), or type
+  the digits on its page. So linking proves both ways: your room saw the browser's code, and the browser saw your
+  room's screen. Someone who talks you into typing their code gets nothing without your screen. Five wrong tries call
+  it off. 🌐 Lobby and 📱 Phone are as they were (the room's own link, opened where you are).
+- **The lobby's page, a world browser** (SPEC 6.9): the whole width of the screen, the worlds its focus, as a game's
+  server list: filter by name, public or 🔒, hide full; sort by most here, most members, name; tabs for **Worlds**,
+  **Your worlds** (what your room is on the map of) and **Users**; the row picked shown below (Join, a password,
+  Chat, Leave, the owner's tools; Knock, Link, Whisper), a double-click joins; chat in a narrower column beside it.
+  Each world says its owner.
+- **The lobby** (`lobby` 3.2.0): `browser_allow` answers with `browser_confirm` (the room's) and `browser_confirming`
+  (the browser's); `browser_verify`, and a browser's `hello` with `verify`, confirm it. A 3.1 room's **Link it** no
+  longer links: update it with the lobby. Deploy it (`bin/deploy-lobby`).
+- **Visit**: `v.allowBrowser(code)` is a Promise of the confirmation to show (`v.browserConfirm`: its QR code and
+  digits); the panel shows them until the browser is linked.
+
+**What an integration does:** nothing, with Visit's panel. A room with its own UI: show `allowBrowser`'s confirmation
+(the QR code as an image, the digits) until `"browsers"` has that browser.
+
+## v3.1.0 — 2026-11-01 — users and worlds: public or with a password; the lobby's page in a browser your workroom linked
+
+- **Users and worlds, nothing else** ([LOBBY.md](LOBBY.md) 2, rule 10; [visit/SPEC.md](visit/SPEC.md) 6.6). A world
+  is **public** (anyone joins, at once) or takes a **password** (anyone who has it; nobody need be online to let them
+  in). Its owner takes members out (✕) and keeps keys out (⛔), gives it a new password (its members stay) or makes it
+  public, hands it on (♛). A world takes at most 50 members (the lobby's `--world-size`). 3.0's requests to join, its
+  ops, the door open to anyone and the list of rooms are gone: a room is not open by itself, a world is. A 3.0 world
+  that took requests is closed until its owner opens it. Your line (`v.setAbout`) shows in the list of who is here.
+  The protocol and the API keep the name group (`group_*`, `v.createGroup(name, { password })`,
+  `v.joinGroup(name, password)`, `v.removeFromGroup(name, key, { ban })`, `v.unbanFromGroup`, `v.handGroup`);
+  `v.setPublic`, `v.answerGroup` and `v.setGroupOp` do nothing now.
+- **The lobby's page, as your workroom** (SPEC 6.11, 3, point 15). The browser keeps a key of its own (never leaving
+  it), and your workroom links it once: the panel's **🌐 Lobby** (`v.openLobby()`) opens the page linked; **📱 Phone**
+  (`v.lobbyQr()`) shows that as a QR code for a phone's camera; or the page shows a code, typed in the panel's **Link
+  a browser** (the same three pictures on both screens). Linked, it comes back by its key alone, as your workroom,
+  while your workroom is in the lobby: the lobby's chat, your worlds' and whispers (tabs; `/w`, `/r`, `/g`), who is
+  here (Knock, Link, Whisper: the visit opens in your room), your worlds (Join, Join… with a password, New, and the
+  owner's tools). Never your door, nor letting anyone in. The panel lists the browsers linked, each to unlink; the
+  page unlinks itself too.
+- **The page, redrawn** in basedverse's pixel-art world (the sign-in page's). Read only until linked: its worlds, who
+  is here with a line, how many, its code to link it. Chat shows only to a linked browser.
+- **The lobby** (`lobby` 3.1.0): worlds with passwords (Argon2id hashes; 5 tries a minute an office, 30 wrong an hour
+  a world, 4 hashed at once), `--world-size`, linked browsers (`browsers.json`: kept across restarts; 10 an office;
+  unused 90 days, unlinked; a link never moves a browser from another workroom unasked; unlinking is at once, every
+  tab); it answers what is asked (the world list, the bans) to whoever asked alone, and a ban's notice to the banned.
+  Its `groups.json` stays readable by a 3.0 lobby (a rollback).
+- **Visit** passes a page only the lobby messages a page takes from a lobby (a page's own answers are never a
+  lobby's to make up); a 📱 QR code's pass lasts 2 minutes; the panel says when a browser is linked to you. Deploy it (`bin/deploy-lobby`): 3.0's visit-clients still take
+  part (public worlds; their by-asking worlds refused).
+
+**What an integration does:** nothing, with Visit's panel. A room with its own UI: `v.openLobby()` from a click,
+worlds with `password`, and drop `v.setPublic`.
+
+## v3.0.1 — 2026-11-01 — the owner's visit kept through the lobby's sessions
+
+- **Your own room stays round you when the lobby's session changes.** A new session (joining the lobby, as after
+  signing in), going away, signing out, or a dropped connection resumed ended every visit, the owner's visit
+  ([engine/SPEC.md](engine/SPEC.md) 4) too: the person's page lost its home (its room) until it was reloaded. In 3.0
+  this happened as the workroom joined the lobby after its page had connected. The owner's visit is its own pages',
+  nothing of the lobby's: now only the lobby's visits end. Nothing to do: take 3.0.1.
+
 ## v3.0.0 — 2026-10-31 — the lobby in Rust: keys proved, signed in to take part, world groups, its own relay, for anyone to host
 
 **The lobby's protocol is `basedverse-lobby/4`.** Every workroom upgrades, and the lobby with it. A lobby run with

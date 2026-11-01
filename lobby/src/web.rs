@@ -43,6 +43,7 @@ async fn any(State(s): State<Arc<Server>>, ConnectInfo(peer): ConnectInfo<Socket
         Ok(ws) => {
             let ip = client_ip(&s, peer, &h);
             let host = h.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+            let agent = agent_label(h.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or(""));
             let frame = lobby_proto::Limits::v4(0).frame;
             ws.max_message_size(frame).max_frame_size(frame).on_upgrade(move |mut socket| async move {
                 if !s.arrived(ip) {
@@ -52,12 +53,33 @@ async fn any(State(s): State<Arc<Server>>, ConnectInfo(peer): ConnectInfo<Socket
                     let _ = socket.send(Message::Close(Some(CloseFrame { code: 1008, reason: "too many connections".into() }))).await;
                     return;
                 }
-                crate::conn::run(s, socket, ip, host).await
+                crate::conn::run(s, socket, ip, host, agent).await
             })
         }
         Err(_) if uri.path() == "/" && s.cfg.page => page(&s).into_response(),
         Err(_) if uri.path() == "/api/lobby" && s.cfg.page => api_lobby(&s).await.into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "the lobby: connect with Visit (a WebSocket), or see / in a browser\n").into_response(),
+    }
+}
+
+/// A browser, as a person names it ("Firefox on Mac"), from its User-Agent: what a room shows of a browser it links.
+pub fn agent_label(ua: &str) -> String {
+    let has = |s: &str| ua.contains(s);
+    let browser = if has("Edg/") { "Edge" } else if has("OPR/") { "Opera" } else if has("Firefox/") || has("FxiOS/") { "Firefox" }
+        else if has("Chrome/") || has("CriOS/") { "Chrome" } else if has("Safari/") { "Safari" } else { "A browser" };
+    let os = if has("iPhone") { "iPhone" } else if has("iPad") { "iPad" } else if has("Android") { "Android" } else if has("Windows") { "Windows" }
+        else if has("CrOS") { "ChromeOS" } else if has("Mac OS X") || has("Macintosh") { "Mac" } else if has("Linux") { "Linux" } else { "" };
+    if os.is_empty() { browser.to_string() } else { format!("{browser} on {os}") }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn agents() {
+        assert_eq!(super::agent_label("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/147.0.0.0 Safari/537.36"), "Chrome on Linux");
+        assert_eq!(super::agent_label("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"), "Safari on iPhone");
+        assert_eq!(super::agent_label("Mozilla/5.0 (Macintosh; Intel Mac OS X 14.5; rv:131.0) Gecko/20100101 Firefox/131.0"), "Firefox on Mac");
+        assert_eq!(super::agent_label("Python/3.12 websockets/15.0.1"), "A browser");
     }
 }
 

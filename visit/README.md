@@ -56,7 +56,8 @@ visit/
 - [x] The spec, and the guide for integrators.
 - [x] visit-client, tested end to end with the real lobby and two clients (`client/tests/run-e2e.sh`).
 - [x] visit.js, tested in two real browsers: knocking, walking, reloads, worlds, links, the map, avatars, interactions, voice, phones (`client/tests/run-browser.sh`).
-- [x] The lobby in Rust (`../lobby/`, 3.0): keys proved, the sign-in, world groups, its own relay, live at `wss://basedverse.app/` (`../bin/deploy-lobby`).
+- [x] The lobby in Rust (`../lobby/`, 3.0): keys proved, the sign-in, worlds, its own relay, live at `wss://basedverse.app/` (`../bin/deploy-lobby`).
+- [x] Users and worlds (3.1): a world public or with a password; the lobby's page in a browser your workroom linked (🌐 Lobby, 📱 Phone, a code).
 - [x] A first workroom running it.
 - [ ] A relay of our own beside the lobby. Until there is one, links that cannot go direct use iroh's public
       relays (still encrypted end to end).
