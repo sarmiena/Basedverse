@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # Deploy the lobby (lobby/, LOBBY.md) to a server over ssh, and update it later the same way.
 #
-#   bin/deploy-lobby ubuntu@203.0.113.5     build the lobby for the server (one static file), copy it there with
-#                                           lobby/deploy/, and run its setup: the lobby and Caddy (TLS) under
-#                                           systemd, no Docker. Run again to update.
+#   bin/deploy-lobby ubuntu@203.0.113.5     get the lobby for the server (one static file: the latest release's
+#                                           on GitHub, its checksum checked), copy it there with lobby/deploy/,
+#                                           and run its setup: the lobby and Caddy (TLS) under systemd. Nothing
+#                                           to install here or there. Run again to update.
 #   bin/deploy-lobby                        the same, to the server it last deployed to, with the same key
 #                                           (LOBBY_DEPLOY and LOBBY_DEPLOY_KEY in .env)
-#   --version v3.0.0                        that release's lobby (downloaded here, its checksum checked), not one
-#                                           built from this checkout
+#   --version v3.0.0                        another release's lobby
+#   --build                                 one built from this checkout instead (unreleased changes): needs Docker
 #   -i ~/.ssh/key.pem                       the ssh key (else your ssh config and agent decide)
 #   --status | --logs | --down              the server's lobby: its services and health, its log (follows it;
 #                                           Ctrl-C to stop), or stop it
 #
-# Its settings come from the environment, else this repository's .env, and are kept on the server once given:
+# Nothing needs setting: `bin/deploy-lobby` alone deploys basedverse's lobby (basedverse.app) to the server it last
+# deployed to. Any setting comes from the environment, else this repository's .env, and is kept on the server once
+# given (lobby/deploy/setup.sh says each one's default):
 #   LOBBY_DOMAIN   the lobby's DNS name, pointing at the server (default basedverse.app): its certificate's, and
 #                  what workrooms join (wss://LOBBY_DOMAIN/)
 #   LOBBY_TITLE, LOBBY_MOTD, LOBBY_ADMINS (operators' keys, comma-separated), LOBBY_V3 (1: Visit 2.x workrooms too),
@@ -20,8 +23,8 @@
 #   members a world takes; 50)
 #
 # The server: Linux with systemd (x86_64 or ARM64), a public address that LOBBY_DOMAIN points at, which you can ssh
-# into and sudo on; ports 80 and 443 (TCP) and 7842 (UDP) open (lobby/README.md). Building needs Docker here; the
-# server needs nothing installed first. The server and key are remembered in this repository's .env.
+# into and sudo on; ports 80 and 443 (TCP) and 7842 (UDP) open (lobby/README.md). Neither machine needs anything
+# installed (but Docker here for --build). The server and key are remembered in this repository's .env.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -61,12 +64,13 @@ PY
 # A shell word, quoted for the server's shell.
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
-target="" key="" action="deploy" version=""
+target="" key="" action="deploy" version="" build=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help) usage ;;
     -i) key="${2:?-i needs a key file}"; shift ;;
     --version) version="${2:?--version needs a release, like v3.0.0}"; shift ;;
+    --build) build=1 ;;
     --status) action=status ;;
     --logs) action=logs ;;
     --down) action=down ;;
@@ -83,6 +87,13 @@ case "$REMOTE_DIR" in *[!A-Za-z0-9._-]*) die "LOBBY_DEPLOY_DIR $REMOTE_DIR is no
 [ -n "$target" ] || { echo "deploy-lobby: which server? e.g. bin/deploy-lobby ubuntu@203.0.113.5" >&2; usage 2; }
 case "$target" in *[!A-Za-z0-9@._:-]*) die "$target does not look like user@host" ;; esac
 case "$version" in ""|v[0-9]*.[0-9]*.[0-9]*) ;; *) die "--version $version: a release, like v3.0.0" ;; esac
+[ -n "$build" ] && [ -n "$version" ] && die "--build or --version, not both"
+# The latest release, unless told another (or to build): GitHub's /releases/latest redirects to its tag. The tag is
+# taken first, so the lobby and its SHA256SUMS come from one release even if another is published meanwhile.
+latest_release() {
+  local u; u="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$RELEASES/latest")" || return 1
+  u="${u##*/}"; case "$u" in v[0-9]*.[0-9]*.[0-9]*) printf '%s' "$u" ;; *) return 1 ;; esac
+}
 
 ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
 [ -n "$key" ] && ssh_opts+=(-i "$key")
@@ -101,21 +112,23 @@ case "$action" in
   down) on_server "$target" "sudo systemctl stop basedverse-lobby basedverse-caddy"; exit 0 ;;
 esac
 
-# -- the lobby, for the server's architecture: built here (Docker), or a release's ----------------------------
+# -- the lobby, for the server's architecture: a release's, or built here (--build, Docker) ---------------------
 arch="$(on_server "$target" uname -m)" || die "could not reach $target (can you ssh to it? add -i KEY for a key file)"
 case "$arch" in x86_64|amd64) rt=x86_64-unknown-linux-musl ;; aarch64|arm64) rt=aarch64-unknown-linux-musl ;; *) die "$target is $arch: x86_64 or ARM64 only" ;; esac
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/lobby"
-if [ -n "$version" ]; then
+if [ -z "$build" ]; then
+  [ -n "$version" ] || version="$(latest_release)" || die "could not find the latest release ($RELEASES/latest): --version vX.Y.Z, or --build (Docker)"
   echo "getting the lobby of $version for $rt"
-  curl -fsSL -o "$work/lobby.tar.gz" "$RELEASES/download/$version/lobby-$rt.tar.gz" || die "$version has no lobby-$rt.tar.gz"
+  curl -fsSL -o "$work/lobby.tar.gz" "$RELEASES/download/$version/lobby-$rt.tar.gz" \
+    || die "$version has no lobby-$rt.tar.gz (not released yet? $RELEASES): wait for it, or --build (Docker) from this checkout"
   curl -fsSL -o "$work/SHA256SUMS" "$RELEASES/download/$version/SHA256SUMS" || die "$version has no SHA256SUMS"
   (cd "$work" && grep " lobby-$rt.tar.gz\$" SHA256SUMS | sed "s# lobby-$rt.tar.gz\$# lobby.tar.gz#" | sha256sum -c --quiet -) || die "its checksum does not match"
   tar -xzf "$work/lobby.tar.gz" -C "$work/lobby" lobby
 else
-  command -v docker >/dev/null 2>&1 || die "building the lobby takes Docker here (or give --version, a release's)"
+  command -v docker >/dev/null 2>&1 || die "--build takes Docker here (without it: the latest release's lobby, the default)"
   here_arch="$(uname -m)"; case "$here_arch" in arm64) here_arch=aarch64 ;; amd64) here_arch=x86_64 ;; esac
-  [ "${rt%%-*}" = "$here_arch" ] || die "$target is ${rt%%-*}, this machine $here_arch: give --version (a release's lobby), or deploy from a machine like it"
+  [ "${rt%%-*}" = "$here_arch" ] || die "$target is ${rt%%-*}, this machine $here_arch: --build only for a server like this machine (the latest release's lobby: the default)"
   echo "building the lobby for $rt (Docker; the first build takes a few minutes)"
   docker build -q -f "$ROOT/lobby/Dockerfile.dist" --build-arg TARGET="$rt" --target out --output "type=local,dest=$work/lobby" "$ROOT" >/dev/null
 fi

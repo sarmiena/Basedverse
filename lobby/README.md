@@ -45,14 +45,15 @@ UDP), and these open to the internet:
 | 80, 443 | TCP | Caddy: the certificate's challenge, then `wss://` and the page |
 | 7842 | UDP | the relay's address discovery: how two workrooms find a direct path to each other |
 
-From your machine, in this repository (it builds the lobby with Docker here; the server needs nothing installed):
+From your machine, in this repository (nothing to install, here or on the server):
 
 ```sh
 LOBBY_DOMAIN=lobby.example.org bin/deploy-lobby ubuntu@203.0.113.5     # -i ~/.ssh/key.pem if ssh needs it
 ```
 
-It builds one static `lobby` for the server's architecture (or, with `--version v3.0.0`, takes a release's,
-its checksum checked), copies it there with `deploy/`, and runs `deploy/setup.sh`, which:
+It takes the latest release's `lobby` on GitHub for the server's architecture (its checksum checked; `--version
+v3.0.0` another release's; `--build` one built from this checkout, with Docker), copies it there with this
+checkout's `deploy/`, and runs `deploy/setup.sh`, which:
 
 1. stops a lobby of before, if there is one (Visit 2.x's: Python, Caddy and coturn in Docker);
 2. installs the lobby (`/usr/local/bin/basedverse-lobby`) and Caddy (a pinned release, its checksum checked), and a
@@ -66,23 +67,23 @@ LOBBY_URL=wss://lobby.example.org/
 
 Each workroom gives that as its lobby (`VISIT_LOBBY` in its `.env`). Its page is `https://lobby.example.org/`.
 
-**Its settings**, each given as a variable to `bin/deploy-lobby` (or kept in this repository's `.env`), and kept
-on the server once given:
+**Its settings**: none need giving (each has a default below). Any given as a variable to `bin/deploy-lobby` (or
+kept in this repository's `.env`) is kept on the server:
 
 | variable | |
 |---|---|
 | `LOBBY_DOMAIN` | its DNS name (default `basedverse.app`) |
-| `LOBBY_TITLE`, `LOBBY_MOTD` | its name and message of the day: on its page, and said to each workroom as it joins |
+| `LOBBY_TITLE`, `LOBBY_MOTD` | its name and message of the day: on its page, and said to each workroom as it joins (defaults: basedverse, or the domain; a welcome) |
 | `LOBBY_ADMINS` | its operators: keys, comma-separated (a workroom's key: `ready.key`, `v.key`). They ban keys and run every world |
 | `LOBBY_WORLD_SIZE` | the members a world takes, at most (50): each member's plot is on every other member's map |
-| `LOBBY_V3` | `1`: let Visit 0.5 to 2.x workrooms in too, a lobby of their own, while they upgrade |
-| `LOBBY_IP` | the server's IPv4, served as well (`wss://<ip>/`, a 6-day certificate Caddy renews), for workrooms that still name the lobby by it |
+| `LOBBY_V3` | `1` (the default, for now): Visit 0.5 to 2.x workrooms meet too, a lobby of their own, while they upgrade; `0`: Visit 3 only |
+| `LOBBY_IP` | the server's IPv4, served as well (`wss://<ip>/`, a 6-day certificate Caddy renews), for workrooms that still name the lobby by it. Default: found by itself; `none`: the name alone |
 
 **Running it**, from your machine (the server is remembered: `LOBBY_DEPLOY` in this repository's `.env`):
 
 | command | what it does |
 |---|---|
-| `bin/deploy-lobby` | update it: a new lobby, the same settings; its worlds, linked browsers and bans kept |
+| `bin/deploy-lobby` | update it: the latest release's lobby, the same settings; its worlds, linked browsers and bans kept |
 | `bin/deploy-lobby --status` | its services, and whether `wss://…/health` answers from here |
 | `bin/deploy-lobby --logs` | the lobby's and Caddy's logs, followed (Ctrl-C stops) |
 | `bin/deploy-lobby --down` | stop it |
