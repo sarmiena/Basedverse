@@ -1,6 +1,6 @@
 [package]
 name = "lobby"
-version = "3.0.0"
+version = "3.1.0"
 edition = "2021"
 license = "MIT"
 description = "The lobby (../LOBBY.md): who is online, knocks, visits and links between visit-clients, world groups, chat; one program, for anyone to host"
@@ -13,6 +13,7 @@ axum = { version = "0.8.9", features = ["ws"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 futures-util = "0.3.34"
 getrandom = "0.3.4"
+argon2 = "0.5.3"
 iroh-base = { version = "1.4.1", default-features = false, features = ["key"] }
 iroh-relay = { version = "1.4.1", features = ["server"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }

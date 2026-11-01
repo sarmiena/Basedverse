@@ -40,15 +40,17 @@ the world. Your page never opens any connection to another machine itself.
 Every room that takes Visit's defaults looks and works the same for the people visiting it, and that is the point:
 take them unless your user asks for something else. The defaults are Visit's own ready-made pieces:
 
-- **the panel** (`Visit.panel`): one row a person (in the lobby, or linked with you: in your room, linked; open it
-  for Go there, their look in your room, Kick, Unlink; a room that lists itself with its line, and Walk in at a door
-  open to anyone), your world groups (who of each is online, requests to answer, Leave; **Find** the lobby's groups,
-  **New** a group of your own), your room's line in the lobby's list, knocks, your door (open to guests, open to
-  anyone, closed) and guests, your world's Map, the microphone and who is near, calls (📞 call, Pick up, speaker / handset, Hang up), notes (where
+- **the panel** (`Visit.panel`): 🌐 Lobby (the lobby's page in a tab, as your workroom: its chat, who is here, your
+  worlds, knocking; your door stays in your room), 📱 Phone (the same, as a QR code for a phone) and Link a browser
+  (the code a browser at the lobby's page shows; the browsers linked, to unlink), one row a person (in the lobby, or
+  linked with you: in your room, linked; open it for Go there, their look in your room, Kick, Unlink; their line),
+  your worlds (who of each is online, Leave; for one you own: ✕ out, ⛔ kept out, ♛ hand it on, its password, public,
+  End it; **Find** the lobby's worlds, **New** one of your own, public or with a password), your line in the lobby's
+  list, knocks, your door (open to guests, closed) and guests, your world's Map, the microphone and who is near, calls (📞 call, Pick up, speaker / handset, Hang up), notes (where
   a friend's world put your room), and ⏱ (how this page is doing);
 - **the chat window** (the panel's, `Visit.chat`): bottom left, as in a game. Enter to type, and say a line to
   everyone who can see you, whisper to one person (`/w name`), say it in your room's chat (`/room`: everyone in it
-  and linked with it) or a linked friend's (`/room name`), to the lobby (`/1`), or to one of your world groups
+  and linked with it) or a linked friend's (`/room name`), to the lobby (`/1`), or to one of your worlds
   (`/g name`, or `/2`, `/3`…); joining the lobby, it says the lobby's name and its message of the day; Tab finishes a name, else moves on to the next of those (Shift+Tab: back); 🎙 a voice
   message; 📬 what came for your user while nobody looked (whispers, your room's chat, mentions), kept until read;
   a whisper to someone away is kept by your `visit` until you are both in the lobby; 🎧 joins a
@@ -597,12 +599,16 @@ star (☆) by each office makes it a **guest**: while your door is open (the pan
 is let in at once, without asking your user. An office on an older Visit gets **Knock** instead: let in, your
 user walks straight into its room, as before.
 
-It shows your **world groups** too (3.0): groups in the lobby whose members put each other's rooms round their own
-(step 9), as guests may, each with a chat (`/g`). Each of yours is a row (how many of it are online); opened, its
-members, the requests to join it (for its ops: **Let in**, **No**), **Leave**, and for its ops whether it is open and
-who is an op. **Find** lists the lobby's groups to **Join** (an open one) or **Ask**; **New** makes one of your own.
-And your room's **line in the lobby's list** (what it is, a few tags: **List it**, and on the lobby's public page),
-and your door **open to anyone**: then anyone's knock walks in, and the lobby's list says **Walk in**.
+It shows your **worlds** too (3.0; 3.1: public or with a password): worlds in the lobby whose members put each
+other's rooms round their own (step 9), as guests may, each with a chat (`/g`). Each of yours is a row (how many of
+it are online, 🔒 a password); opened, its members and **Leave**, and for its owner: take one out (✕) or keep them out
+(⛔), hand it on (♛), its password (🔒), **Make public**, **End it**. **Find** lists the lobby's worlds to **Join** (a
+public one) or **Join…** with its password; **New** makes one of your own (a password, or none: public). Your **line
+in the lobby's list** (what you are, a few tags; on the lobby's public page too). And **the lobby in a browser**
+(3.1): **🌐 Lobby** opens the lobby's page in a tab, as your workroom; **📱 Phone** shows a QR code that does the same
+on a phone; **Link a browser** takes the code a browser at the lobby's page shows (its pictures shown to check), and
+lists the browsers linked, each to **Unlink**. A linked browser talks, runs your worlds and knocks as your workroom;
+it never answers a knock or opens your door.
 
 Or build your own from the state and actions: `visit.offices`, `visit.knocks`, `visit.visiting`,
 `visit.visitors`, `visit.links`, `visit.watchers`, `visit.link(id, message)` (or `visit.knock`, for an office
@@ -611,13 +617,15 @@ whose `links` is false), `visit.answer(knockId, true | false)`, `visit.stepIn()`
 `visit.kick(visitId)`, `visit.setStatus("available" | "busy")`, `visit.setMaxVisitors(n)`,
 `visit.leaveLobby()`, `visit.joinLobby()`, and the door and guests: `visit.door`, `visit.guests`,
 `visit.setDoor(open)`, `visit.addGuest(office.key, office.name)`, `visit.removeGuest(key)`; the lobby's list and
-world groups (3.0): `visit.signedIn`, `visit.lobbyInfo` ({ title, motd, admin }), `office.about`, `office.public`,
-`visit.setAbout(text, tags)`, `visit.setPublic(on)`, `visit.groups`, `visit.findGroups()` and `visit.groupList`,
-`visit.createGroup(name, { about, open })`, `visit.joinGroup(name)`, `visit.leaveGroup(name)`,
-`visit.answerGroup(name, key, accept)`, `visit.removeFromGroup(name, key)`, `visit.setGroup(name, { about, open })`,
-`visit.setGroupOp(name, key, op)`, `visit.deleteGroup(name)`, `visit.say(text, { group })`, and the events
-`"group"`, `"group_left"`, `"group_request"`, `"group_answered"`, `"groups"`, `"online"` (with `lobbyInfo`) and
-`"signed_in"`; redraw on `"change"`. Rules your UI must follow:
+worlds (3.0; 3.1: public or with a password): `visit.signedIn`, `visit.lobbyInfo` ({ title, motd, admin }),
+`office.about`, `visit.setAbout(text, tags)`, `visit.groups` (each `open`, `locked`, `owner`, `members`, `bans`),
+`visit.findGroups()` and `visit.groupList`, `visit.createGroup(name, { about, password })` (no password: public),
+`visit.joinGroup(name, password)`, `visit.leaveGroup(name)`, and its owner's `visit.removeFromGroup(name, key, { ban })`,
+`visit.unbanFromGroup(name, key)`, `visit.setGroup(name, { about, password, open: true })`, `visit.handGroup(name, key)`,
+`visit.deleteGroup(name)`; `visit.say(text, { group })`; linked browsers (3.1): `visit.openLobby()` (from a click),
+`visit.lobbyQr()`, `visit.linkBrowser(code)`, `visit.allowBrowser(code)`, `visit.browsers`, `visit.unlinkBrowser(key)`;
+and the events `"group"`, `"group_left"`, `"groups"`, `"browsers"`, `"browser_pending"`, `"online"` (with
+`lobbyInfo`) and `"signed_in"`; redraw on `"change"`. Rules your UI must follow:
 
 - Offer **Link** only for offices that are `ready`, `available`, not you, and not already linked or visited
   (and **Knock**, for one whose `links` is false, only when it is not full: `visitors < maxVisitors`).
@@ -626,9 +634,11 @@ world groups (3.0): `visit.signedIn`, `visit.lobbyInfo` ({ title, motd, admin })
 - Show your user who is linked to them, seeing their room from outside it: `visit.watchers` with `link`
   (and `inside` once they come in), with a way to end it (`visit.kick(id)`).
 - Escape all names and messages before putting them in HTML: they come from strangers. So do rooms' lines and
-  tags, and groups' names and lines.
-- Say plainly what joining a world group means: its members see your room through your open door, as guests do,
-  and you theirs. And what a door open to anyone means: anyone in the lobby walks in.
+  tags, and worlds' names and lines.
+- Say plainly what joining a world means: its members see your room through your open door, as guests do, and you
+  theirs; a public one is anyone's to join. Never show a world's password once typed.
+- Linking a browser: show the browser waiting (`agent`) and its `pictures`, and ask your user to check they match the
+  ones on the browser's screen before allowing it.
 - Give your user a way to **go offline and back** (`leaveLobby()` / `joinLobby()`), and show when they
   are: `visit.state === "away"`. Away, nobody sees them or can link, and their visits end; they stay away
   until they come back, restarts included (its state file keeps it). Do not stop `visit` for this: it keeps
@@ -685,7 +695,7 @@ Then, in order:
 
 With a world ([WORLD.md](WORLD.md), SPEC 8.4) your user stays in their own room, as themselves, and their
 friends' rooms sit round it as plots they walk onto, without knocking. A friend is a guest both ways (the star
-in the panel), or (3.0) in a world group with your user (the panel's groups), with their doors open. Do it once step 8 passes: it is a few lines in your page, and without it
+in the panel), or (3.0) in a world with your user (the panel's worlds), with their doors open. Do it once step 8 passes: it is a few lines in your page, and without it
 your room still knocks and visits as before, but your user sees no friends' rooms round theirs, and a friend who
 walks onto your plot from their world may have no way back out.
 

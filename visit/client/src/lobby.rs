@@ -39,14 +39,13 @@ pub enum LobbyOut {
 }
 
 /// How this office introduces itself; kept current (its status, its visitors, its name as the lobby last
-/// showed it, its line in the directory and its door), so a new session starts as the office now is.
+/// showed it, its line in the list of who is here), so a new session starts as the office now is.
 pub struct Hello {
     pub name: String,
     pub sim: Value,
     pub status: String,
     pub max_visitors: u8,
     pub about: Option<About>,
-    pub public: bool,
 }
 
 /// Why it is not in the lobby now, if it is not.
@@ -67,7 +66,6 @@ fn remember(hello: &mut Hello, m: &ToLobby) {
         ToLobby::Status { status: Some(s) } => hello.status = s.clone(),
         ToLobby::MaxVisitors { n: Some(n) } => hello.max_visitors = (*n).min(8),
         ToLobby::About { about } => hello.about = about.clone(),
-        ToLobby::Door { public: Some(p) } => hello.public = *p,
         _ => {}
     }
 }
@@ -119,7 +117,7 @@ pub async fn run(url: String, key: SecretKey, mut hello: Hello, mut rx: mpsc::Un
                 let first = ToLobby::Hello {
                     proto: PROTO.into(), name: hello.name.clone(), key: Some(public.clone()), sim: hello.sim.clone(), status: hello.status.clone(),
                     max_visitors: hello.max_visitors, resume: resume.clone(), world: false, links: false, chat: false, whisper: false,
-                    about: hello.about.clone(), public: hello.public,
+                    about: hello.about.clone(),
                 };
                 let mut left = false;
                 if tx.send(text(&first)).await.is_ok() {

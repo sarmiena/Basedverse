@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The lobby (../../visit/SPEC.md 6, ../../LOBBY.md), tested from outside: the real `lobby` binary, on free local
 ports, talked to over WebSockets. Version 3 as the Python lobby spoke it (its own tests, carried over), and
-version 4: keys proved at hello, a key back taking its session over, bans, the directory, world groups (kept
-across a restart), the public page. No network beyond localhost.
+version 4: keys proved at hello, a key back taking its session over, bans, the directory, worlds (public or with a
+password; kept across a restart), linked browsers (3.1), the public page. No network beyond localhost.
 
     python3 test_lobby.py <path to the lobby binary>       (needs websockets and cryptography: requirements.txt)
 """
@@ -629,13 +629,13 @@ async def t_v4_hello(L):
     check("signed for another lobby (the one it dialled was not this): bad_proof", e.get("code"), "bad_proof")
     a = await join(L, "V4 A", proto=P4)
     w = a.welcome
-    check("proved: welcome, version 4, its key, the groups' limits, not an operator",
-          (w["proto"], w["key"], w["limits"]["groups"], w["limits"]["group_members"], w.get("admin", False)), (P4, a.key, 20, 64, False))
+    check("proved: welcome, version 4, its key, the worlds' limits, not an operator",
+          (w["proto"], w["key"], w["limits"]["groups"], w["limits"]["group_members"], w["limits"]["password"], w.get("admin", False)), (P4, a.key, 20, 50, [4, 64], False))
     old = await join(L, "V3 Old")
     lob = await a.last_lobby()
     o = office(lob, "V4 A")
     check("version 4 sees only version 4; it takes everything, its key the one it proved",
-          ([x["name"] for x in lob["offices"]], o["world"], o["links"], o["whisper"], o["key"], o["public"]), (["V4 A"], True, True, True, a.key, False))
+          ([x["name"] for x in lob["offices"]], o["world"], o["links"], o["whisper"], o["key"], "public" in o), (["V4 A"], True, True, True, a.key, False))
     await old.send(type="knock", to=a.id)
     check("a version-3 office cannot knock on a version-4 one", (await old.expect("error"))["code"], "not_found")
     await a.send(type="link", endpoint="ep-not-mine", addr={})
@@ -670,6 +670,172 @@ async def t_v4_takeover_and_resume(L):
     check("the old secret is spent too", secret != w["resume"], True)
 
 
+def web_pass(sk, key, host, expires=None, nonce=None):
+    import secrets as _s, time as _t
+    expires = expires or int(_t.time()) + 300
+    nonce = nonce or _s.token_hex(16)
+    sig = sk.sign(("%s pass\n%s\n%s\n%d\n%s" % (P4, host, key, expires, nonce)).encode()).hex()
+    return {"key": key, "expires": expires, "nonce": nonce, "signature": sig}
+
+
+UA = "Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0"
+
+
+async def browser(lob, sk=None, pass_=None, host=None):
+    """A browser (3.1): its own key (made, unless given), proved, with a web pass if given: (client, what answered:
+    web_welcome, browser_code, or the error that refused it)."""
+    sk, key = (sk, sk.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()) if sk else keypair()
+    c = Client(await connect(lob.url, user_agent_header=UA))
+    c.sk, c.key = sk, key
+    await c.send(type="hello", proto=P4, browser=key, **({"pass": pass_} if pass_ else {}))
+    m = json.loads(await asyncio.wait_for(c.ws.recv(), 2))
+    if m["type"] != "challenge":
+        return c, m
+    await c.send(type="prove", signature=sk.sign(("%s browser\n%s\n%s\n%s" % (P4, host or "127.0.0.1:%d" % lob.port, m["nonce"], key)).encode()).hex())
+    while True:
+        m = json.loads(await asyncio.wait_for(c.ws.recv(), 2))
+        if m["type"] in ("web_welcome", "browser_code", "error"):
+            return c, m
+
+
+async def t_browsers(L):
+    """3.1: a browser with its own key, linked to an office (by a web pass its office made, or by the pairing code it
+    shows, typed in the office's room), speaks for the office while the office is in the lobby: its chat, whispers,
+    worlds, knocks; never its door nor answering. Linked, it comes back by its key alone; unlinked by its office or by
+    itself, it is out."""
+    host = "127.0.0.1:%d" % L.port
+    a, b = await join(L, "Web A", proto=P4), await join(L, "Web B", proto=P4)
+    p = web_pass(a.sk, a.key, host)
+    w, wel = await browser(L, pass_=p)
+    check("a pass: the browser linked, and in as its office", (wel["type"], wel["id"], wel["name"], wel["key"], "resume" in wel), ("web_welcome", a.id, "Web A", a.key, False))
+    lob = await w.expect("lobby")
+    check("and it has the lobby, both offices", sorted(o["name"] for o in lob["offices"]), ["Web A", "Web B"])
+    bl = await a.expect("browsers")
+    check("its office hears its linked browsers: this one, what it is, online", [(x["key"], x["agent"], x["online"], len(x["pictures"])) for x in bl["browsers"]],
+          [(w.key, "Firefox on Linux", True, 3)])
+    w2, e = await browser(L, pass_=p)
+    check("the same pass again: refused, closed", (e.get("code"), await closed_code(w2)), ("bad_proof", 4401))
+    _, e = await browser(L, pass_=web_pass(a.sk, a.key, host, expires=1))
+    check("an expired one: refused", e.get("code"), "bad_proof")
+    _, e = await browser(L, pass_=web_pass(a.sk, a.key, "elsewhere.example"))
+    check("one for another lobby: refused", e.get("code"), "bad_proof")
+    other, okey = keypair()
+    _, e = await browser(L, pass_=web_pass(other, okey, host))
+    check("one from a workroom not in the lobby: refused", e.get("code"), "not_in_lobby")
+    x, e = await browser(L, sk=w.sk, host="elsewhere.example")
+    check("a browser's key is proved for this lobby: a proof for another, refused", (e.get("code"), await closed_code(x)), ("bad_proof", 4401))
+    await w.close()
+    await asyncio.sleep(0.2)
+    w, wel = await browser(L, sk=w.sk)
+    check("linked: back by its key alone (a reload, another day)", (wel["type"], wel["id"]), ("web_welcome", a.id))
+    await a.quiet(); await b.quiet(); await w.quiet()
+    await w.send(type="chat", text="hello from the web")
+    la, lb, lw = await a.expect("lobby_chat"), await b.expect("lobby_chat"), await w.expect("lobby_chat")
+    check("the browser says a line in the lobby: as its office, to everyone (its office too)", (lb["from"]["id"], lb["text"], la["text"], lw["text"]), (a.id, "hello from the web", "hello from the web", "hello from the web"))
+    await w.send(type="whisper", to=b.id, text="psst")
+    wb = await b.expect("whisper")
+    check("a whisper from the browser: from its office", (wb["from"]["id"], wb["text"]), (a.id, "psst"))
+    await b.send(type="whisper", to=a.id, text="back")
+    check("one to its office: the browser has it too", ((await a.expect("whisper"))["text"], (await w.expect("whisper"))["text"]), ("back", "back"))
+    await w.send(type="knock", to=b.id, message="from the web")
+    ks, kb = await a.expect("knock_sent"), await b.expect("knock")
+    check("a knock from the browser: its office knocks (its visit-client sees knock_sent), the door asked", (ks["to"], kb["from"]["id"], kb["message"]), (b.id, a.id, "from the web"))
+    check("and the browser sees it go", (await w.expect("knock_sent"))["to"], b.id)
+    await b.send(type="knock", to=a.id)
+    k = await a.expect("knock")
+    check("a knock on its office: the browser is told too", (await w.expect("knock"))["id"], k["id"])
+    for t, extra in (("answer", {"knock": k["id"], "accept": True}), ("door", {"public": True}), ("link", {"endpoint": None, "addr": None}), ("status", {"status": "busy"}),
+                     ("browser_code", {"code": "ABCD-EFGH"}), ("browser_revoke", {"key": w.key})):
+        await w.send(type=t, **extra)
+        e = await w.expect("error", skip=("lobby", "knock_sent", "knock", "answered"))
+        check("from the browser, never %s: not_from_web" % t, e["code"], "not_from_web")
+    await w.send(type="groups")
+    gl = await w.expect("groups", skip=("lobby", "knock_cancelled", "answered", "knock_sent", "knock"))
+    check("the world list, asked from the browser, to the browser", isinstance(gl["groups"], list), True)
+    await w.send(type="group_create", group="Webbers", open=True)
+    g1, g2 = await a.expect("group", skip=("lobby", "knock_cancelled", "answered", "browsers")), await w.expect("group", skip=("lobby", "knock_cancelled", "answered", "knock_sent", "knock"))
+    check("a world made from the browser: the office's, both told", (g1["name"], g1["owner"], g2["name"]), ("Webbers", a.key, "Webbers"))
+    await w.send(type="chat", text="")
+    check("its refusals go to the browser alone", ((await w.expect("error", skip=("lobby", "group", "knock_cancelled", "answered")))["code"], [m["type"] for m in await a.quiet() if m["type"] == "error"]), ("bad_message", []))
+
+    # A browser not linked: a pairing code, its office types it in its room, sees it, allows it.
+    p1, code = await browser(L)
+    check("a browser not linked: a pairing code (8 letters and digits) and its 3 pictures", (code["type"], len(code["code"]), len(code["pictures"]), code["expires_in"]),
+          ("browser_code", 8, 3, 600))
+    await p1.send(type="chat", text="hi")
+    check("waiting, it does nothing", (await p1.expect("error"))["code"], "not_linked")
+    await b.quiet()
+    await b.send(type="browser_code", code="zzzz-zzzz")
+    check("a code nobody waits with: not_found", (await b.expect("error"))["code"], "not_found")
+    await b.send(type="browser_code", code=code["code"][:4].lower() + "-" + code["code"][4:])
+    pend = await b.expect("browser_pending")
+    check("its office types its code: the browser waiting, the same pictures, what it is", (pend["key"], pend["pictures"], pend["agent"]), (p1.key, code["pictures"], "Firefox on Linux"))
+    await b.send(type="browser_allow", code=code["code"])
+    wel = await p1.expect("web_welcome")
+    check("allowed: the browser is in, as that office", (wel["id"], wel["name"]), (b.id, "Web B"))
+    bl = await b.expect("browsers", skip=("lobby",))
+    check("and in its office's list", [x["key"] for x in bl["browsers"]], [p1.key])
+    check("the code is spent", (await L.state())["pending"], 0)
+    await b.send(type="browser_revoke", key=p1.key)
+    e = await p1.expect("error", skip=("lobby", "group"))
+    check("unlinked by its office: told, closed 4403", (e["code"], await closed_code(p1)), ("unlinked", 4403))
+    p2, e = await browser(L, sk=p1.sk)
+    check("and its key no longer links it: a code again", e["type"], "browser_code")
+    await p2.close()
+    await w.send(type="browser_forget")
+    check("a browser unlinks itself: closed", await closed_code(w), 1000)
+    w3, e = await browser(L, sk=w.sk)
+    check("its key forgotten too", e["type"], "browser_code")
+    await w3.close()
+    w4, wel4 = await browser(L, pass_=web_pass(a.sk, a.key, host))
+    await w4.quiet()
+    await a.send(type="bye")
+    e = await w4.expect("error", skip=("lobby", "group"))
+    check("its office leaves: the browser is told, and closed", (e["code"], await closed_code(w4)), ("office_gone", 4410))
+    w5, e = await browser(L, sk=w4.sk)
+    check("linked, its office not in the lobby: refused until it is", (e.get("code"), await closed_code(w5)), ("not_in_lobby", 4410))
+    await b.send(type="bye")
+
+
+async def t_browsers_guarded(L):
+    """3.1, what keeps linked browsers safe: a link from another workroom never moves a linked browser by itself (the
+    page asks its person: `switch`), and moving it puts its other tabs out; a workroom's fifth browser in at once is
+    refused, and nothing of it is kept; one address has at most 4 browsers waiting with codes."""
+    host = "127.0.0.1:%d" % L.port
+    a, b = await join(L, "Guard A", proto=P4), await join(L, "Guard B", proto=P4)
+    w, wel = await browser(L, pass_=web_pass(a.sk, a.key, host))
+    check("a browser linked to A", wel["name"], "Guard A")
+    w2, _ = await browser(L, sk=w.sk)
+    pb = web_pass(b.sk, b.key, host)
+    x, e = await browser(L, sk=w.sk, pass_=pb)
+    check("B's link, to A's browser: refused, saying whose it is and whose it would be, closed 4409",
+          (e.get("code"), "Guard A" in e.get("message", "") and "Guard B" in e.get("message", ""), await closed_code(x)), ("linked_elsewhere", True, 4409))
+    x = Client(await connect(L.url, user_agent_header=UA))
+    await x.send(type="hello", proto=P4, browser=w.key, switch=True, **{"pass": pb})
+    ch = await x.expect("challenge")
+    await x.send(type="prove", signature=w.sk.sign(("%s browser\n%s\n%s\n%s" % (P4, host, ch["nonce"], w.key)).encode()).hex())
+    wel = await x.expect("web_welcome", skip=("lobby",))
+    check("its person agrees (switch): the same link, not spent by the refusal, makes it B's", wel["name"], "Guard B")
+    e1 = await w.expect("error", skip=("lobby", "group"))
+    check("and its tabs that were A's are out at once", (e1["code"], await closed_code(w), (await w2.expect("error", skip=("lobby", "group")))["code"]), ("unlinked", 4403, "unlinked"))
+    await x.close()
+    tabs = [ (await browser(L, sk=w.sk))[0] for _ in range(4) ]
+    y, e = await browser(L, sk=w.sk)
+    check("a fifth tab of B's in at once: refused (4429)", (e.get("code"), await closed_code(y)), ("too_many", 4429))
+    await asyncio.sleep(0.2)
+    check("and nothing of it kept (4 browsers in the lobby)", (await L.state())["browsers"], 4)
+    for t in tabs:
+        await t.close()
+    waiting = [await browser(L) for _ in range(4)]
+    check("4 browsers waiting with codes, from one address", [m["type"] for _, m in waiting], ["browser_code"] * 4)
+    z, e = await browser(L)
+    check("a fifth: busy", (e.get("code"), await closed_code(z)), ("busy", 1013))
+    for c, _ in waiting:
+        await c.close()
+    for c in (a, b):
+        await c.send(type="bye")
+
+
 async def t_flood(L):
     """A connection that sends faster than 20 messages a second (in bursts of 60) is closed; its session held."""
     a = await join(L, "Flood", proto=P4)
@@ -687,7 +853,7 @@ async def t_v4_directory(L):
     a = await join(L, "Dir A", proto=P4, about={"text": " A room with a view\n", "tags": ["cozy", "music"]}, public=True)
     b = await join(L, "Dir B", proto=P4)
     o = office(b.view, "Dir A")
-    check("hello with about and a public door: in the lobby's view", (o["about"], o["public"]), ({"text": "A room with a view", "tags": ["cozy", "music"]}, True))
+    check("hello with about (3.0's public door ignored): in the lobby's view", (o["about"], "public" in o), ({"text": "A room with a view", "tags": ["cozy", "music"]}, False))
     await b.send(type="about", about={"text": "x", "tags": ["Bad Tag"]})
     check("a tag is lower-case letters, digits and -", (await b.expect("error"))["code"], "bad_message")
     await b.send(type="about", about={"text": "x", "tags": ["a", "b", "c", "d", "e", "f"]})
@@ -695,16 +861,16 @@ async def t_v4_directory(L):
     await b.send(type="about", about={"text": "Quiet office", "tags": ["work", "work"]})
     o = office(await a.last_lobby(), "Dir B")
     check("about, its tags once each", o["about"], {"text": "Quiet office", "tags": ["work"]})
-    await a.send(type="door", public=False)
-    check("a door made not public", office(await b.last_lobby(), "Dir A")["public"], False)
+    await a.send(type="door", public=True)
+    check("3.0's door message: taken, nothing said", [m["type"] for m in await a.quiet() if m["type"] == "error"], [])
     page = json.loads(await asyncio.to_thread(L.get, "/api/lobby"))["lobby"]
-    check("the public page: rooms that describe themselves, no keys", sorted(r["name"] for r in page["rooms"]), ["Dir A", "Dir B"])
-    check("and nothing of their keys", "key" in json.dumps(page["rooms"]), False)
+    check("the public page: who is here with a line, no keys", sorted(r["name"] for r in page["users"]), ["Dir A", "Dir B"])
+    check("and nothing of their keys", "key" in json.dumps(page["users"]), False)
     await b.send(type="about", about=None)
     await b.quiet()
     await asyncio.sleep(2.1)   # (the page reads the lobby again at most every 2 s)
     page = json.loads(await asyncio.to_thread(L.get, "/api/lobby"))["lobby"]
-    check("about taken back: off the page, counted only", ([r["name"] for r in page["rooms"]], page["online"]), (["Dir A"], 2))
+    check("about taken back: off the page, counted only", ([r["name"] for r in page["users"]], page["online"]), (["Dir A"], 2))
     html = await asyncio.to_thread(L.get, "/")
     check("/ is the page", "<html" in html, True)
     for c in (a, b):
@@ -732,55 +898,92 @@ async def t_v4_bans(L, admin_sk):
         await x.send(type="bye")
 
 
+async def group_of(c, name, timeout=2.0):
+    """The next view of world `name` this client hears (other worlds' and the lobby's skipped)."""
+    while True:
+        m = await c.expect("group", timeout=timeout, skip=("lobby", "group", "browsers"))
+        if m["name"] == name:
+            return m
+
+
 async def t_v4_groups(L):
+    """Worlds (the protocol's groups): public (anyone joins) or with a password; their owner's to change, to take
+    members out of and keep keys out of, to hand on."""
     a, b, c = await join(L, "G A", proto=P4), await join(L, "G B", proto=P4), await join(L, "G C", proto=P4)
-    g = lambda m: m["type"] == "group"
-    await a.send(type="group_create", group="-bad")
-    check("a group's name is a name", (await a.expect("error"))["code"], "name_invalid")
-    await a.send(type="group_create", group="Hollow", about="  the valley folk ")
+    await a.send(type="group_create", group="-bad", open=True)
+    check("a world's name is a name", (await a.expect("error"))["code"], "name_invalid")
+    await a.send(type="group_create", group="Hollow")
+    check("a world is public or has a password: neither, refused (3.0's by-asking)", (await a.expect("error"))["code"], "bad_message")
+    await a.send(type="group_create", group="Hollow", about="  the valley folk ", open=True)
     v = await a.expect("group")
-    check("made: its owner the only member, by key", (v["name"], v["about"], v["open"], v["owner"], [m["key"] for m in v["members"]], v["pending"]),
-          ("Hollow", "the valley folk", False, a.key, [a.key], []))
-    await b.send(type="group_create", group="hollow")
-    check("a group's name is taken whatever its case", (await b.expect("error"))["code"], "name_taken")
+    check("made, public: its owner the only member, its bans its owner's to see", (v["name"], v["about"], v["open"], v["locked"], v["owner"], [m["key"] for m in v["members"]], v["bans"], v["ops"]),
+          ("Hollow", "the valley folk", True, False, a.key, [a.key], [], []))
+    await b.send(type="group_create", group="hollow", open=True)
+    check("a world's name is taken whatever its case", (await b.expect("error"))["code"], "name_taken")
     await b.send(type="group_join", group="HOLLOW")
-    w = await b.expect("group_answered")
-    r = await a.expect("group_request")
-    check("asking to join a group that is not open: it waits, its ops are asked", (w.get("accept"), r["group"], r["from"]["key"], r["from"]["name"]), (None, "Hollow", b.key, "G B"))
-    v = await a.expect("group")
-    check("and its owner's view has the request", [p["key"] for p in v["pending"]], [b.key])
-    await c.send(type="group_answer", group="Hollow", key=b.key, accept=True)
-    check("only its ops answer", (await c.expect("error"))["code"], "not_op")
-    await a.send(type="group_answer", group="Hollow", key=b.key, accept=True)
-    ans = await b.expect("group_answered", skip=("lobby", "group"))
-    vb = [m for m in await b.quiet() if g(m)][-1]
-    check("let in: told so, and the group whole, without its requests", (ans["accept"], [m["key"] for m in vb["members"]], vb.get("pending")), (True, [a.key, b.key], None))
+    vb = await group_of(b, "Hollow")
+    check("a public world: anyone in at once, and the world whole (no bans: not its owner)", ([m["key"] for m in vb["members"]], "bans" in vb), ([a.key, b.key], False))
     await b.send(type="group_say", group="Hollow", text=" hi all ")
     la, lb = await a.expect("group_chat", skip=("lobby", "group")), await b.expect("group_chat", skip=("lobby", "group"))
-    check("a group's chat: to its members, the sayer too", (la["group"], la["text"], la["from"]["key"], lb["text"]), ("Hollow", "hi all", b.key, "hi all"))
+    check("a world's chat: to its members, the sayer too", (la["group"], la["text"], la["from"]["key"], lb["text"]), ("Hollow", "hi all", b.key, "hi all"))
     check("and nobody else", [m["type"] for m in await c.quiet() if m["type"] not in ("lobby",)], [])
     await c.send(type="group_say", group="Hollow", text="let me in")
     check("a non-member says nothing there", (await c.expect("error"))["code"], "not_found")
-    await a.send(type="group_set", group="Hollow", open=True)
+
+    await a.send(type="group_create", group="Den", password="abc")
+    check("a password is 4 to 64 characters", (await a.expect("error", skip=("lobby", "group")))["code"], "bad_password")
+    await a.send(type="group_create", group="Den", about="by invitation", password="open sesame")
+    v = await group_of(a, "Den")
+    check("made with a password: locked, not public", (v["locked"], v["open"], [m["key"] for m in v["members"]]), (True, False, [a.key]))
+    await c.send(type="group_join", group="Den")
+    check("joining it without one: password_required", (await c.expect("error"))["code"], "password_required")
+    await c.send(type="group_join", group="den", password="nope")
+    check("with the wrong one: wrong_password", (await c.expect("error", skip=("lobby", "group")))["code"], "wrong_password")
+    await c.send(type="group_join", group="Den", password="open sesame")
+    vc = await group_of(c, "Den")
+    check("with its password: in", [m["key"] for m in vc["members"]], [a.key, c.key])
     await a.quiet()
-    await c.send(type="group_join", group="Hollow")
-    vc = await c.expect("group")
-    check("an open group takes anyone who asks", [m["key"] for m in vc["members"]], [a.key, b.key, c.key])
     await c.send(type="groups")
     lst = await c.expect("groups", skip=("lobby", "group"))
-    check("the directory: its name, about, size, how many online", [(x["name"], x["open"], x["members"], x["online"]) for x in lst["groups"]], [("Hollow", True, 3, 3)])
-    await a.send(type="group_op", group="Hollow", key=b.key, op=True)
-    await a.quiet()
-    await b.send(type="group_remove", group="Hollow", key=a.key)
-    check("its owner cannot be taken out", (await b.expect("error", skip=("lobby", "group")))["code"], "not_op")
-    await b.send(type="group_remove", group="Hollow", key=c.key)
+    check("the directory: name, public, locked, size, online; no password", ([(x["name"], x["open"], x["locked"], x["members"], x["online"]) for x in lst["groups"]], "password" in json.dumps(lst)),
+          ([("Den", False, True, 2, 2), ("Hollow", True, False, 2, 2)], False))
+
+    await c.send(type="group_remove", group="Den", key=a.key)
+    check("only its owner takes members out", (await c.expect("error", skip=("lobby", "group")))["code"], "not_owner")
+    await a.send(type="group_remove", group="Den", key=c.key, ban=True)
     gl = await c.expect("group_left", skip=("lobby", "group"))
-    check("an op takes a member out: told so", (gl["group"], gl["reason"]), ("Hollow", "removed"))
-    await b.quiet()
+    va = await group_of(a, "Den")
+    check("its owner takes a member out and keeps them out: told so; its bans", (gl["group"], gl["reason"], va["bans"]), ("Den", "banned", [c.key]))
+    await c.send(type="group_join", group="Den", password="open sesame")
+    check("kept out, the password does not let them in", (await c.expect("error", skip=("lobby", "group")))["code"], "banned")
+    await a.send(type="group_unban", group="Den", key=c.key)
+    check("let back in: off its bans", (await group_of(a, "Den"))["bans"], [])
+    await c.send(type="group_join", group="Den", password="open sesame")
+    await group_of(c, "Den")
+    await a.quiet()
+    await a.send(type="group_set", group="Den", password="new secret")
+    va = await group_of(a, "Den")
+    check("a new password: its members stay", (va["locked"], [m["key"] for m in va["members"]]), (True, [a.key, c.key]))
+    await b.send(type="group_join", group="Den", password="open sesame")
+    check("the old one no longer opens it", (await b.expect("error", skip=("lobby", "group")))["code"], "wrong_password")
+    await a.send(type="group_set", group="Den", open=True)
+    check("made public: its password gone", ((await group_of(a, "Den"))["open"]), True)
+    await b.send(type="group_join", group="Den")
+    check("and anyone in", [m["key"] for m in (await group_of(b, "Den"))["members"]], [a.key, c.key, b.key])
+    await a.send(type="group_set", group="Den", open=False)
+    check("not public, and no password: refused", (await a.expect("error", skip=("lobby", "group")))["code"], "bad_message")
+    await a.send(type="group_owner", group="Den", key=b.key)
+    check("handed on: its new owner", (await group_of(b, "Den"))["owner"], b.key)
+    await a.send(type="group_set", group="Den", about="mine")
+    check("the old owner changes it no more", (await a.expect("error", skip=("lobby", "group")))["code"], "not_owner")
+    await b.send(type="group_delete", group="Den")
+    lefts = [(await x.expect("group_left", skip=("lobby", "group")))["reason"] for x in (a, b, c)]
+    check("its owner ends it: every member told", lefts, ["deleted"] * 3)
+
     await a.send(type="group_leave", group="Hollow")
     await a.expect("group_left", skip=("lobby", "group"))
-    vb = [m for m in await b.quiet() if g(m)][-1]
-    check("its owner leaves: its first op owns it", (vb["owner"], vb["ops"], [m["key"] for m in vb["members"]]), (b.key, [], [b.key]))
+    vb = await group_of(b, "Hollow")
+    check("its owner leaves: its oldest member owns it", (vb["owner"], [m["key"] for m in vb["members"]]), (b.key, [b.key]))
     st = await L.state()
     check("the lobby keeps it", st["groups"], ["Hollow"])
     await b.send(type="group_leave", group="Hollow")
@@ -791,24 +994,62 @@ async def t_v4_groups(L):
         await x.send(type="bye")
 
 
+async def t_world_size(S):
+    """A world takes the members its lobby says (--world-size), at most."""
+    a, b, c = await join(S, "Z A", proto=P4), await join(S, "Z B", proto=P4), await join(S, "Z C", proto=P4)
+    check("the welcome says the size", a.welcome["limits"]["group_members"], 2)
+    await a.send(type="group_create", group="Pair", open=True)
+    await a.expect("group")
+    await b.send(type="group_join", group="Pair")
+    await group_of(b, "Pair")
+    await c.send(type="group_join", group="Pair")
+    check("a third, past --world-size 2: full", (await c.expect("error"))["code"], "full")
+    for x in (a, b, c):
+        await x.send(type="bye")
+
+
 async def t_v4_groups_kept():
-    """A lobby with a data directory keeps its groups across a restart, and a member coming back hears its groups."""
+    """A lobby with a data directory keeps its worlds and its linked browsers across a restart: a member coming back
+    hears its worlds, a linked browser comes back in by its key. A world made before 3.1 that took requests is closed
+    until its owner makes it public or gives it a password."""
     d = os.path.join(TMP, "kept")
     K = await Lobby("--data-dir", d).start()
     try:
         a = await join(K, "Keeper", proto=P4)
         await a.send(type="group_create", group="Lasting", open=True)
         await a.expect("group")
+        w, wel = await browser(K, pass_=web_pass(a.sk, a.key, "127.0.0.1:%d" % K.port))
+        check("a browser linked", wel["type"], "web_welcome")
+        await w.close()
         await a.send(type="bye")
     finally:
         await K.stop()
-    check("groups.json written", os.path.isfile(os.path.join(d, "groups.json")), True)
+    check("groups.json and browsers.json written", (os.path.isfile(os.path.join(d, "groups.json")), os.path.isfile(os.path.join(d, "browsers.json"))), (True, True))
+    with open(os.path.join(d, "groups.json")) as f:
+        kept = json.load(f)
+    kept.append({"name": "Old Ask", "about": "", "open": False, "owner": a.key, "ops": [], "members": [{"key": a.key, "name": "Keeper", "since": 1}], "pending": [], "created": 1})
+    with open(os.path.join(d, "groups.json"), "w") as f:
+        json.dump(kept, f)
     K = await Lobby("--data-dir", d).start()
     try:
-        c, w = await hello4(K, "Keeper", sk=a.sk)
-        v = await c.expect("group")
-        check("after a restart: the group, told to its member as it says hello", (v["name"], v["owner"]), ("Lasting", a.key))
-        await c.send(type="bye")
+        c, wel = await hello4(K, "Keeper", sk=a.sk)
+        names = sorted([(await c.expect("group"))["name"] for _ in range(2)])
+        check("after a restart: its worlds, told to their member as it says hello", names, ["Lasting", "Old Ask"])
+        w2, wel = await browser(K, sk=w.sk)
+        check("and its linked browser, back in by its key", (wel["type"], wel.get("name")), ("web_welcome", "Keeper"))
+        await w2.close()
+        o = await join(K, "Outsider", proto=P4)
+        await o.send(type="groups")
+        lst = {x["name"]: x for x in (await o.expect("groups"))["groups"]}
+        check("a world that took requests (3.0): neither public nor locked", (lst["Old Ask"]["open"], lst["Old Ask"]["locked"]), (False, False))
+        await o.send(type="group_join", group="Old Ask")
+        check("closed: nobody joins", (await o.expect("error"))["code"], "closed")
+        await c.send(type="group_set", group="Old Ask", password="at last")
+        await group_of(c, "Old Ask")
+        await o.send(type="group_join", group="Old Ask", password="at last")
+        check("its owner gives it a password: in with it", [m["name"] for m in (await group_of(o, "Old Ask"))["members"]], ["Keeper", "Outsider"])
+        for x in (c, o):
+            await x.send(type="bye")
     finally:
         await K.stop()
 
@@ -828,12 +1069,12 @@ async def t_no_v3():
 async def main():
     admin_sk, admin_key = keypair()
     L = await Lobby("--v3", "--admin", admin_key, "--title", "Test lobby").start()
-    S = await Lobby("--v3", "--resume", "1").start()
+    S = await Lobby("--v3", "--resume", "1", "--world-size", "2").start()
     T = await Lobby("--v3", "--knock-ttl", "1").start()
     tests = [(t, L) for t in (t_hello, t_hello_rules, t_knock_refusals, t_visit, t_end_and_full, t_resume, t_resume_replays_visits, t_rename,
-                               t_link_withdrawn, t_keys, t_watch, t_link, t_chat, t_whisper, t_v4_hello, t_v4_takeover_and_resume, t_flood, t_v4_directory,
+                               t_link_withdrawn, t_keys, t_watch, t_link, t_chat, t_whisper, t_v4_hello, t_v4_takeover_and_resume, t_browsers, t_browsers_guarded, t_flood, t_v4_directory,
                                t_v4_groups)]
-    tests += [(t_resume_window_and_bye, S), (t_knock_timeout_and_health, T)]
+    tests += [(t_resume_window_and_bye, S), (t_world_size, S), (t_knock_timeout_and_health, T)]
     try:
         for t, lob in tests:
             print("\n" + t.__name__[2:])

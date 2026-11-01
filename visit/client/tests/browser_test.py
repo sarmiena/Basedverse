@@ -527,6 +527,39 @@ async def run(a, b, url):
         await a.js("v.setDoor(true); v.removeGuest(v.guests[0].key)")
         check("door open again, B no guest", await a.until("v.door === 'open' && v.guests.length === 0"), True)
 
+        print("\nthe lobby in a browser, from the panel (3.1): a QR code for a phone; a browser's code typed, allowed, unlinked")
+        await a.js("document.querySelector('.visit-panel button[data-v=qr]').click()")
+        check("A's panel: 📱 Phone shows a QR code (an SVG from its visit-client, as an image)", await a.until("(i => !!i && i.complete && i.naturalWidth > 0)(document.querySelector('.visit-panel .qr img'))"), True)
+        await a.shot("a_qr.png")
+        await a.js("document.querySelector('.visit-panel button[data-v=qr]').click()")
+        check("and again: gone", await a.until("!document.querySelector('.visit-panel .qr')"), True)
+        # B's Chrome stands in for a browser at the lobby's page: a key of its own (Web Crypto's Ed25519), proved; a code.
+        await b.js("""window.pairing = (async () => {
+          const hex = x => Array.from(new Uint8Array(x), y => y.toString(16).padStart(2, '0')).join('');
+          const p = await crypto.subtle.generateKey({ name: 'Ed25519' }, false, ['sign', 'verify']);
+          const pub = hex(await crypto.subtle.exportKey('raw', p.publicKey));
+          const ws = new WebSocket('%s'); window.pairMsgs = [];
+          ws.onopen = () => ws.send(JSON.stringify({ type: 'hello', proto: 'basedverse-lobby/4', browser: pub }));
+          ws.onmessage = async e => { const m = JSON.parse(e.data); window.pairMsgs.push(m);
+            if (m.type === 'challenge') ws.send(JSON.stringify({ type: 'prove', signature: hex(await crypto.subtle.sign({ name: 'Ed25519' }, p.privateKey,
+              new TextEncoder().encode('basedverse-lobby/4 browser\\n%s\\n' + m.nonce + '\\n' + pub))) })); };
+          return pub; })(); 1""" % (url, url.split("//")[1].rstrip("/")))
+        code = await b.until("(window.pairMsgs || []).find(m => m.type === 'browser_code') && window.pairMsgs.find(m => m.type === 'browser_code').code")
+        pics = await b.js("window.pairMsgs.find(m => m.type === 'browser_code').pictures")
+        await a.js("document.querySelector('.visit-panel button[data-v=browsers]').click()")
+        check("A's panel: Link a browser asks for its code", await a.until("!!document.querySelector('.visit-panel form[data-f=code] input')"), True)
+        await a.js("(f => { f.elements.code.value = '%s'; f.requestSubmit(); })(document.querySelector('.visit-panel form[data-f=code]'))" % (code[:4].lower() + "-" + code[4:]))
+        check("A types it: the browser waiting, its pictures the same as on its screen", await a.until(
+            "(r => r && r.textContent.includes(%s) && r.textContent.includes('Chrome on Linux'))(document.querySelector('.visit-panel .knock'))" % json.dumps(pics)), True)
+        await a.js("document.querySelector('.visit-panel button[data-v=b_allow]').click()")
+        check("A links it: the browser is in the lobby as A", await b.until("(window.pairMsgs.find(m => m.type === 'web_welcome') || {}).name"), "A")
+        check("and A's panel lists it, in now, to unlink", await a.until("v.browsers.length === 1 && v.browsers[0].online && !!document.querySelector('.visit-panel button[data-v=b_unlink]')"), True)
+        check("and says so, once: a browser linked to A just now", await a.until("[...document.querySelectorAll('.visit-panel .note')].some(n => n.textContent.includes('is linked to you now'))"), True)
+        await a.js("document.querySelector('.visit-panel button[data-v=b_unlink]').click()")
+        check("A unlinks it: the browser is told, and out", await b.until("(window.pairMsgs.find(m => m.type === 'error') || {}).code"), "unlinked")
+        check("and A's list is empty", await a.until("v.browsers.length === 0"), True)
+        await a.js("document.querySelector('.visit-panel button[data-v=browsers]').click()")
+
         print("\nthe world: friends' plots round your room, walked onto")
         world = "http://127.0.0.1:%d/room.html?world=1" % WEB_PORT
         await a.goto(world)
