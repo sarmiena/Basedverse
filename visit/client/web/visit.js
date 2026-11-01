@@ -3704,7 +3704,11 @@
     // `self`: a user page's own body at home (engine/SPEC.md 4): "mine" (the default) hides the room's copy of it, as a
     // visitor's page does (8.1), for the page's own; "room" shows the room's copy, with all the room does to it (a
     // seat, a drink, a mount), for a page that draws none of its own there. Settable as the page goes (first person).
-    constructor(v, { scene, renderer, three, ground = 0x30363d, gap = WORLD_GAP, clipOwn = true, bubbles = true, speaking = true, self = "mine" } = {}) {
+    // `cull`: a friend's plot wholly out of the camera's view left out of the frame, its shadows too (the default;
+    // false draws every plot every frame). `shadowMs`: how often a friend's plot's lights work out their shadows,
+    // in ms (250, each plot on its own beat; 0: every frame). Never your own room, nor the plot you are in: both
+    // drawn every frame, their shadows too.
+    constructor(v, { scene, renderer, three, ground = 0x30363d, gap = WORLD_GAP, clipOwn = true, bubbles = true, speaking = true, self = "mine", cull = true, shadowMs = 250 } = {}) {
       const hk = v._hooks;
       if (!hk && !(v.role === "user" && three && three.REVISION && renderer)) throw new Error(v.role === "user" ? "visit.world needs { three, renderer }: the three.js this page draws with, and its renderer (its room comes from its host)" : "visit.world: v.host first (the world is drawn with your three.js, round your plot)");
       this.v = v; this.T = hk ? hk.scene.three : three;
@@ -3713,7 +3717,8 @@
       if ((hk && !this.scene) || !this.renderer) throw new Error("visit.world needs { scene, renderer }: your whole scene, and the renderer that draws it");
       Object.assign(this, { gap: Number(gap) >= 0 ? Number(gap) : WORLD_GAP, clipOwn: clipOwn !== false, self: self === "room" ? "room" : "mine", in: null, home: null, bounce: null, yHome: null, me: null,
         bubbles: bubbles === false && speaking === false ? null : new Bubbles(this.T), showLines: bubbles !== false, showSpeaking: speaking !== false,
-        refused: new Map(), holders: new Map(), sent: { at: 0, sig: "" }, look: { yaw: 0, pitch: 0 }, list: [], listAt: -1, plots: [], told: new Map() });
+        refused: new Map(), holders: new Map(), sent: { at: 0, sig: "" }, look: { yaw: 0, pitch: 0 }, list: [], listAt: -1, plots: [], told: new Map(),
+        cull: cull !== false, shadowMs: Number(shadowMs) > 0 ? Number(shadowMs) : 0, drawn: { plots: 0, out: 0 } });
       const T = this.T;
       this.commons = new T.Scene();   // the ground between plots
       if (ground !== null) {
@@ -4045,8 +4050,44 @@
     }
     leave() { const w = this.in != null && this.v._watches.get(this.in); if (w) this._exit(w); }
 
+    // A friend's plot, this frame (8.4, "Drawing"): true when it is left out, its rectangle wholly out of the camera's
+    // view (its shadows only ever land inside it, so nothing of it would show), else its lights put on their beat
+    // (shadowMs: three.js's own per-light shadow.autoUpdate, no shader rebuilt), or back to every frame while you are
+    // in it. New to the world, back in view, or stepped into or out of: its shadows worked out at once. In VR the
+    // eyes are not this camera, so nothing is left out there.
+    _neighbour(x, h, camera, now) {
+      const T = this.T, q = this._nb || (this._nb = { f: new T.Frustum(), m: new T.Matrix4(), b: new T.Box3(), st: new WeakMap(), n: 0, at: -1 });
+      let st = q.st.get(h);
+      const fresh = !st;
+      if (!st) q.st.set(h, st = { lights: null, litAt: 0, y: null, at: now + (q.n++ * 61) % (this.shadowMs || 1), out: false, inside: false });
+      // Its lights, and how high and low it reaches (a plot's rectangle says nothing of that, and a box as tall as the
+      // camera sees is nearly always in a view that looks down): looked at again every 2 s, as a room changes.
+      if (!st.lights || now - st.litAt >= 2000) {
+        st.lights = []; st.litAt = now;
+        h.holder.traverse(o => { if (o.isLight && o.shadow) st.lights.push(o); });
+        const b = new T.Box3().setFromObject(h.holder);
+        st.y = b.isEmpty() ? null : [b.min.y - 1, b.max.y + 1];
+      }
+      const inside = !!(x.w && this.in != null && x.w.channel === this.in);
+      if (this.cull && !inside && st.y && !(this.renderer.xr && this.renderer.xr.isPresenting)) {
+        if (q.at !== now) { q.at = now; camera.updateMatrixWorld(); q.f.setFromProjectionMatrix(q.m.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)); }
+        const [x0, z0, x1, z1] = x.rect;
+        q.b.min.set(x0, st.y[0], z0); q.b.max.set(x1, st.y[1], z1);
+        if (!q.f.intersectsBox(q.b)) { st.out = true; return true; }
+      }
+      const back = fresh || st.out || inside !== st.inside;
+      st.out = false; st.inside = inside;
+      if (this.shadowMs && (back || now >= st.at)) {
+        st.at = now + this.shadowMs;
+        for (const l of st.lights) { l.shadow.autoUpdate = inside; if (!inside) l.shadow.needsUpdate = true; }
+      }
+      return false;
+    }
+
     // Your room (clipped to your plot), the ground between plots, then each plot (clipped to its own), into one
-    // depth buffer: what is nearer hides what is behind, across plots. Each plot lit by its own lights.
+    // depth buffer: what is nearer hides what is behind, across plots. Each plot lit by its own lights. A friend's
+    // plot out of view is left out, and its lights' shadows are worked out on a beat (cull, shadowMs; _neighbour);
+    // world.drawn says how many plots this frame drew and left out.
     render(camera) {
       const t0 = this.v._perf ? performance.now() : 0;
       try { this._render(camera); } finally { if (this.v._perf) this.v._pt("draw", performance.now() - t0); }
@@ -4076,23 +4117,33 @@
         const far = q => Math.hypot(Math.max(q[0] - eye.x, 0, eye.x - q[2]), Math.max(q[1] - eye.z, 0, eye.z - q[3]));
         const home = [mine.center[0] - mine.size[0] / 2, mine.center[1] - mine.size[1] / 2, mine.center[0] + mine.size[0] / 2, mine.center[1] + mine.size[1] / 2];
         const passes = [...(this.scene ? [{ x: null, d: far(home) }] : []), ...list.filter(x => x.kept || (x.w && x.w.scene)).map(x => ({ x, d: far(x.rect) }))].sort((a, b) => b.d - a.d);
+        let drawn = 0, out = 0;
         for (const { x } of passes) {
           if (!x) {   // your own room (its sky already drawn)
             const bg = this.scene.background;
             this.scene.background = null;
             r.clippingPlanes = own;
             try { r.render(this.scene, camera); } finally { this.scene.background = bg; }
+            drawn++;
             continue;
           }
-          if (x.kept) { const h = this._holder(x); r.clippingPlanes = h.planes; r.render(h.holder, camera); continue; }   // a guest away: its kept plot
-          const h = this._holder(x), s = x.w.scene;
+          const h = this._holder(x);
+          if (x.kept) {   // a guest away: its kept plot
+            if (this._neighbour(x, h, camera, now)) { out++; continue; }
+            r.clippingPlanes = h.planes; r.render(h.holder, camera); drawn++;
+            continue;
+          }
+          const s = x.w.scene;
+          if (now - s.gcAt > 30000) { s.gcAt = now; v._sceneGc(s); }   // what its room no longer uses, freed (drawn or not)
+          if (!x.home && this._neighbour(x, h, camera, now)) { out++; continue; }   // a user page's own room: always drawn
+          drawn++;
           if (s.offset !== null) v._sceneInterp(s, now - s.offset - INTERP_MS);
           const shown = x.w.home && this.self === "room";   // at home, the room's copy of you is you (self)
           for (const o of s.own) o.visible = shown;
           r.clippingPlanes = h.planes;
           r.render(h.holder, camera);
-          if (now - s.gcAt > 30000) { s.gcAt = now; v._sceneGc(s); }   // what its room no longer uses, freed
         }
+        this.drawn = { plots: drawn, out };
         if (this.bubbles && ((this.showLines && v._chats.size) || (this.showSpeaking && v.voices.some(x => x.speaking)) || this.bubbles.by.size)) this._bubbles(camera, list);
       } finally { r.autoClear = auto; r.clippingPlanes = planes; }
     }

@@ -550,6 +550,14 @@ async def run(a, b, url):
         frames0 = await a.js("window.renders")
         await asyncio.sleep(0.5)
         check("and A's page goes on drawing", await a.js("window.renders") > frames0 + 10, True)
+        # A friend's plot out of the camera's view is left out of the frame (8.4, "Drawing"): a camera 5 m west of it,
+        # at eye height, facing it draws it, facing away leaves it out. Each page with its own three.js (r128, r160).
+        aside = """(() => { const w = room.world, T = w.T, x = w._layout().find(p => !p.home), h = w._holder(x), z = (x.rect[1] + x.rect[3]) / 2;
+          const at = look => { const c = new T.PerspectiveCamera(60, 1, 0.1, 500); c.position.set(x.rect[0] - 5, 1.6, z); c.lookAt(x.rect[0] + look, 1.6, z); c.updateMatrixWorld(); return w._neighbour(x, h, c, performance.now()); };
+          const r = [at(10), at(-10)]; delete w._nb; return r; })()"""
+        check("a friend's plot in view drawn, out of view left out (A, r128)", await a.js(aside), [False, True])
+        check("and in B's world (r160)", await b.js(aside), [False, True])
+        check("world.drawn: A's frame drew its room and B's plot", await a.until("room.world.drawn.plots + room.world.drawn.out === 2"), True)
         await a.shot("a_world.png")
 
         async def walk(tab, x, z, yaw, secs, until=None):

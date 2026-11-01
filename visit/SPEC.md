@@ -992,7 +992,11 @@ An office's world is its own room with its friends' plots round it, drawn by its
   depth buffer, lit by its own lights only (each plot a scene of its own), with its fog. A plot lit before r155's
   way (lights times pi) drawn by a page lit after it has its lights' strength times pi and its bulbs not dimming
   with distance, and the other way over pi: approximately its look. The watcher's own body, which the host draws
-  for others, the watcher's page does not draw: it draws itself.
+  for others, the watcher's page does not draw: it draws itself. A friend's plot wholly out of the camera's view
+  (its rectangle, as high and low as its scene reaches) is left out of the frame, its shadows too, since they only
+  land inside it; and a friend's plot's lights work out their shadows every 250 ms, not every frame, each plot on
+  its own beat. The office's own room and the plot its user is in are always drawn, with every-frame shadows
+  (`v.world({ cull, shadowMs })`; `world.drawn` says how many plots a frame drew and left out).
 - **Walking.** At home the page walks its user by its own walls. When where it has them is inside a plot's
   rectangle it steps in (`enter`, where, turned into that room's terms; the host's `spawn` hears it as `at`). In,
   the host has them: their input goes to it, its `yaw` the look in the host's terms (not relative to an
