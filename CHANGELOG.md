@@ -22,7 +22,8 @@ keep the names, so offices on different versions still meet and visit each other
   machine's load. `v.pick(key, name)`, `v.unpick(key)`, `v.picks`, `v.isPicked(key)`, `v.maxPicks`; `pick`,
   `unpick` and `picks` on the page's socket (`picks` replaces `guests`, with the door). Unpicked, its watch ends and
   where you had placed it is forgotten. Your state file keeps your picks; one from before 3.3 picks the plots you had
-  placed (Map), and lets the guest list go.
+  placed (Map), and lets the guest list go. A room you picked comes out from the Map too (its room panel's **Take out of my world**),
+  in the lobby or away, as from the panel's 🗺 ✓ (one away has a row of its own there, "away").
 - **Ignore someone in chat, as in WoW** (8.9). Click a name in the chat window: **Whisper**, **Ignore** (or
   **Unignore**); or `/ignore name`, `/unignore name`, `/ignore` alone to list them. A person is ignored by their
   office's key; one of a room's figures (`say_as`) by that room's key and its id, so muting one room's guide mutes no

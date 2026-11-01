@@ -5988,7 +5988,7 @@
 
     function drawSide(d) {
       const p = d.list.find(q => q.key === sel), theirs = v.seen.find(q => q.key === sel), others = v.seen.filter(q => !d.list.some(p => p.key === q.key));
-      const sig = JSON.stringify(p ? [p.key, p.at, p.placed, theirs] : theirs ? ["only", theirs] : ["list", d.list.map(q => [q.key, q.name]), others]);
+      const sig = JSON.stringify(p ? [p.key, p.at, p.placed, theirs, v.isPicked(p.key)] : theirs ? ["only", theirs] : ["list", d.list.map(q => [q.key, q.name]), others]);
       if (sig === sideSig || (side.contains(document.activeElement) && document.activeElement.tagName === "INPUT")) return;
       sideSig = sig;
       const pick = (q, sub) => `<button type="button" class="pick" data-m="pick" data-k="${esc(q.key)}">${esc(q.name || "?")}${sub}</button>`;
@@ -6004,6 +6004,7 @@
         + (p ? `<div class="row">x <input data-f="x" value="${r2(p.at.x)}"> z <input data-f="z" value="${r2(p.at.z)}"></div>`
           + `<div class="row">${["not turned", "turned a quarter left", "turned half round", "turned a quarter right"][p.at.turn]} <button type="button" data-m="ccw" title="a quarter turn left">⟲</button><button type="button" data-m="cw" title="a quarter turn right">⟳</button></div>`
           + `<div class="row"><button type="button" data-m="auto" title="where the world puts it by itself">Back to the ring</button></div>`
+          + (v.isPicked(p.key) ? `<div class="row"><button type="button" data-m="unpick" title="out of your world: its plot, where you put it, and what was kept of it while they are away all go (in the lobby or not)">Take out of my world</button></div>` : "")
           : `<div class="muted">not in your world</div>`)
         + (theirs ? theirView(theirs, v._plotMetres()) : `<div class="muted">you are not in their world (or they have not said)</div>`)
         + `<button type="button" data-m="unsel">All rooms</button>`;
@@ -6067,6 +6068,7 @@
       else if (m === "unsel") { sel = null; draw(); }
       else if (m === "cw" || m === "ccw") turnSel(m === "cw" ? -1 : 1);   // a turn is a quarter turn left
       else if (m === "auto" && p) { pending.delete(p.key); v.unplace(p.key); }
+      else if (m === "unpick" && p) { pending.delete(p.key); v.unpick(p.key); sel = null; sideSig = ""; draw(); }   // away or not
     });
     side.addEventListener("change", e => {
       const f = e.target.dataset.f, d = plots(), p = d && d.list.find(q => q.key === sel), n = Number(e.target.value);
