@@ -1,6 +1,6 @@
 [package]
 name = "lobby-proto"
-version = "3.0.0"
+version = "3.0.1"
 edition = "2021"
 license = "MIT"
 description = "What the lobby and visit-client agree on (../../visit/SPEC.md 6): the messages, the limits, the name rule, what a hello signs"

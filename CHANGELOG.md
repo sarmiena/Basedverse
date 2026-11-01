@@ -10,6 +10,14 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v3.0.1 — 2026-11-01 — the owner's visit kept through the lobby's sessions
+
+- **Your own room stays round you when the lobby's session changes.** A new session (joining the lobby, as after
+  signing in), going away, signing out, or a dropped connection resumed ended every visit, the owner's visit
+  ([engine/SPEC.md](engine/SPEC.md) 4) too: the person's page lost its home (its room) until it was reloaded. In 3.0
+  this happened as the workroom joined the lobby after its page had connected. The owner's visit is its own pages',
+  nothing of the lobby's: now only the lobby's visits end. Nothing to do: take 3.0.1.
+
 ## v3.0.0 — 2026-10-31 — the lobby in Rust: keys proved, signed in to take part, world groups, its own relay, for anyone to host
 
 **The lobby's protocol is `basedverse-lobby/4`.** Every workroom upgrades, and the lobby with it. A lobby run with

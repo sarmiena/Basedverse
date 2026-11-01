@@ -2410,7 +2410,7 @@ impl Core {
                     // Back after a drop: a visit that ended while this office was away is over (the lobby
                     // lists those it still has; one agreed meanwhile follows as a `visit`).
                     let live: Vec<&str> = live.iter().filter_map(Value::as_str).collect();
-                    let over: Vec<String> = self.visits.keys().filter(|id| !live.contains(&id.as_str())).cloned().collect();
+                    let over: Vec<String> = self.visits.values().filter(|v| !v.local && !live.contains(&v.id.as_str())).map(|v| v.id.clone()).collect();
                     for id in over {
                         self.end_visit(&id, "gone");
                     }
@@ -2713,8 +2713,10 @@ impl Core {
         }
     }
 
+    /// Every visit the lobby agreed: a new session, away, or signed out. Not the owner's visit (engine/SPEC.md 4): it is
+    /// between this office's own two pages, nothing of the lobby's, and goes with its pages alone.
     fn end_all(&mut self, reason: &str) {
-        for id in self.visits.keys().cloned().collect::<Vec<_>>() {
+        for id in self.visits.values().filter(|v| !v.local).map(|v| v.id.clone()).collect::<Vec<_>>() {
             self.end_visit(&id, reason);
         }
     }

@@ -1467,6 +1467,19 @@ async def main():
         await h.send(type="host", three="128")
         await u.until(lambda m: m["type"] == "host_resumed")
         check("and the person's home goes on", True, True)
+        # The owner's visit is nothing of the lobby's: a new session (signed out and in), or a dropped one resumed,
+        # leaves it be.
+        had = []   # every message the person's page has meanwhile
+        await sign_out("D")
+        await u.until(lambda m: had.append(m) or (m["type"] == "signed_in" and not m["signed_in"]))
+        await sign_in("D")
+        await u.until(lambda m: had.append(m) or m["type"] == "online", timeout=20)
+        await L.post("/debug/drop/" + await L.id_of("D"))
+        await u.until(lambda m: had.append(m) or m["type"] == "online", timeout=20)
+        await asyncio.sleep(0.5)
+        had += [m for m in [u.texts.get_nowait() for _ in range(u.texts.qsize())] if m]
+        gone = [m for m in had if m["type"] == "visit_ended" and m.get("home")]
+        check("signed out and in, then a drop resumed: the person's home goes on (the owner's visit is not the lobby's)", gone, [])
         both = await Page(7414, td).open()
         rboth = await both.expect("ready")
         check("a page without a role takes both slots: no role, no owner's visit; the two pages closed, replaced",
