@@ -243,6 +243,10 @@ pub enum ToLobby {
         chat: bool,
         #[serde(default, skip_serializing_if = "is_false", deserialize_with = "truthy")]
         whisper: bool,
+        /// 3.5, any version: it takes voice knocks and huddles (an office before 3.5 would take a voice knock for a
+        /// knock to visit, so only an office that says so is sent one).
+        #[serde(default, skip_serializing_if = "is_false", deserialize_with = "truthy")]
+        voice: bool,
         /// Version 4: the room's line, in the lobby's list of who is here.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         about: Option<About>,
@@ -262,6 +266,12 @@ pub enum ToLobby {
         watch: bool,
         #[serde(default, skip_serializing_if = "is_false", deserialize_with = "truthy")]
         link: bool,
+        /// 3.5: to talk, voice alone (no room, no plot): a voice visit once answered.
+        #[serde(default, skip_serializing_if = "is_false", deserialize_with = "truthy")]
+        voice: bool,
+        /// 3.5, with `voice`: to join the huddle the door started in this world.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        huddle: Option<String>,
     },
     Answer {
         #[serde(default, deserialize_with = "id_or_none")]
@@ -327,6 +337,12 @@ pub enum ToLobby {
     GroupOwner { group: Option<String>, key: Option<String> },
     GroupDelete { group: Option<String> },
     GroupSay { group: Option<String>, text: Option<String> },
+    /// 3.5: a huddle in one of this office's worlds, started (`on`) or over: every member online who takes voice hears.
+    GroupHuddle {
+        group: Option<String>,
+        #[serde(default, deserialize_with = "truthy")]
+        on: bool,
+    },
     /// The worlds' directory (`groups` answers).
     Groups,
     /// 3.1, an office's own (never a browser's): the browser waiting with this pairing code (`browser_pending`
@@ -393,6 +409,9 @@ pub struct Office {
     pub world: bool,
     pub links: bool,
     pub whisper: bool,
+    /// 3.5: it takes voice knocks and huddles.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub voice: bool,
     /// Version 4: its line, in the list of who is here.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub about: Option<About>,
@@ -510,6 +529,9 @@ pub enum FromLobby {
         title: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         motd: Option<String>,
+        /// 3.5: this lobby carries voice knocks and huddles (an older one would pass a voice knock on as a knock).
+        #[serde(skip_serializing_if = "is_false", default)]
+        voice: bool,
     },
     Lobby { offices: Vec<Office> },
     Knock {
@@ -521,6 +543,10 @@ pub enum FromLobby {
         watch: bool,
         #[serde(skip_serializing_if = "is_false", default)]
         link: bool,
+        #[serde(skip_serializing_if = "is_false", default)]
+        voice: bool,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        huddle: Option<String>,
     },
     KnockSent {
         id: String,
@@ -529,6 +555,8 @@ pub enum FromLobby {
         watch: bool,
         #[serde(skip_serializing_if = "is_false", default)]
         link: bool,
+        #[serde(skip_serializing_if = "is_false", default)]
+        voice: bool,
     },
     KnockCancelled { id: String, reason: String },
     Answered {
@@ -541,6 +569,8 @@ pub enum FromLobby {
         watch: bool,
         #[serde(skip_serializing_if = "is_false", default)]
         link: bool,
+        #[serde(skip_serializing_if = "is_false", default)]
+        voice: bool,
     },
     Visit {
         id: String,
@@ -552,6 +582,11 @@ pub enum FromLobby {
         watch: bool,
         #[serde(skip_serializing_if = "is_false", default)]
         link: bool,
+        /// 3.5: a voice visit (voice alone: no scene, no room), and the world whose huddle it joins, if one.
+        #[serde(skip_serializing_if = "is_false", default)]
+        voice: bool,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        huddle: Option<String>,
     },
     VisitEnded { id: String, reason: String },
     LobbyChat { from: Sayer, text: String },
@@ -588,6 +623,9 @@ pub enum FromLobby {
     /// Version 4: no longer in a world (`left`, `removed`, `banned`, `deleted`).
     GroupLeft { group: String, reason: String },
     GroupChat { group: String, from: Sayer, text: String },
+    /// 3.5: a huddle in one of this office's worlds: started by `from` (`on`), or over. `since`: seconds since it
+    /// started (on welcome, those going on are told again).
+    Huddle { group: String, from: Sayer, on: bool, #[serde(default)] since: u64 },
     Groups { groups: Vec<Listed> },
     /// 3.1, to a browser not linked yet: the code its office types in its room, and the pictures it shows there too.
     BrowserCode { code: String, pictures: String, expires_in: u64 },
@@ -673,10 +711,10 @@ mod tests {
     fn messages_round_trip() {
         let j: ToLobby = serde_json::from_value(serde_json::json!({ "type": "group_join", "group": "Hollow" })).unwrap();
         assert_eq!(j, ToLobby::GroupJoin { group: Some("Hollow".into()), password: None });
-        let k = ToLobby::Knock { to: Some("o1".into()), message: None, watch: true, link: false };
+        let k = ToLobby::Knock { to: Some("o1".into()), message: None, watch: true, link: false, voice: false, huddle: None };
         assert_eq!(k.to_json(), serde_json::json!({ "type": "knock", "to": "o1", "watch": true }));
         let m: ToLobby = serde_json::from_value(serde_json::json!({ "type": "knock", "to": "o1", "watch": "yes" })).unwrap();
-        assert_eq!(m, ToLobby::Knock { to: Some("o1".into()), message: None, watch: false, link: false });
+        assert_eq!(m, ToLobby::Knock { to: Some("o1".into()), message: None, watch: false, link: false, voice: false, huddle: None });
         let m: ToLobby = serde_json::from_value(serde_json::json!({ "type": "max_visitors" })).unwrap();
         assert_eq!(m, ToLobby::MaxVisitors { n: None });
         let e = FromLobby::error("not_found", "no", Some("knock"));
