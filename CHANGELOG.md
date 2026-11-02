@@ -10,7 +10,7 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
-## v4.0.0 — 2026-11-01 — worlds are the way to meet: Knock and Link gone (#57); 🎧 follows the chat box: talk, huddles (#58)
+## v4.0.0 — 2026-11-01 — worlds are the way to meet: Knock and Link gone (#57); 🎧 follows the chat box: talk, huddles (#58); rooms act out their interactions on a visitor's own model (#59, #60)
 
 **4.0 breaks the page's API** (Knock and Link are gone): every workroom upgrades, and the lobby is deployed again.
 Nothing in the protocols changes name; a 3.x office in the same lobby meets a 4.0 one in worlds, as before, and its
@@ -47,6 +47,18 @@ knock to walk in or to link is refused with a reason (a `--v3` lobby's 3.x offic
   time), and the lobby tells its members (`huddle`). `v.joinHuddle(group)` knocks to talk on its starter with the
   world, let in by their visit-client itself, and puts you in that voice. It ends when its starter ends it, leaves the
   world, or leaves the lobby. A huddle runs your microphone, as a call does.
+- **A room acts out its interactions on a visitor's own model** ([visit/SPEC.md](visit/SPEC.md) 8.6,
+  [visit/MODELS.md](visit/MODELS.md); [#59](https://github.com/sarmiena/Basedverse/issues/59),
+  [#60](https://github.com/sarmiena/Basedverse/issues/60)). `v.perform(visitId, clip)` on the room's page: `sit` and
+  `lie` (until they move), `drink`, `eat`, `throw`, `swat`, `wave` (once, unless `loop`). Visit plays it on their
+  model, which everyone there sees, or its fallback: `sit`, `ride`, else `idle`; the rest, `idle`. So any model works
+  in any room, and a seated guest no longer stands in the chair. `v.hold(visitId, object)` puts a thing of the room's
+  in their hand (their model's `hand` point, else in front of their chest), kept there as they walk; everyone sees it,
+  the visitor too. Their own page is told (`perform`): its world's `frame` says `act` and `sit` (and `holding`), so a
+  page that draws its own body there poses it the same. `v.visitors[i].act` and `.holding` say so on the room's side,
+  for a room that draws its own figure (`look` "mine").
+- **Back in the plot you were in** when its room's page reloads (or loses its `visit` a moment). Before, your world
+  had you home, but still in that room by your `visit`'s word, and you could not walk back in.
 - New on the page: `v.talk`, `v.canTalk`, `v.huddle`, `v.joinHuddle`, `v.huddles`, `v.inHuddle`, the `huddle` event; the
   `call` event and `v.calls` say `voice`. On the wire: page `knock` `voice`/`huddle`, `knock_cancel`, `huddle`; lobby
   `hello`/`welcome`/`knock`/`answered`/`visit` `voice`, `knock_cancel`, `group_huddle`, `huddle` (5.2, 5.3, 6.2, 6.3, 6.4).
@@ -56,7 +68,9 @@ its chat window and a world (INTEGRATING.md step 9), nothing more: your user vis
 that called `v.knock`, `v.link`, `v.answer`, `v.leave`, `v.stepIn`, `v.stepOut`, `v.toWorld` or `v.unlink`, or read
 `v.knocks`, `v.knocking` or `v.links`: take it out (they are gone); a page that drew a visited room in its own view
 (`v.view`): visiting is your world's now (step 6, step 9). With no world, your user visits nobody (others still walk
-into your room from theirs, and anyone can talk with them). A room that draws its own chat: point its own 🎧 at `v.talk(key)` for a person and
+into your room from theirs, and anyone can talk with them). A room whose interactions seat, feed or hand things to
+visitors: call `v.perform` and `v.hold` in their `run` (and give your own body `sit`/`drink`… clips and a `hand` point:
+MODELS.md); a page that draws its own body in a world: pose it by its `frame`'s `act` (or `sit`). A room that draws its own chat: point its own 🎧 at `v.talk(key)` for a person and
 `v.huddle(group)` / `v.joinHuddle(group)` for a world, and show a call in `v.calls` with `voice` and `state:
 "ringing"` as someone who wants to talk (`v.pickUp(key)` answers). A room that played every call through its phone:
 a voice call is not the phone's (`voice: true`).

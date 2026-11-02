@@ -86,6 +86,11 @@
   const TALK_CONNECT_MS = 20000;  // and, answered, its voice visit has this long to come up
   const HUDDLE_FRESH_S = 60;      // a huddle started this lately rings for those it reaches (older: listed, quietly)
   const HUDDLE_ASK_MS = 60000;    // and asks them in (the chat window's ring) this long
+  // 4.0 (#59): what a room may have a visitor's own model do (MODELS.md, "Clips"): the lasting ones (sit, lie) until
+  // they move or the room says; the rest once, unless the room says loop. A model without one plays its fallback.
+  const ACTS = ["sit", "lie", "drink", "eat", "throw", "swat", "wave"], LASTING = new Set(["sit", "lie"]);
+  const ACT_ONCE_S = 2;           // a one-shot with no clip of its own (its fallback, idle) lasts this long
+  const HOLD_AT = { y: 1.1, ahead: 0.35 };   // a held thing with no `hand` point: in front of the chest (metres)
   // Chat (SPEC 8.9): a line is at most CHAT_LEN characters, at most CHATS of them every CHAT_WINDOW ms (as visit-client
   // takes them), and shows over its speaker's head a while, the longer the longer it is.
   const CHAT_LEN = 200, CHATS = 5, CHAT_WINDOW = 10000, chatShows = text => Math.min(12000, 4000 + 70 * text.length);
@@ -1006,6 +1011,7 @@
           break;
         case "knock_sent": if (m.voice) this._talkSent(m); break;
         case "huddle": this._huddleIn(m); break;
+        case "perform": this._performIn(m); break;
         case "answered": if (m.voice) this._talkAnswered(m); break;
         case "picks": this._picks(m); break;
         case "ignored": {   // 3.3: whom your user ignores, now: their lines out of the log, and over their heads
@@ -1401,9 +1407,10 @@
         body.add(o); body.name = "avatar:" + (h.visitor.name || ""); body.userData.visitor = h.id;
         const clip = re => (o.animations || []).find(c => re.test(c.name));
         const mixer = new T.AnimationMixer(o), idle = clip(/idle/i), walk = clip(/walk/i), ride = clip(/ride|sit/i);
+        const acts = Object.fromEntries(ACTS.map(n => [n, clip(new RegExp("^" + n + "$", "i"))]).filter(([, c]) => c).map(([n, c]) => [n, mixer.clipAction(c)]));
         this._avatarDrop(h);
-        h.avatar = { object: body, mixer, idle: idle && mixer.clipAction(idle), walk: walk && mixer.clipAction(walk), ride: ride && mixer.clipAction(ride), playing: null, at: null,
-          eyes: modelEyes(T, body) };
+        h.avatar = { object: body, mixer, idle: idle && mixer.clipAction(idle), walk: walk && mixer.clipAction(walk), ride: ride && mixer.clipAction(ride), acts, playing: null, at: null,
+          eyes: modelEyes(T, body), hand: o.getObjectByName("hand") || null };
         h.modelProblem = null;
       } catch (e) {
         console.warn(`visit: ${h.visitor.name}'s avatar cannot be read`, e);
@@ -1443,13 +1450,79 @@
       if (!a || !p) return;
       const moved = a.at ? Math.hypot(p.x - a.at.x, p.z - a.at.z) / Math.max(dt, 1e-3) : 0;
       a.at = { x: p.x, z: p.z };
-      const want = h.ride && a.ride ? a.ride : moved > 0.3 / this._unit() ? a.walk || a.idle : a.idle || null;   // riding (8.11): its ride clip
-      if (want !== a.playing) {
-        if (a.playing) a.playing.fadeOut(0.2);
-        if (want) want.reset().fadeIn(0.2).play();
+      const act = h.act && (a.acts[h.act.clip] || (h.act.clip === "sit" && a.ride) || a.idle);   // 4.0 (#59): what the room has it do, else its fallback
+      const want = h.ride && a.ride ? a.ride : act ? act : moved > 0.3 / this._unit() ? a.walk || a.idle : a.idle || null;   // riding (8.11): its ride clip
+      if (want !== a.playing || (act && h.act.fresh)) {
+        if (a.playing && a.playing !== want) a.playing.fadeOut(0.2);
+        if (want) {
+          const T = this._hooks.scene.three, once = !!h.act && !h.act.loop && want === a.acts[h.act.clip];
+          want.setLoop(once ? T.LoopOnce : T.LoopRepeat, Infinity); want.clampWhenFinished = once;
+          want.reset().fadeIn(0.2).play();
+        }
         a.playing = want;
+        if (h.act) h.act.fresh = false;
       }
       a.mixer.update(dt);
+    }
+    // 4.0 (#59, #60): a room acts out its interactions on a visitor's own model. `clip`: one of ACTS (MODELS.md,
+    // "Clips"): sit and lie last until the visitor moves (or the room says otherwise); the rest play once, unless
+    // `loop`; `secs`: at most so long. Null: none. Visit plays it (or its fallback: sit, their ride clip, else idle; the
+    // rest, idle) on their model wherever it is drawn, and their own page is told (its world's `frame` says `act`,
+    // and `sit`), so a page that draws its own body poses it the same. A room that draws its own figure for them
+    // (`look` "mine") reads `visitors[i].act`. False: no such visitor in this room.
+    perform(visitId, clip, { secs = null, loop = null } = {}) {
+      this._as("host", "perform");
+      const h = [...this._hosted.values()].find(x => x.id === visitId && x.inside);
+      if (!h) return false;
+      if (clip != null && !ACTS.includes(clip)) throw new Error(`visit.perform: the clip is one of ${ACTS.join(", ")} (MODELS.md), or null`);
+      h.act = clip == null ? null : { clip, loop: loop == null ? LASTING.has(clip) : !!loop, secs: Number(secs) > 0 ? Math.min(600, Number(secs)) : null,
+        since: performance.now(), from: h.pose ? { x: h.pose.x, z: h.pose.z } : null, fresh: true };
+      this._actTell(h);
+      return true;
+    }
+    // A thing of your scene in a visitor's hand (their model's `hand` point; without one, in front of their chest), kept
+    // there as they go, until another, or null: Visit adds it to your scene and moves it; everyone sees it, the visitor
+    // too. Null takes it out of your scene. False: no such visitor in this room.
+    hold(visitId, object) {
+      this._as("host", "hold");
+      const h = [...this._hosted.values()].find(x => x.id === visitId && x.inside), hk = this._hooks;
+      if (!h || !hk) return false;
+      if (object != null && !(object && object.isObject3D)) throw new Error("visit.hold: a three.js object of your scene's, or null");
+      if (h.held && h.held !== object && h.held.parent) h.held.parent.remove(h.held);
+      h.held = object || null;
+      if (h.held && h.held.parent !== hk.scene.root) hk.scene.root.add(h.held);
+      this._actStep(h);
+      this._actTell(h);
+      return true;
+    }
+    _actTell(h) {
+      const a = h.act;
+      this._send({ type: "perform", channel: h.channel, act: a ? { clip: a.clip, loop: a.loop, secs: a.secs } : null, hold: !!h.held });
+      this._visitorsList();
+      this._changed();
+    }
+    // 30 times a second: an act over (a one-shot played out, its time up, a lasting one walked out of), and the held
+    // thing at their hand.
+    _actStep(h) {
+      const a = h.act, now = performance.now();
+      if (a) {
+        const av = h.avatar, act = av && av.acts[a.clip], moved = a.from && h.pose ? Math.hypot(h.pose.x - a.from.x, h.pose.z - a.from.z) * this._unit() : 0;
+        const done = (a.secs != null && now - a.since > a.secs * 1000)
+          || (LASTING.has(a.clip) && moved > 0.3)   // (moving ends sitting or lying: the owner's word)
+          || (!a.loop && (act ? !act.isRunning() && now - a.since > 300 : now - a.since > ACT_ONCE_S * 1000));
+        if (done) { h.act = null; this._actTell(h); }
+      }
+      const o = h.held, hk = this._hooks;
+      if (!o || !hk || !h.pose) return;
+      const T = hk.scene.three, u = this._unit(), yaw = Number(h.pose.yaw) || 0, av = h.avatar;
+      if (av && av.hand && h.look === "theirs" && av.object.parent) {
+        av.object.updateMatrixWorld(true);
+        const p = av.hand.getWorldPosition(new T.Vector3());
+        o.position.copy(hk.scene.root.worldToLocal(p));
+      } else {
+        o.position.set((Number(h.pose.x) || 0) - Math.sin(yaw) * HOLD_AT.ahead / u, (Number(h.pose.y) || 0) + HOLD_AT.y / u, (Number(h.pose.z) || 0) - Math.cos(yaw) * HOLD_AT.ahead / u);
+      }
+      o.rotation.set(0, yaw, 0);
     }
     // Whether this office sees that one's room from outside it: a plot in its world (picked, or a link put there).
     watching(officeId) { return [...this._watches.values()].some(w => w.host.id === officeId); }
@@ -1747,6 +1820,7 @@
         this._watches.set(m.channel, w);
         if (home) { this.home = { id: m.id, channel: m.channel, paused: false }; if (this._world) this._world.listAt = -1; }
         if (m.inside && !home) this._send({ type: "exit", channel: m.channel });   // this page lost where it was: it starts at home
+        else if (isObj(m.perform)) this._performIn(Object.assign({ channel: m.channel }, m.perform));   // (4.0: what its host has us do, again)
       } else return;   // (a visit by a knock: none since 4.0)
       if (m.phone) this._phoneOn.add(m.channel);
       this._visitorsList();
@@ -1758,7 +1832,7 @@
       if (this.home && this.home.id === m.id) this.home = null;
       if (this.owner && this.owner.id === m.id) this.owner = null;
       const h = this._hosted.get(m.channel);
-      if (h && h.id === m.id) { this._avatarDrop(h); this._rideDrop(h); this._hosted.delete(m.channel); this._visitorsList(); }
+      if (h && h.id === m.id) { this._avatarDrop(h); this._rideDrop(h); if (h.held && h.held.parent) h.held.parent.remove(h.held); this._hosted.delete(m.channel); this._visitorsList(); }
       const w = this._watches.get(m.channel);
       if (w && w.id === m.id) { this._sceneDrop(w); this._landDrop(w); this._watches.delete(m.channel); }
       if (this.visiting && this.visiting.id === m.id) { if (this._viewer) this._landDrop(this._viewer); this._dropViewer(); this.visiting = null; }
@@ -1771,7 +1845,7 @@
     _dropAll() {
       // Visitors' bodies and mounts out of this room's scene with them: they come back, made again, with their visits
       // (were they left, a page that lost its visit-client a moment had two of each).
-      for (const h of this._hosted.values()) { this._avatarDrop(h); this._rideDrop(h); }
+      for (const h of this._hosted.values()) { this._avatarDrop(h); this._rideDrop(h); if (h.held && h.held.parent) h.held.parent.remove(h.held); }
       this._hosted.clear();
       for (const w of this._watches.values()) this._sceneDrop(w);
       this._watches.clear();
@@ -1784,7 +1858,8 @@
       const hs = [...this._hosted.values()];
       this.visitors = hs.filter(h => h.inside).map(h => ({ id: h.id, visitor: h.visitor, guest: h.guest, pose: h.pose, owner: !!h.owner,
         look: h.look || "mine", eyes: h.eyes || this._eyeRoom(), problem: h.modelProblem || null, avatar: null,
-        riding: h.ride ? { id: h.ride.id, name: h.ride.name, fly: h.ride.fly } : null }));
+        riding: h.ride ? { id: h.ride.id, name: h.ride.name, fly: h.ride.fly } : null,
+        act: h.act ? { clip: h.act.clip, loop: h.act.loop, secs: h.act.secs } : null, holding: !!h.held }));
       this.watchers = hs.filter(h => h.watch && !h.owner).map(h => ({ id: h.id, visitor: h.visitor, inside: h.inside }));
     }
 
@@ -2786,6 +2861,16 @@
       const t = [...this._talks.values()].find(x => x.huddle && x.peer && x.peer.key === rv.key);
       return t ? { group: t.huddle, key: rv.key, mine: false } : null;
     }
+    // 4.0 (#59, #60): what the room we are in has our own model do (sit, drink…), and whether we hold something of
+    // its: our world's `frame` says so (`act`, `sit`), for a page that draws our own body to pose it the same.
+    _performIn(m) {
+      const w = this._watches.get(m.channel);
+      if (!w) return;
+      const a = isObj(m.act) && ACTS.includes(m.act.clip) ? { clip: m.act.clip, loop: m.act.loop === true, secs: Number(m.act.secs) > 0 ? Number(m.act.secs) : null } : null;
+      w.act = a; w.holding = m.hold === true;
+      this._emit("perform", { channel: m.channel, key: (w.host && w.host.key) || null, act: a, hold: w.holding });
+      this._changed();
+    }
     _huddleFrom(m) {
       if (!isObj(m) || typeof m.group !== "string" || !isObj(m.from)) return null;
       return { group: m.group, from: { id: String(m.from.id || ""), name: String(m.from.name || ""), key: typeof m.from.key === "string" ? m.from.key : null },
@@ -2913,7 +2998,8 @@
       const h = this._hosted.get(m.channel);
       if (!h || !h.watch) return;
       this._rideSet(h, null);
-      Object.assign(h, { inside: false, pose: null, input: null });
+      if (h.held && h.held.parent) h.held.parent.remove(h.held);   // (4.0: out of the room, what it did and held go)
+      Object.assign(h, { inside: false, pose: null, input: null, act: null, held: null });
       this._bodyPlace(h);
       this._visitorsList();
     }
@@ -3588,6 +3674,7 @@
         this._avatarAt = now;
         for (const h of this._hosted.values()) if (h.inside && h.avatar && h.look === "theirs") this._avatarStep(h, dt);
         for (const h of this._hosted.values()) if (h.inside && h.ride) this._rideStep(h, dt);   // and their mounts
+        for (const h of this._hosted.values()) if (h.inside && (h.act || h.held)) this._actStep(h);   // what the room has them do and hold (4.0)
       }
       if (now - (this._sceneAt || 0) >= SCENE_MS - 2) { this._sceneAt = now; this._sceneTick(now); }
       this._visitorsList();
@@ -4424,7 +4511,7 @@
       const h = this.holders.get(w.channel);
       if (h && h.s.root.parent === h.place) h.place.remove(h.s.root);
       this.holders.delete(w.channel);
-      if (this.in === w.channel) this.in = null;
+      if (this.in === w.channel) { this.in = null; if (w.inside) this.rejoin = w.channel; }   // (its scene going; the watch, still in: in again when it comes)
       this.listAt = -1;
     }
 
@@ -4448,6 +4535,12 @@
       const user = v.role === "user", onto = (px, pz) => list.find(y => y.w && y.w.scene && !y.w.home && !y.w.inside && (this.refused.get(y.w.channel) || 0) <= now && within(y.rect, px, pz));
       let x = this.in != null ? list.find(y => y.w && y.w.channel === this.in) : null;
       if (x && !(x.w.inside && x.w.scene)) x = null;
+      if (!x && this.rejoin != null) {   // the plot we are in, its scene come anew (its host's page back): still in it
+        const rw = v._watches.get(this.rejoin), rx = rw && rw.inside ? list.find(y => y.w === rw) : null;
+        if (!rw || !rw.inside) this.rejoin = null;
+        else if (rx && rw.scene) { this.rejoin = null; this._enter(rx, me, now); x = rx; }   // in again, where we stand
+        else return Object.assign({}, me, { in: rx ? { key: rx.key, name: rx.name } : null });   // its scene not here yet: still, where we are
+      }
       if (!x) {
         // Out of a plot by any way but walking off it (its door shut, its page gone, leave()): home at the height we
         // came with, not one its host had us at, which a page that keeps the y it is given would otherwise keep.
@@ -4497,7 +4590,8 @@
       // As high as its host has us (a stair, a lift, flying, coming down), until it first says: where we stepped on.
       const y = hp ? this._feet(x, s, h) : this.yHome;
       v._home = { x: at.x, y, z: at.z, yaw: me.yaw };   // in a plot: heard from there, in this world
-      return { x: at.x, y, z: at.z, yaw: me.yaw, pitch: me.pitch, in: { key: x.key, name: x.name } };
+      const act = w.act ? w.act.clip : null;   // 4.0 (#59, #60): what its host has our model do, for our own body
+      return { x: at.x, y, z: at.z, yaw: me.yaw, pitch: me.pitch, in: { key: x.key, name: x.name }, act, sit: act === "sit", holding: !!w.holding };
     }
 
     // Our feet in a plot, in this world's terms: where its host has our eyes, less how far above its floor it keeps
@@ -4519,7 +4613,7 @@
 
     _exit(w) {
       this.v._send({ type: "exit", channel: w.channel });
-      w.inside = false; this.in = null;
+      w.inside = false; this.in = null; w.act = null; w.holding = false;
       if (w.scene) w.scene.hostPose = null;
       this.v._changed();
     }
@@ -4586,7 +4680,7 @@
       }
       return { yaw, pitch };
     }
-    leave() { const w = this.in != null && this.v._watches.get(this.in); if (w) this._exit(w); }
+    leave() { this.rejoin = null; const w = this.in != null && this.v._watches.get(this.in); if (w) this._exit(w); }
     // Visit's own picking in your world (3.3, #48): in the room your user is in (a plot, home, or your own scene), the
     // way that room picks.
     _pickHere(mode, dir = null) {

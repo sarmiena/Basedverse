@@ -431,6 +431,16 @@ visit.host({
   nothing. Something to scroll (a list, a deck of cards) takes the wheel; a click on it can still do something
   else, or nothing (`if (!wheel) return`).
 
+  **Acting it out on them** (4.0, #59): in a `run`, `visit.perform(visitor.id, "sit")` seats them (their own model
+  plays its `sit`, until they move), `"drink"`, `"eat"`, `"throw"`, `"swat"`, `"wave"` once; `visit.hold(visitor.id,
+  cup)` puts a thing of your scene in their hand, kept there as they go (`null`: back out of your scene). Everyone
+  sees it, the visitor too, whatever their model has (MODELS.md: its fallbacks). Still cosmetic: it is how they look.
+
+  ```js
+  bench: { cosmetic: true, label: "sit", run: ({ visitor }) => visit.perform(visitor.id, "sit") },
+  bar:   { cosmetic: true, label: "a cocktail", run: ({ visitor }) => { visit.hold(visitor.id, makeCocktail()); visit.perform(visitor.id, "drink"); } },
+  ```
+
   **DON'T IMPLEMENT ANY INTERACTIONS OTHER THAN COSMETIC ONES UNLESS SPECIFICALLY AGREED UPON BY THE USER.**
   Cosmetic means it only changes how the room looks or sounds to the people in it: something moves, lights up,
   plays, spins. Anything that reaches further (an agent's work, a tool, a file, an account, a message to anyone,

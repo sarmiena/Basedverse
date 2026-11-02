@@ -176,6 +176,10 @@ struct Visit {
     /// world whose huddle it joins (a huddle's: in its starter's room's voice instead).
     voice: bool,
     huddle: Option<String>,
+    /// 4.0 (#59): the acts its host page set on this visitor in the current second (host side: at most PERFORMS); what
+    /// the host has this office's user do and hold (visitor side, `{act, hold}`: for a page that reloads).
+    performs: (Instant, u32),
+    performed: Value,
     /// 3.4.3: pictures the other side asked this office for in the current minute (MEDIA_WANTS at most).
     wants: (Instant, u32),
     /// Lines said by the visitor in the current window (host side): at most SAYS a SAY_WINDOW.
@@ -224,6 +228,9 @@ const INPUTS_PER_SECOND: u32 = 120;
 const VOICE_RANGE: f64 = 45.0;
 const VOICE_MARGIN: f64 = 15.0;
 const NEAR_EVERY: Duration = Duration::from_secs(1);
+/// 4.0 (#59): what a room may have a visitor's own model do (MODELS.md, "Clips"), and how often it may change it.
+const ACTS: [&str; 7] = ["sit", "lie", "drink", "eat", "throw", "swat", "wave"];
+const PERFORMS: u32 = 10;
 /// 4.0: what a voice visit carries on its control stream (link_ctl): its user's name, a ban, a room's voice.
 const VOICE_CTL: [&str; 5] = ["user", "banned", "voice_join", "voice_members", "voice_out"];
 /// 4.0: how long a knock to talk this office made is waited for (the lobby's knocks wait 60 s).
@@ -823,7 +830,7 @@ impl Core {
                 id: id.to_string(), channel, role, peer: peer.clone(), local: true, up: false, cmd,
                 last_seq: 0, inputs: (Instant::now(), 0), want_key: false, host_state: None, ctl: (Instant::now(), 0), key_asked: None, resync_asked: None, resync_due: false,
                 points: (Instant::now(), 0), guest: false, watch: true, inside: false, shared_adds: false, link: false, in_world: false, avatar_asked: false, possessions_asked: Vec::new(), peer_possessions: json!([]), peer_phone: false,
-                call_on: false, speaker: false, ring: None, voice: false, huddle: None, wants: (Instant::now(), 0), says: (Instant::now(), 0),
+                call_on: false, speaker: false, ring: None, voice: false, huddle: None, performs: (Instant::now(), 0), performed: Value::Null, wants: (Instant::now(), 0), says: (Instant::now(), 0),
                 landscapes: false, land_sent: None, land_hash: None, near_keys: Vec::new(), peer_user: None,
             });
         }
@@ -1087,6 +1094,31 @@ impl Core {
                     Ok(x) => self.to_lobby(x),
                     Err(_) => self.page_error("bad_message", &format!("{t} is not as it should be (../SPEC.md 5.2)"), Some(&t)),
                 }
+            }
+            // 4.0 (#59): what this room has a visitor in it do (an act, one of ACTS, or none) and whether it holds something of
+            // this room's: told to that visitor's visit-client, for its page (its own body, posed the same).
+            "perform" => {
+                let ch = m.get("channel").and_then(Value::as_u64).unwrap_or(0) as u16;
+                let act = match m.get("act") {
+                    None | Some(Value::Null) => Value::Null,
+                    Some(a) => match a.get("clip").and_then(Value::as_str).filter(|c| ACTS.contains(c)) {
+                        Some(clip) => json!({ "clip": clip, "loop": a.get("loop") == Some(&json!(true)),
+                                              "secs": a.get("secs").and_then(Value::as_f64).filter(|s| *s > 0.0).map(|s| s.min(600.0)) }),
+                        None => return self.page_error("bad_message", &format!("act is {{ clip, loop, secs }}, its clip one of {}", ACTS.join(", ")), Some("perform")),
+                    },
+                };
+                let hold = m.get("hold") == Some(&json!(true));
+                let Some(v) = self.visits.values_mut().find(|v| v.channel == ch && v.role == Role::Host && v.up && v.inside && !v.local) else {
+                    return self.page_error("no_such_visit", "no visitor in this room on that channel", Some("perform"));
+                };
+                if v.performs.0.elapsed() >= Duration::from_secs(1) {
+                    v.performs = (Instant::now(), 0);
+                }
+                v.performs.1 += 1;
+                if v.performs.1 > PERFORMS {
+                    return self.page_error("rate_limited", &format!("at most {PERFORMS} acts a second for one visitor"), Some("perform"));
+                }
+                let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "perform": { "act": act, "hold": hold } })));
             }
             // 4.0: a huddle in one of this office's worlds (on: its user starts one, in their room's voice, which carries
             // it; off: it ends, and so does every voice visit that joined it).
@@ -3089,7 +3121,7 @@ impl Core {
                     id: id.to_string(), channel, role, peer, local: false, up: false, cmd,
                     last_seq: 0, inputs: (Instant::now(), 0), want_key: false, host_state: None, ctl: (Instant::now(), 0), key_asked: None, resync_asked: None, resync_due: false,
                     points: (Instant::now(), 0), guest, watch, inside: !watch && !voice, shared_adds: false, link, in_world: false, avatar_asked: false, possessions_asked: Vec::new(), peer_possessions: json!([]), peer_phone: false,
-                    call_on: voice && huddle.is_none(), speaker: false, ring: None, voice, huddle, wants: (Instant::now(), 0), says: (Instant::now(), 0),
+                    call_on: voice && huddle.is_none(), speaker: false, ring: None, voice, huddle, performs: (Instant::now(), 0), performed: Value::Null, wants: (Instant::now(), 0), says: (Instant::now(), 0),
                     landscapes: false, land_sent: None, land_hash: None, near_keys: Vec::new(), peer_user: None,
                 });
             }
@@ -3296,6 +3328,7 @@ impl Core {
     fn step_out(&mut self, id: &str) {
         if let Some(v) = self.visits.get_mut(id).filter(|v| v.inside) {
             v.inside = false;
+            v.performed = Value::Null;   // (4.0: out of the room, nothing it had this office's user do)
             let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "exit": true })));
         }
     }
@@ -3742,8 +3775,16 @@ impl Core {
                     self.to_page(json!({ "type": "voice_near", "channel": ch, "near": near }));
                 } else if let Some(reason) = m.get("enter_refused").filter(|_| v.watch && v.inside) {
                     v.inside = false;
+                    v.performed = Value::Null;
                     let reason = reason.as_str().unwrap_or("refused").chars().take(40).collect::<String>();
                     self.to_page(json!({ "type": "enter_refused", "channel": ch, "reason": reason }));
+                } else if let Some(p) = m.get("perform").filter(|_| v.inside) {   // 4.0 (#59): what the room has this office's user do, hold
+                    let act = p.get("act").and_then(|a| a.get("clip").and_then(Value::as_str).filter(|c| ACTS.contains(c)).map(|clip| json!({
+                        "clip": clip, "loop": a.get("loop") == Some(&json!(true)),
+                        "secs": a.get("secs").and_then(Value::as_f64).filter(|s| *s > 0.0).map(|s| s.min(600.0)) }))).unwrap_or(Value::Null);
+                    let hold = p.get("hold") == Some(&json!(true));
+                    v.performed = if act.is_null() && !hold { Value::Null } else { json!({ "act": act, "hold": hold }) };
+                    self.to_page(json!({ "type": "perform", "channel": ch, "act": act, "hold": hold }));
                 }
             }
         }
@@ -3828,6 +3869,9 @@ fn started(v: &Visit) -> Value {
         m["watch"] = json!(true);
         m["inside"] = json!(v.inside);
     }
+    if !v.performed.is_null() && v.role == Role::Visitor {   // 4.0 (#59): what its host has this office's user do, hold
+        m["perform"] = v.performed.clone();
+    }
     if v.local {
         m[if v.role == Role::Host { "owner" } else { "home" }] = json!(true);
         m["id"] = json!(HOME_ID);   // one id to both pages
@@ -3869,7 +3913,7 @@ fn page_for(v: &Value) -> PageRole {
         | "voice_near" | "room_voice" | "voice_members" | "user" | "banned" | "seen" | "layout" | "landscape"
         | "plot_forgotten" | "knock" | "knock_sent" | "knock_cancelled" | "answered" | "link_stats" | "scene"
         | "scene_lost" | "host_paused" | "host_resumed" | "enter_refused" | "body" | "call" | "phone" | "lobby_pass" | "browser_pending"
-        | "browser_confirm" | "browsers" | "ignored" | "sound" | "huddle" => PageRole::User,
+        | "browser_confirm" | "browsers" | "ignored" | "sound" | "huddle" | "perform" => PageRole::User,
         _ => PageRole::Both,
     }
 }
@@ -3877,7 +3921,7 @@ fn page_for(v: &Value) -> PageRole {
 /// Whether a page of this role may send a message of this type (../../engine/SPEC.md 3.3). A page without a role
 /// may send them all.
 fn role_may(role: PageRole, t: &str) -> bool {
-    const HOST: &[&str] = &["host", "pose", "avatar_want", "possession_want", "phone", "body", "say_as", "sound_at"];
+    const HOST: &[&str] = &["host", "pose", "avatar_want", "possession_want", "phone", "body", "say_as", "sound_at", "perform"];
     const USER: &[&str] = &["input", "point", "keyframe", "scene_resync", "avatar_clear", "possessions", "user", "say", "attention", "read",
         "unhold", "media_get", "preview", "history", "shared", "voice_join", "call", "speaker", "world", "enter", "exit", "pick", "unpick", "place", "unplace", "ignore", "unignore", "ignore_clear", "act",
         "seen", "plot_keep", "plot_load", "plot_forget", "knock", "answer", "leave_lobby", "join_lobby", "status", "rename",
