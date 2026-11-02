@@ -423,6 +423,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `avatar_use` | `key`, `use` (`"mine"` \| `"theirs"` \| null: the default) | the same for one office, apart from the default; kept in the state file |
 | `phone` | `on` (bool) | this room has a phone (8.8), or no longer: every link is told |
 | `call` | `channel`, `act` (`"ring"` \| `"answer"` \| `"hangup"`) | a call on that visit (8.8): ring their phone (refused `no_phone` if their room has none), answer it (3.4.3: only a call they rang and nobody has answered; else `no_call`), end it. On a voice visit (4.0, 8.7), `hangup` ends it; ringing or answering it is refused (`bad_message`: it is a call already) |
+| `perform` | `channel`, `act` {`clip`, `loop`?, `secs`?} \| null, `hold` (bool) | 4.0 (#59, the room's page): what this room has the visitor on that channel do (`clip`: one of `sit`, `lie`, `drink`, `eat`, `throw`, `swat`, `wave`; `secs` at most 600) and whether it holds something of the room's, told to their visit-client (8.6). At most 10 a second a visitor (`rate_limited`); `no_such_visit` for nobody in this room |
 | `huddle` | `group`, `on` (bool) | 4.0: a huddle in one of this office's worlds (8.7), started (its user into their own room's voice, which carries it) or over (every voice visit that joined it ends; its user out of that voice). Refused `not_supported` when the lobby carries no voice |
 | `user` | `name` (1–24 characters) \| null | the name this office's user goes by (8.9; null: this office's): told to every office linked with it, now and as each links |
 | `say` | `text` (1 to 200 characters; may be empty with pictures or links), `to`? (none or `"here"`; `{"whisper"}`; `{"key"}`; `"room"`; `"lobby"`; `{"group"}`), `media`? (pictures shared, at most 4: [{`id`, `mime`, `size`}]; among them at most one voice message, with `secs`), `links`? (at most 2: [{`url`, `title`, `description`, `site`, `image`}]) | a line this office's user says (8.9). No `to`: to everyone who can see them (the room they are in, and those who see it from outside). `{"whisper": "<office id>"}`: to that office's user alone, through the lobby (its errors, `ref: "whisper"`: `not_found`, `not_supported`). `{"whisper": "<key>", "name"?}` (0.22.0): to whoever has that office in the lobby, if it takes whispers; else kept for them (`held`), text only (`no_link` with pictures or links; `too_many` past 20 for one person or 100 in all), and passed on once they and this office are both in the lobby. `{"key"}`: into the room of an office linked with this one, either way (`no_link` if none). `"lobby"`: to everyone in the lobby (`not_supported` if the lobby does not carry chat). `{"group": "<name>"}` (3.0.0): to everyone in one of this office's worlds (6.6), text only (`not_found`: in no world of that name). Control characters become spaces; trimmed; at most 5 every 10 s, whatever their `to` (`rate_limited`) |
@@ -499,6 +500,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `online` / `offline` | `office`, `knocking`, `lobby_info` {`title`, `motd`, `admin`}, `lobby_voice` (4.0: the lobby carries voice knocks and huddles) / `away`? | the lobby session came up (after a drop: the same office if it resumed), with this office's own knocks still waiting ([{`id`, `to`, `link`?}]) and what the lobby's welcome said of itself (`ready` has `lobby_info` too) / went down: `away: true` when the page took it out (`leave_lobby`), `false` when it is on its way back (`join_lobby`), absent when the lobby is out of reach |
 | `lobby` | `offices`: [{`id`, `name`, `status`, `sim`, `max_visitors`, `visitors`, `visiting`, `ready`, `key`, `watchers`, `world`, `links`, `whisper`, `voice`?, `about`}] | every change (6.3) |
 | `knock` | `id`, `from` {`id`, `name`, `sim`, `key`}, `message`, `expires_in`, `voice`: true | someone wants to talk with you (4.0): never let in without the page, never from someone your user ignores or keeps out of their room's voice (declined, unseen). 4.0: no other knock reaches a page (one to walk in or to link, from an older lobby, is declined) |
+| `perform` | `channel`, `act` {`clip`, `loop`, `secs`} \| null, `hold` | 4.0 (#59, #60): what the room this office's user is in (on that channel) has their own model do, and whether they hold something of its: for a page that draws their body to pose it the same. `visit_started` has it again (`perform`) for a page that reloads |
 | `huddle` | `group`, `from` {`id`, `name`, `key`}, `on`, `since` (seconds), `mine` | 4.0: a huddle in one of this office's worlds, started (`on`; `since`: how long ago, when told again) or over; `mine`: this office's own. `ready` has those going on (`huddles`) |
 | `knock_sent` / `knock_cancelled` / `answered` | as in section 6 (`voice`? on a knock to talk) | your knock's fate; a knock on you withdrawn |
 | `visit_started` | `id`, `channel`, `role` (`"host"` \| `"visitor"`), `peer` {`id`, `name`, `sim`, `key`}, `guest`?, `watch`?, `inside`?, `shared_adds`?, `state`? | a visit began (its link is up). `peer.key` is the other office's key, as the link proved it; `guest: true`, a guest let in through the open door, without asking the page; `watch: true` (and `inside`), a watch (8.4: since 4.0, every visit to a room is one); `phone: true`, the other office's room has a phone (8.8); in `ready`, a host's visit carries the last `state` its page sent. 4.0: `voice: true` (and `huddle`, a world), a voice visit (8.7): nothing of a room, only its `id`, `channel`, `role` and `peer`; the person's page only |
@@ -890,6 +892,7 @@ Messages are JSON, each prefixed by its length (u32 big-endian). In order, relia
 | visitor | `{"landscape_want": "<hash>"}` | send that landscape: on a stream of its own (7.4), once a link for a hash |
 | visitor | `{"shared_adds": true}` | its page reads an `add` that names what it already has by uuid only (8.3; Visit 0.7 on): sent each time the link is up, passed to the host's page once as `shared_adds` |
 | host | `{"paused": true}` / `{"paused": false}` | the host's page went away / came back |
+| host | `{"perform": {"act": {"clip", "loop", "secs"} \| null, "hold"}}` | 4.0 (8.6): what the room has this visitor do and hold, to the visitor's page as `perform` (only while it is in the room) |
 | watcher | `{"enter": {"x", "y", "z", "yaw", "air"} \| null}` / `{"exit": true}` | stepping into the room watched, there (clamped, passed to the host's page as `enter`; null: a link going there, spawned where newcomers go), or out (8.4, 8.5); in, it counts toward `max_visitors` |
 | host | `{"enter_refused": "full"}` | the room is full: the watcher stays outside |
 | either | `{"seen": {"dx", "dz", "turn", "size"} \| null}` | where the sender's world has the receiver's plot (8.4), or not; sent when it changes and each time a link comes up. Passed to the page as `seen` with only those fields |
@@ -1173,6 +1176,18 @@ How to make one, and every point it is measured by: [MODELS.md](MODELS.md).
 - **Said, not swallowed.** A model the room would show and cannot (none given, or it does not read) is shown as
   the room's model, and both sides say why: the host's `v.visitors[i].problem` and panel, the visitor's `body`
   event and panel.
+- **Acts** (4.0, #59, #60). A room acts out its interactions on a visitor's own model: `v.perform(visitId, clip,
+  { secs, loop })`, `clip` one of `sit`, `lie`, `drink`, `eat`, `throw`, `swat`, `wave` (MODELS.md: any model works in
+  any room, one without the clip playing its fallback: `sit`, `ride`, else `idle`; the rest, `idle`), or null. `sit`
+  and `lie` last until the visitor moves, or the room says otherwise; the rest play once, unless `loop`; `secs`: at
+  most so long. Visit plays it on their model in the room (so everyone there sees it), `v.visitors[i].act` says it (a
+  room that draws its own figure for them, `look` "mine", poses that the same), and the visitor's own page is told
+  (`perform`: the link's control `{"perform": {"act", "hold"}}`, 7.2, to the page): its world's `frame` says `act`, and
+  `sit`, for a page that draws its own body there. Nothing else crosses the wire: what the room plays is in its scene.
+- **Held things** (4.0, #59). `v.hold(visitId, object)`: a thing of the room's scene in a visitor's hand, their
+  model's `hand` point (MODELS.md; without one, in front of their chest), moved there as they go, until another, or
+  null (out of the scene). It is part of the room's scene, so everyone sees it, the visitor too (it is not their
+  body). `v.visitors[i].holding`, and the visitor's `frame` (`holding`), say so. Stepping out of the room ends both.
 
 ### 8.7 Voice
 
@@ -1624,6 +1639,9 @@ v.phones; v.calls           // those linked to you whose rooms have phones: [{ k
 v.call(key); v.pickUp(key); v.hangUp(key); v.speaker(key, on)   // and the "call" event: { key, name, state, speaker, why }
 v.talk(key); v.canTalk(key) // 4.0: talk with them, voice alone (8.7): a call in v.calls with voice: true, "calling" here and
                             //   "ringing" there, then "answering" and "on" (pickUp answers, hangUp declines or ends it)
+v.perform(visitId, clip, { secs, loop }); v.hold(visitId, object)   // 4.0 (8.6): what your room has a visitor's own model
+                            //   do (sit, lie, drink, eat, throw, swat, wave; null: nothing), and a thing of your scene in
+                            //   their hand (null: none); v.visitors[i].act, .holding say so. Their world's frame says act, sit
 v.huddle(group, on); v.joinHuddle(group); v.huddles; v.inHuddle   // 4.0: a world's huddle, started or ended; joined;
                             //   those going on: [{ group, from, mine }]; the one you are in: { group, key, mine }; "huddle" event
 v.useAvatars(use); v.useAvatar(key, use); v.avatarUse(key)   // "theirs" | "mine": whose look visitors have in

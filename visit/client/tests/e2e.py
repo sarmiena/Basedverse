@@ -916,6 +916,28 @@ async def main():
         got = await b.until(lambda m: m["type"] == "avatar")
         check("A's page gives a new one: it goes to B at once, B having asked", got["avatar"]["json"]["object"]["name"], "me again")
 
+        print("\nacts (4.0, #59, #60): what a room has a visitor's own model do, and hold, told to the visitor's page")
+        await b.send(type="perform", channel=vb["channel"], act={"clip": "sit", "loop": True})
+        p = await a.until(lambda m: m["type"] == "perform")
+        check("B's room seats A: A's page told, on A's channel (a lasting act), nothing held", (p["channel"], p["act"], p["hold"]), (va["channel"], {"clip": "sit", "loop": True, "secs": None}, False))
+        await b.send(type="perform", channel=vb["channel"], act={"clip": "drink", "secs": 9999}, hold=True)
+        p = await a.until(lambda m: m["type"] == "perform")
+        check("a drink in A's hand, its time capped at 10 minutes", (p["act"], p["hold"]), ({"clip": "drink", "loop": False, "secs": 600.0}, True))
+        await b.send(type="perform", channel=vb["channel"], act={"clip": "dance"})
+        check("a clip that is not one of the list: refused", (await b.until(lambda m: m["type"] == "error"))["code"], "bad_message")
+        await b.send(type="perform", channel=9999, act=None)
+        check("for nobody in the room: refused", (await b.until(lambda m: m["type"] == "error"))["code"], "no_such_visit")
+        await a.send(type="perform", channel=va["channel"], act={"clip": "sit"})
+        check("a page acts only on visitors in its own room (A, a visitor there): refused", (await a.until(lambda m: m["type"] == "error"))["code"], "no_such_visit")
+        await asyncio.sleep(1.1)
+        for _ in range(11):
+            await b.send(type="perform", channel=vb["channel"], act=None)
+        check("eleven in a second for one visitor: the eleventh refused", (await b.until(lambda m: m["type"] == "error"))["code"], "rate_limited")
+        await asyncio.sleep(1.1)
+        await b.send(type="perform", channel=vb["channel"], act=None, hold=False)
+        await a.drain()
+        await b.drain()
+
         print("\npossessions: what a visitor owns, told to the room it visits; a model sent when the room asks; what it rides, in its input")
         pz = {"unit": 1, "json": {"metadata": {"version": 4.5}, "object": {"type": "Group", "uuid": "dr-1", "name": "dragon"}}}
         await a.send(type="possessions", list=[{"id": "dragon", "name": "Smaug", "mount": True, "fly": True, "speed": 3, "lift": 1.2}, {"id": "cat", "name": "Tom"}])

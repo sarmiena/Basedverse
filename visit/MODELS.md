@@ -57,6 +57,7 @@ A model may carry points: an `Object3D` (it draws nothing) with a name, placed i
 |---|---|---|---|
 | `eyes` | a body | where its owner sees from: a visitor's camera in a room that shows their own model | 92% of its height |
 | `seat` | a mount | where its rider's feet go (its `lift`: how high) | `lift`, else 0 |
+| `hand` | a body | where a thing a room gives it is held (4.0: `visit.hold`), its hand's palm | in front of its chest, 1.1 m up, 0.35 m ahead |
 
 ### Clips: its poses and moves
 
@@ -70,9 +71,12 @@ clip moves parts of it **by name**: every name a track uses must be a part it ha
 | `run` | a mount | moving fast (else `walk`) |
 | `fly` | a mount that flies | in the air (the room's `move` says so: `air`, section 4) |
 | `ride` (or `sit`) | a body | on a mount |
+| `sit`, `lie` | a body | (4.0) seated or lying, as a room's interaction has it (`visit.perform`): until they move | `sit`: `ride`, else `idle`; `lie`: `idle` |
+| `drink`, `eat`, `throw`, `swat`, `wave` | a body | (4.0) once, as a room's interaction has it (a sip, a bite, a throw, a swat, a wave) | `idle` |
 
 Visit plays them (eased from one to the next) wherever the model is drawn: in the room its owner visits, and at
-home under your own user.
+home under your own user. The 4.0 acts (#59) are named exactly so (a room asks for nothing else), so any model works
+in any room: one without the clip plays its fallback, and holds a thing at its `hand`, or in front of its chest.
 
 ```js
 // A body: rigid parts on named groups, moved by clips. Feet at the origin, facing -z, metres.

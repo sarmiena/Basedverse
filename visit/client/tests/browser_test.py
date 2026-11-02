@@ -613,6 +613,27 @@ async def run(a, b, url):
             await a.until("Math.abs(v.visitors[0].eyes - 1.5) < 0.01 && v.visitors[0].look"),
             await b.until("(bd => !!bd && bd.look === 'theirs' && Math.abs(bd.eyes - 1.5) < 0.01)(v._bodies.get(here().channel))")), ("theirs", True))
         await a.shot("a_avatar.png")
+        # 4.0 (#59, #60): A's room acts out an interaction on B's own model, and B's own page knows.
+        await a.js("v.perform(v.visitors[0].id, 'sit')")
+        if not await b.until("room.sit && room.act === 'sit'", 6):
+            print("      sit: B", await b.js("JSON.stringify({ act: room.act, sit: room.sit, where: room.where, w: [...v._watches.values()].map(w => [w.host.name, w.inside, w.act, w.holding, w.channel]), in: room.world.in })"),
+                  "A", await a.js("JSON.stringify(v.visitors.map(x => [x.visitor.name, x.act, x.id]))"))
+        check("A's room seats B (perform sit): A's list says so, and B's world says B sits (B's page lowers its own body)",
+              (await a.until("(x => !!x && x.clip === 'sit' && x.loop)(v.visitors[0].act)"), await b.until("room.sit && room.act === 'sit'")), (True, True))
+        await a.js("window.cup = new room.THREE.Mesh(new room.THREE.CylinderGeometry(0.05, 0.04, 0.12, 12), new room.THREE.MeshLambertMaterial({ color: 0xffffff })); cup.name = 'cup'; v.hold(v.visitors[0].id, cup)")
+        check("and puts a cup in B's hand: in A's room, in front of B's chest (B's model has no hand point), B's own copy of A's room has it",
+              (await a.until("(c => !!c && c.parent === room.scene && Math.abs(c.position.y - (v.visitors[0].pose.y + 1.1)) < 0.05 && v.visitors[0].holding)(room.scene.getObjectByName('cup'))"),
+               await b.until("!!(here() && here().scene && here().scene.root.getObjectByName('cup')) && v._watches.size > 0 && [...v._watches.values()].some(w => w.holding)")), (True, True))
+        await b.js("document.activeElement && document.activeElement.blur()")
+        await b.key("KeyW", "w", 87, True)
+        check("B walks: no longer seated, there and in B's own world; the cup goes with B",
+              (await a.until("!v.visitors[0].act && v.visitors[0].holding"), await b.until("!room.sit && !room.act")), (True, True))
+        await b.key("KeyW", "w", 87, False)
+        await a.js("v.hold(v.visitors[0].id, null)")
+        check("A takes the cup back: out of A's room, and of B's copy", (await a.until("!room.scene.getObjectByName('cup') && !v.visitors[0].holding"),
+              await b.until("!(here() && here().scene && here().scene.root.getObjectByName('cup'))")), (True, True))
+        check("a clip not in the list: refused, saying which are", await a.js("(() => { try { v.perform(v.visitors[0].id, 'dance'); return 'taken'; } catch (e) { return e.message.slice(0, 40); } })()"),
+              "visit.perform: the clip is one of sit, l")
         await a.js("document.querySelector('.visit-panel button.who[data-v=more]').click()")
         await a.js("document.querySelector('.visit-panel .sub button[data-v=look][data-use=mine]').click()")
         check("A opens B's row, our model: B set apart, one of A's own (a box)", await a.until(
@@ -703,6 +724,9 @@ async def run(a, b, url):
         await b.key("KeyM", "m", 77, False)
         check("M again: on the one B last rode", await b.until("v.riding"), "crate")
         await a.js("window.oldWs = v._ws, v._ws.close()")   # A's page loses its visit-client a moment (it connects again by itself)
+        if not await a.until("v._ws !== window.oldWs && v._ws.readyState === 1 && v.state === 'online' && v.visitors.length === 1 && !!v.visitors[0].riding && !!room.scene.getObjectByName('crate-box')", 30):
+            print("      rides: A", await a.js("JSON.stringify({ ws: v._ws && v._ws.readyState, state: v.state, visitors: v.visitors.map(x => [x.visitor.name, x.riding, !!x.pose]), crate: !!room.scene.getObjectByName('crate-box'), mounts: room.scene.children.filter(c => c.name === 'mount:B').length })"),
+                  "B", await b.js("JSON.stringify({ riding: v.riding, where: room.where && room.where.name, w: [...v._watches.values()].map(w => [w.host.name, w.inside]) })"))
         check("A's page loses its visit-client and comes back while B rides: B's crate and B's body in A's room once each, not twice",
               await a.until("v._ws !== window.oldWs && v._ws.readyState === 1 && v.state === 'online' && v.visitors.length === 1 && !!v.visitors[0].riding && !!room.scene.getObjectByName('crate-box')"
                             " && room.scene.children.filter(c => c.name === 'mount:B').length === 1 && room.scene.children.filter(c => c.name === 'avatar:B').length <= 1", 30), True)
