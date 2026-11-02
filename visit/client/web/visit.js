@@ -757,12 +757,9 @@
       this._roomSoundsOn = (() => { try { return localStorage.getItem("visit:room-sounds") !== "off"; } catch (e) { return true; } })();
       this._loops = new Map(); this._shots = []; this._buffers = new Map(); this._shotsPlayed = 0; this._ownSounds = true;
       this._targeting = true;  //   and whether Visit picks it itself, the room's way (v.targeting(false): your page does)
-      this.knocks = [];        // on your door: { id, from, message, until, link }
-      this.knocking = [];      // yours, waiting: { id, to, link }
       this.layout = [];        // where you have put friends' plots in your world: [{ key, x, z, turn }]
       this.seen = [];          // where friends have put your room in their worlds (8.4): [{ key, name, at: { dx, dz, turn, size } }]
       this.watchers = [];      // who sees your room from outside it (worlds that picked it, links): [{ id, visitor, inside, link }]
-      this.links = [];         // your links (8.5): [{ id, host, where ("corner", "aside" or "world"), inside }]
       this.avatars = { default: "theirs", by: [] };
       this.riding = null;      // the mount your user rides (8.11): its id, or null
       this.mount = null;       // the one M (the panel's) gets them on, as they last chose
@@ -826,7 +823,6 @@
       this._on = {};
       this._hosted = new Map();   // channel -> a visit to this office (or a watch of its plot)
       this._watches = new Map();  // channel -> a plot this office watches: { id, channel, host, inside, scene, ... }
-      this._links = new Map();    // channel -> a link of this office's, wherever it is (in _watches too, in the world)
       this._world = null;         // v.world(): friends' plots drawn around this room
       this._hooks = null;         // until visit.host(): this office is not in the lobby to be visited, nor knocks
       this._interactions = new Map();   // type -> what a visitor's click on something so marked does (8.3)
@@ -939,7 +935,6 @@
       this.bans = bansFrom(m.bans); this.bannedBy = bansFrom(m.banned_by); this.voiceMembers = membersFrom(m.voice_members);
       this._users = new Map((Array.isArray(m.users) ? m.users : []).filter(u => isObj(u) && typeof u.key === "string" && typeof u.name === "string").map(u => [u.key, u.name]));
       this._roomVoiceFrom(m.room_voice);
-      this.knocks = []; this.knocking = [];
       this._avatarsFrom(m.avatars);
       this._phoneOn.clear();
       for (const v of m.visits || []) if (v.voice) this._talkStarted(v); else this._started(v);
@@ -964,16 +959,15 @@
         case "online":   // (again, after a drop): its own knocks still waiting are these
           this.state = "online"; this.office = m.office; this.lobbyChat = m.lobby_chat === true; this.lobbyVoice = m.lobby_voice === true;
           if (m.lobby_info) this.lobbyInfo = lobbyInfoFrom(m.lobby_info);
-          if (Array.isArray(m.knocking)) this.knocking = m.knocking.map(k => ({ id: k.id, to: k.to, link: k.link === true }));
           this._emit("online", this.lobbyInfo);
           break;
         case "offline":   // away: this office left the lobby on purpose, and sees nobody until it joins again
           this.state = m.away ? "away" : "offline";
-          if (m.away) { this.offices = []; this.knocks = []; this.knocking = []; this.groups = []; this.huddles = []; }
+          if (m.away) { this.offices = []; this.groups = []; this.huddles = []; }
           break;
         case "signed_in":   // someone signed in on this workroom, or nobody any more: out of the lobby until someone is
           this.signedIn = m.signed_in === true;
-          if (!this.signedIn) { this.offices = []; this.knocks = []; this.knocking = []; this.groups = []; }
+          if (!this.signedIn) { this.offices = []; this.groups = []; }
           this._emit("signed_in", this.signedIn);
           break;
         case "group": {   // one of your world groups, whole: on joining the lobby, and as it changes
@@ -1006,26 +1000,13 @@
             key: typeof o.key === "string" ? o.key : null, links: o.links === true, whisper: o.whisper === true, voice: o.voice === true, about: aboutFrom(o.about) }));
           { const me = this.offices.find(o => this.office && o.id === this.office.id); if (me) { this.status = me.status; this.maxVisitors = me.maxVisitors; } }
           break;
-        case "knock":
-          if (m.voice) { this._talkRing(m); break; }   // 3.5: someone wants to talk: it rings
-          this.knocks = this.knocks.filter(k => k.id !== m.id).concat([{ id: m.id, from: m.from, message: m.message || "", until: Date.now() + 1000 * (m.expires_in || 60), link: m.link === true }]);
-          this._emit("knock", this.knocks[this.knocks.length - 1]);
-          break;
+        case "knock": if (m.voice) this._talkRing(m); break;   // someone wants to talk (3.5): it rings. (4.0: no other knocks)
         case "knock_cancelled":
-          this.knocks = this.knocks.filter(k => k.id !== m.id);
           for (const c of [...this._calls.values()]) if (c.voice && c.knock === m.id && c.state === "ringing") this._callEnd(c.key, "gave up", false);
           break;
-        case "knock_sent":
-          if (m.voice) { this._talkSent(m); break; }
-          this.knocking = this.knocking.concat([{ id: m.id, to: m.to, link: m.link === true }]); break;
+        case "knock_sent": if (m.voice) this._talkSent(m); break;
         case "huddle": this._huddleIn(m); break;
-        case "answered": {
-          if (m.voice) { this._talkAnswered(m); break; }
-          const k = this.knocking.find(x => x.id === m.knock);
-          this.knocking = this.knocking.filter(x => x.id !== m.knock);
-          this._emit("answered", { to: k && k.to, accept: m.accept, reason: m.reason, message: m.message || "", link: m.link === true });
-          break;
-        }
+        case "answered": if (m.voice) this._talkAnswered(m); break;
         case "picks": this._picks(m); break;
         case "ignored": {   // 3.3: whom your user ignores, now: their lines out of the log, and over their heads
           this.ignored = ignoredFrom(m.ignored);
@@ -1100,7 +1081,6 @@
           if (this.home && this.home.channel === m.channel) this.home.paused = m.type === "host_paused";
           if (this.visiting && this._viewer && this._viewer.channel === m.channel) this.visiting.paused = m.type === "host_paused";
           if (this._watches.has(m.channel)) this._watches.get(m.channel).paused = m.type === "host_paused";
-          if (this._links.has(m.channel)) this._links.get(m.channel).paused = m.type === "host_paused";
           break;
         case "link_stats":
           if (this._viewer && this._viewer.channel === m.channel) { this.stats.rtt = Number(m.rtt_ms); this.stats.path = String(m.path); }
@@ -1147,55 +1127,8 @@
     setStatus(status) { this._send({ type: "status", status }); }
     setMaxVisitors(n) { this._send({ type: "max_visitors", n }); }
     rename(name) { this._send({ type: "rename", name }); }
-    // A knock: to walk into their room as soon as they let you in. A link (8.5; to an office whose `links` is
-    // true): let in, you see their room in a corner (the stage's), from above, and choose: go there (stepIn), put it
-    // in your world (toWorld), or not (unlink). To an older office a link is a knock.
-    knock(officeId, message = "") { this._as("user", "knock"); this._send({ type: "knock", to: officeId, message }); }
-    link(officeId, message = "") { this._as("user", "link"); this._send({ type: "knock", to: officeId, message, link: true }); }
-    answer(knockId, accept, message = "") { this.knocks = this.knocks.filter(k => k.id !== knockId); this._send({ type: "answer", knock: knockId, accept, message }); this._changed(); }
-    leave() { if (this.visiting) this._send({ type: "end", visit: this.visiting.id }); }   // a link: unlinked
-    // Your links (by visit id; the corner's, by default). Into its room, as a visit is (its host's spawn says where),
-    // facing the way the corner looked: the corner fills the stage, and your keys and mouse go there. A visit you
-    // are on ends first (in one room at a time).
-    stepIn(id) {
-      const w = this._link(id);
-      if (!w || w.inside || w.where === "world") return false;
-      if (this._viewer && !this._viewer.link) { this._send({ type: "end", visit: this._viewer.id }); this._leaveCorner(); }
-      if (w.where !== "corner") this._toCorner(w);
-      const s = w.scene;
-      if (this._view && s && s.lookYaw != null) { this._view.yaw = s.lookYaw - s.yaw0; this._view.pitch = 0; }
-      w.inside = true; this.visiting.inside = true;
-      this._send({ type: "enter", channel: w.channel });
-      this._changed();
-      return true;
-    }
-    // Back to your own room: the link's room in the corner again.
-    stepOut(id) {
-      const w = this._link(id);
-      if (!w || !w.inside || w.where === "world") return false;
-      w.inside = false;
-      if (this.visiting && this.visiting.id === w.id) this.visiting.inside = false;
-      this._send({ type: "exit", channel: w.channel });
-      if (this._view) { this._view.keys.clear(); if (document.pointerLockElement) document.exitPointerLock(); }
-      this._changed();
-      return true;
-    }
-    // A link's room into your world (v.world first): a plot round yours, as a picked one's, while the link lasts.
-    toWorld(id) {
-      const w = this._link(id);
-      if (!w || !this._world || w.where === "world") return false;
-      if (w.inside) this.stepOut(w.id);
-      if (this._viewer === w) this._leaveCorner(); else this._sceneDrop(w);
-      Object.assign(w, { where: "world", plot: true, failed: false, since: performance.now(), askedAt: 0, wantWorld: false });
-      this._watches.set(w.channel, w);
-      this._send({ type: "link_where", channel: w.channel, where: "world" });   // kept, for this page reloaded
-      this._sceneResync(w);   // whole again, to be read with this page's three.js
-      this._cornerNext();
-      this._visitorsList();
-      this._changed();
-      return true;
-    }
-    unlink(id) { const w = this._link(id); if (w) this._send({ type: "end", visit: w.id }); }
+    // 4.0 (#57): no knock, link, answer, leave, stepIn, stepOut, toWorld nor unlink: worlds are the way to meet. Your
+    // world's plots are walked into (World); a call is talk (3.5); kick(visitId) ends anyone's visit or watch.
     // What visitors may click in your room (8.3), by type: something marked userData.visitPoint = "<type>" does what
     // its entry's run says when a visitor clicks it; a type not named here does nothing, and is not shown to them.
     // An entry is cosmetic (it changes only how the room looks or sounds: something moves, lights up, plays) or it
@@ -1481,7 +1414,7 @@
     // Visitor side: how the room we are in (or see) draws us (`body`): our eyes there, for our own world's view of us
     // (8.4), and whether as ourselves; "body" says it, and why not, to the page and its panel.
     _bodyIn(m) {
-      const w = this._viewing(m.channel) || this._links.get(m.channel);
+      const w = this._viewing(m.channel);
       const body = { look: m.look === "theirs" ? "theirs" : "mine", eyes: Number(m.eyes) > 0 ? Number(m.eyes) : null, problem: typeof m.problem === "string" ? m.problem.slice(0, 200) : null };
       this._bodies.set(m.channel, body);
       if (w && w.scene && body.eyes) w.scene.eye = body.eyes;
@@ -1520,9 +1453,8 @@
     }
     // Whether this office sees that one's room from outside it: a plot in its world (picked, or a link put there).
     watching(officeId) { return [...this._watches.values()].some(w => w.host.id === officeId); }
-    _link(id) { return id == null ? (this._viewer && this._viewer.link ? this._viewer : null) : [...this._links.values()].find(w => w.id === id) || null; }
     // In the room in the stage (a visit, or a link gone there): where keys, the mouse and points go.
-    _inRoom() { return !!this.visiting && (!this.visiting.link || this.visiting.inside); }
+    _inRoom() { return !!this.visiting; }
     // Out of the lobby (nobody sees this office or can knock; its visits end) and back. visit-client keeps
     // it out across its restarts when it has a state file (VISIT_STATE_FILE).
     leaveLobby() { this._send({ type: "leave_lobby" }); }
@@ -1786,15 +1718,6 @@
     _picks(m) {
       this.door = m.door === "closed" ? "closed" : "open";
       this.picks = (Array.isArray(m.picks) ? m.picks : []).map(g => ({ key: String(g.key), name: String(g.name || "") }));
-      this._pickedLinksToWorld();
-    }
-    // A link with someone picked is their plot in your world, as watching it would be: visit-client counts the link
-    // as watching that office and starts no world watch of it beside (watch_picks), so in the corner it would take
-    // their plot off your ground. With a world, such a link goes there (when it starts, or when they are picked); a
-    // link with anyone else stays in the corner.
-    _pickedLinksToWorld() {
-      if (!this._world) return;
-      for (const w of [...this._links.values()]) if (w.where !== "world" && !w.inside && this.isPicked(w.host.key)) this.toWorld(w.id);
     }
 
     // ---------- visits ----------
@@ -1806,7 +1729,7 @@
         // the room spawns and walks as it does anyone (who.owner says who). To a user page, the room's visits are to
         // see (the panel's rows), never to serve: a mirror, with nothing sent for it.
         const owner = m.owner === true, mirror = this.role === "user";
-        const h = { id: m.id, channel: m.channel, visitor: Object.assign({}, m.peer || {}, owner ? { owner: true } : {}), owner, mirror, guest: m.guest === true, watch: m.watch === true, link: m.link === true,
+        const h = { id: m.id, channel: m.channel, visitor: Object.assign({}, m.peer || {}, owner ? { owner: true } : {}), owner, mirror, guest: m.guest === true, watch: m.watch === true,
           inside: m.watch !== true || m.inside === true,
           pose: null, yaw0: 0, input: null, inputAt: 0, keyNext: true, fails: 0, sceneSent: false, posed: null, sharedAdds: m.shared_adds === true,
           landscapes: m.landscapes === true, since: performance.now(), possessions: possessionsFrom(m.possessions), models: new Map(), wanted: new Set(), ride: null };
@@ -1816,26 +1739,18 @@
         if (h.inside && !mirror) this._spawn(h);
         this._avatarWants();
       } else if (m.watch) {
-        // A plot watched (the world's), or a link (8.5): the corner's if it is free, else aside, waiting for it. Or home
-        // (engine/SPEC.md 4): the person's own room, a watch they are in, drawn by their world as its own plot.
+        // A plot watched (the world's). Or home (engine/SPEC.md 4): the person's own room, a watch they are in, drawn by
+        // their world as its own plot. (4.0, #57: no links, nor visits by a knock: worlds are the way in.)
         const home = m.home === true;
-        const w = { id: m.id, channel: m.channel, host: m.peer || {}, watch: true, link: m.link === true, plot: m.link !== true, home, where: m.link ? "aside" : null,
+        const w = { id: m.id, channel: m.channel, host: m.peer || {}, watch: true, plot: true, home, where: null,
           inside: home && m.inside === true, paused: false, count: 0, scene: null, sceneQ: null, since: performance.now(), loading: false, failed: false };
-        if (w.link) this._links.set(m.channel, w); else this._watches.set(m.channel, w);
+        this._watches.set(m.channel, w);
         if (home) { this.home = { id: m.id, channel: m.channel, paused: false }; if (this._world) this._world.listAt = -1; }
         if (m.inside && !home) this._send({ type: "exit", channel: m.channel });   // this page lost where it was: it starts at home
-        if (w.link && m.where === "world") { w.wantWorld = true; if (this._world) this.toWorld(w.id); }   // where it was put, before a reload
-        else if (w.link && this._world && this.isPicked(w.host.key)) this.toWorld(w.id);   // one picked: its plot (_pickedLinksToWorld)
-        else if (w.link && !this._viewer) this._toCorner(w);
-      } else {
-        if (this._viewer && this._viewer.link) this._aside(this._viewer);   // a visit: the corner's link waits aside
-        this.visiting = { id: m.id, host: m.peer || {}, paused: false, link: false, inside: true };
-        this._viewer = { id: m.id, channel: m.channel, count: 0, scene: null, sceneQ: null, since: performance.now(), loading: false, failed: false };
-        this._placeholder();
-      }
+      } else return;   // (a visit by a knock: none since 4.0)
       if (m.phone) this._phoneOn.add(m.channel);
       this._visitorsList();
-      this._emit("visit_started", { id: m.id, role: m.role, peer: m.peer, guest: m.guest === true, link: m.link === true });
+      this._emit("visit_started", { id: m.id, role: m.role, peer: m.peer, guest: m.guest === true });
     }
 
     _ended(m) {
@@ -1846,9 +1761,7 @@
       if (h && h.id === m.id) { this._avatarDrop(h); this._rideDrop(h); this._hosted.delete(m.channel); this._visitorsList(); }
       const w = this._watches.get(m.channel);
       if (w && w.id === m.id) { this._sceneDrop(w); this._landDrop(w); this._watches.delete(m.channel); }
-      const l = this._links.get(m.channel);
-      if (l && l.id === m.id) { this._links.delete(m.channel); this._sceneDrop(l); this._landDrop(l); }
-      if (this.visiting && this.visiting.id === m.id) { if (this._viewer) this._landDrop(this._viewer); this._dropViewer(); this.visiting = null; this._cornerNext(); }
+      if (this.visiting && this.visiting.id === m.id) { if (this._viewer) this._landDrop(this._viewer); this._dropViewer(); this.visiting = null; }
       this._phoneOn.delete(m.channel);
       for (const c of [...this._calls.values()]) if (c.channel === m.channel) this._callEnd(c.key, "their link went", false);
       this._visitorsList();
@@ -1862,8 +1775,6 @@
       this._hosted.clear();
       for (const w of this._watches.values()) this._sceneDrop(w);
       this._watches.clear();
-      for (const w of this._links.values()) this._sceneDrop(w);
-      this._links.clear();
       this._dropViewer();
       this.visiting = null;
       this._visitorsList();
@@ -1871,11 +1782,10 @@
 
     _visitorsList() {
       const hs = [...this._hosted.values()];
-      this.visitors = hs.filter(h => h.inside).map(h => ({ id: h.id, visitor: h.visitor, guest: h.guest, pose: h.pose, link: h.link, owner: !!h.owner,
+      this.visitors = hs.filter(h => h.inside).map(h => ({ id: h.id, visitor: h.visitor, guest: h.guest, pose: h.pose, owner: !!h.owner,
         look: h.look || "mine", eyes: h.eyes || this._eyeRoom(), problem: h.modelProblem || null, avatar: null,
         riding: h.ride ? { id: h.ride.id, name: h.ride.name, fly: h.ride.fly } : null }));
-      this.watchers = hs.filter(h => h.watch && !h.owner).map(h => ({ id: h.id, visitor: h.visitor, inside: h.inside, link: h.link }));
-      this.links = [...this._links.values()].map(w => ({ id: w.id, host: w.host, where: w.where, inside: w.inside }));
+      this.watchers = hs.filter(h => h.watch && !h.owner).map(h => ({ id: h.id, visitor: h.visitor, inside: h.inside }));
     }
 
     // ---------- voice: by who is near, in the same room (8.7); and phones (8.8) ----------
@@ -2154,7 +2064,7 @@
       if (t) return t.peer;
       const h = this._hosted.get(ch);
       if (h) return h.visitor;
-      const w = this._viewing(ch) || this._links.get(ch);
+      const w = this._viewing(ch);
       return w ? (w.host || (this.visiting && this.visiting.host)) : null;
     }
 
@@ -2445,7 +2355,7 @@
     get chatTargets() {
       const by = new Map();
       for (const h of this._hosted.values()) if (h.visitor && h.visitor.key) by.set(h.visitor.key, h.visitor.name);
-      for (const w of [...this._links.values(), ...this._watches.values()]) if (w.host && w.host.key) by.set(w.host.key, w.host.name);
+      for (const w of this._watches.values()) if (w.host && w.host.key) by.set(w.host.key, w.host.name);
       if (this.visiting && this.visiting.host && this.visiting.host.key) by.set(this.visiting.host.key, this.visiting.host.name);
       by.delete(this.key);
       return [...by].map(([key, name]) => ({ key, name: String(name || "") })).sort((a, b) => a.name.localeCompare(b.name));
@@ -2929,35 +2839,6 @@
       if (t && t.huddle) { this._emit("huddle", { group: t.huddle, from: { id: String(t.peer.id || ""), name: String(t.peer.name || ""), key: t.peer.key || null }, left: true }); this._changed(); }
     }
 
-    // ---------- links (8.5) ----------
-    // A link into the corner: the stage's small picture, its room drawn as its host draws it, from above, until you
-    // step in. A link back from aside or the world has no scene here: it asks for the whole one again.
-    _toCorner(w) {
-      if (this._viewer && this._viewer !== w) { if (this._viewer.link) this._aside(this._viewer); else return; }   // a visit keeps the stage
-      if (w.where === "world") { this._watches.delete(w.channel); this._sceneDrop(w); w.stale = true; this._send({ type: "link_where", channel: w.channel, where: "corner" }); }
-      const stale = w.stale;
-      Object.assign(w, { where: "corner", plot: false, stale: false, failed: false, since: performance.now(), askedAt: 0 });
-      this._viewer = w;
-      this.visiting = { id: w.id, host: w.host, paused: w.paused, link: true, inside: w.inside };
-      if (stale) this._sceneResync(w);
-      this._placeholder();
-      this._visitorsList();
-    }
-    // Out of the corner, waiting: no scene kept (its edits are not read meanwhile).
-    _aside(w) {
-      if (w.inside) this.stepOut(w.id);
-      if (this._viewer === w) this._leaveCorner(); else this._sceneDrop(w);
-      Object.assign(w, { where: "aside", stale: true });
-      this._visitorsList();
-    }
-    _leaveCorner() { this._dropViewer(); this.visiting = null; }
-    // The corner free: the newest link waiting takes it (not one on its way back into the world).
-    _cornerNext() {
-      if (this._viewer) return;
-      const next = [...this._links.values()].filter(w => w.where === "aside" && !w.wantWorld).pop();
-      if (next) this._toCorner(next);
-    }
-
     // ---------- hosting ----------
     // `scene`: { root, three, renderer, near, far }, the room's three.js scene (or the part of it to share), the
     // THREE namespace it was made with, its renderer and its visitors' camera range. `fov`: that camera's vertical
@@ -3285,7 +3166,7 @@
       s.camera = new T.PerspectiveCamera(Math.min(150, Math.max(10, num(e.fov, 70))), 1, Math.max(0.001, num(e.near, 0.1)), Math.max(1, num(e.far, 1000)));
       s.camera.rotation.order = "YXZ";
       s.unit = Number(e.unit) > 0 ? Math.min(1000, Number(e.unit)) : 1;   // metres in one of its units: how far voices are
-      if (w.link) {   // seen from outside until you go there: its plot from above, or where its host says to look from
+      if (w.corner) {   // (4.0: no links: never) seen from outside until you go there: its plot from above, or where its host says to look from
         s.plot = plotOf(e.plot, s.root, T);
         const p = e.preview;
         s.preview = isObj(p) && ["x", "y", "z", "yaw", "pitch"].every(k => Number.isFinite(p[k])) ? p : null;
@@ -3423,7 +3304,7 @@
         if (k) { k.json = m.json; k.built = null; if (this._world) this._world.listAt = -1; }
         return;
       }
-      const w = this._viewing(m.channel) || this._links.get(m.channel);
+      const w = this._viewing(m.channel);
       if (!w) return;
       this._landDrop(w);
       w.land = { key, json: m.json, objs: null, T: null };
@@ -3576,7 +3457,7 @@
       if (!cw || !ch) return;   // not shown
       const k = Math.min(window.devicePixelRatio || 1, Math.sqrt(MAX_PIXELS / (cw * ch))), W = Math.max(2, Math.round(cw * k)), H = Math.max(2, Math.round(ch * k));
       if (c.width !== W || c.height !== H) { s.renderer.setSize(W, H, false); s.camera.aspect = W / H; s.camera.updateProjectionMatrix(); }
-      const yaw = s.yaw0 + (v ? v.yaw : 0), pitch = v ? v.pitch : 0, outside = w.link && !w.inside;
+      const yaw = s.yaw0 + (v ? v.yaw : 0), pitch = v ? v.pitch : 0, outside = !!w.corner && !w.inside;
       if (s.walk && v && v.active && !outside && this.visiting && !this.visiting.paused) {
         const key = x => v.keys.has(x);
         const p = walk({ x: s.pose.x, z: s.pose.z, yaw }, { forward: (key("KeyW") || key("ArrowUp") ? 1 : 0) - (key("KeyS") || key("ArrowDown") ? 1 : 0),
@@ -3938,7 +3819,7 @@
       if (!v) return;
       const { canvas, ctx } = v;
       ctx.fillStyle = "#000"; ctx.fillRect(0, 0, canvas.width, canvas.height);
-      const say = text || (this.visiting && !(this._viewer && this._viewer.scene) ? `${this.visiting.link ? "looking into" : "walking into"} ${this.visiting.host.name || "their"}'s room…` : "");
+      const say = text || (this.visiting && !(this._viewer && this._viewer.scene) ? `walking into ${this.visiting.host.name || "their"}'s room…` : "");
       if (!say) return;
       const px = Math.max(14, Math.round(canvas.height / 30));
       ctx.fillStyle = "#e6edf3"; ctx.font = `${px}px system-ui, sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
@@ -4026,16 +3907,8 @@
       if (w) this._sceneDelta(w, dv, (dv.getUint8(2) & KEY) !== 0);
     }
 
-    // Stepping onto a plot refused by its host (full), or ended by a visit elsewhere: back where this was before. A
-    // link's: in the corner again.
+    // Stepping onto a plot refused by its host (full), or ended by a visit elsewhere: back where this was before.
     _enterRefused(m) {
-      const l = this._links.get(m.channel);
-      if (l && l.where !== "world") {
-        l.inside = false;
-        if (this.visiting && this.visiting.id === l.id) this.visiting.inside = false;
-        if (m.reason !== "moved") this._emit("error", { code: "enter_refused", message: `${l.host.name || "their"} room: ${m.reason || "refused"}` });
-        return;
-      }
       const w = this._watches.get(m.channel);
       if (!w) return;
       w.inside = false;
@@ -4391,8 +4264,6 @@
       }
       v._world = this;
       v._send({ type: "world", on: true });
-      for (const w of [...v._links.values()]) if (w.wantWorld) v.toWorld(w.id);   // links that were in it before this page reloaded
-      v._pickedLinksToWorld();   // a picked one's link already in the corner: its plot now there is a world
     }
 
     get inside() { return this.in != null; }
@@ -4948,7 +4819,7 @@
     const root = document.createElement("div");
     root.className = "visit-panel";
     element.appendChild(root);
-    let composing = null, timer = null, drawn = "";
+    let drawn = "";
     // Folded (the caret, first in its first line): that line alone, and what asks you for an answer; remembered in this
     // browser. The element given gets visit-folded too, for a page's own rows beside the panel to fold with it.
     let folded = false;
@@ -5006,9 +4877,6 @@
       root.classList.toggle("folded", folded); element.classList.toggle("visit-folded", folded);
       rows.push(`<div class="row hd"><button class="caret" data-v="fold" title="${folded ? "open the panel" : "fold the panel: its first line, and what asks you (a knock, a call)"} · Visit ${VERSION}">${folded ? "▸" : "▾"}</button><span class="dot ${v.state === "online" ? esc(v.status) : ""}"></span><span class="grow">Visit${me ? " · " + esc(me.name) : ""}</span><span class="muted">${esc(v.state)}</span><button data-v="perf" class="${v._perf ? "go" : ""}" title="how this page is doing: frames, stalls, and what Visit does (on or off)">⏱</button>${v.state === "online" ? `<button data-v="lobby" title="the lobby in a browser tab, as you: its chat, who is here, worlds (your door stays here)">🌐 Lobby</button>` : ""}${v.state === "online" ? `<button data-v="away" title="leave the lobby: nobody sees you or can link until you come back">Go offline</button>` : ""}</div>`);
       if (folded) {
-        for (const k of v.knocks) rows.push(`<div class="row knock"><b>${esc(k.from.name)}</b> ${k.link ? "wants to link" : "is knocking"}${k.message ? `: “${esc(k.message)}”` : ""}
-          <div class="btns"><button class="go" data-v="in" data-k="${esc(k.id)}">${k.link ? "Link" : "Let in"}</button><button data-v="out" data-k="${esc(k.id)}">Not now</button>
-          <span class="muted">${Math.max(0, Math.round((k.until - Date.now()) / 1000))}s</span></div></div>`);
         for (const c of v.calls) if (c.state === "ringing") rows.push(`<div class="row lnk ring"><div>${c.voice ? "🎧" : "📞"} <b>${esc(c.name)}</b> ${c.voice ? "wants to talk" : "is calling"}</div><div class="btns"><button class="go" data-v="pick_up" data-key="${esc(c.key)}">${c.voice ? "Answer" : "Pick up"}</button><button data-v="hang_up" data-key="${esc(c.key)}">Not now</button></div></div>`);
         return paint(rows);
       }
@@ -5057,11 +4925,6 @@
           ? `${esc(name)}'s room is in your world (click: take it out)` : full ? `your world shows ${MAX_PICKS} rooms already: take one out first`
           : `put ${esc(name)}'s room in your world, beside yours (${v.picks.length} of ${MAX_PICKS})`}">${on ? "🗺 ✓" : "🗺 +"}</button>`;
       };
-      for (const k of v.knocks) {
-        rows.push(`<div class="row knock"><b>${esc(k.from.name)}</b> ${k.link ? "wants to link" : "is knocking"}${k.message ? `: “${esc(k.message)}”` : ""}
-          <div class="btns"><button class="go" data-v="in" data-k="${esc(k.id)}">${k.link ? "Link" : "Let in"}</button><button data-v="out" data-k="${esc(k.id)}">Not now</button>
-          <span class="muted">${Math.max(0, Math.round((k.until - Date.now()) / 1000))}s</span></div></div>`);
-      }
       // Your phone (8.8): a call to make, to those linked to you whose rooms have phones.
       if (v._phone && !v.calls.length && v.phones.length) rows.push(`<div class="row lnk"><div>📞 call</div><div class="btns">${v.phones.map(p => `<button data-v="call" data-key="${esc(p.key)}" title="ring their phone">${esc(p.name)}</button>`).join("")}</div></div>`);
       // Calls (8.8): ringing, calling, on.
@@ -5121,32 +4984,26 @@
       const person = (who, add) => {
         if (!who) return;
         let p = people.find(x => (who.key && x.key === who.key) || (who.id && x.id === who.id));
-        if (!p) people.push(p = { key: null, id: null, name: "", office: null, links: [], visit: null, watches: [], plot: null, there: false });
+        if (!p) people.push(p = { key: null, id: null, name: "", office: null, visit: null, watches: [], plot: null });
         p.key = p.key || who.key || null; p.id = p.id || who.id || null; p.name = p.name || String(who.name || "");
         add(p);
       };
-      for (const o of v.offices) if (!me || o.id !== me.id) person(o, p => { p.office = o; });
-      for (const l of v.links) person(l.host, p => p.links.push(l));
-      for (const x of v.visitors) person(x.visitor, p => { p.visit = x; });
+      // 4.0 (#57): those you share a world with, those in your room, and those whose room you are in (or whose plot your
+      // world shows). Who else is in the lobby is its page's (🌐 Lobby).
+      for (const o of v.offices) if ((!me || o.id !== me.id) && o.key && v.groupsWith(o.key).length) person(o, p => { p.office = o; });
+      for (const x of v.visitors) person(x.visitor, p => { p.visit = x; if (!p.office) p.office = v.offices.find(o => o.key && o.key === x.visitor.key) || null; });
       for (const x of v.watchers) if (!x.inside) person(x.visitor, p => p.watches.push(x));
-      for (const w of v._watches.values()) if (!w.link && !w.home) person(w.host, p => { p.plot = w; });   // (home is your own room)
-      if (v.visiting && !v.visiting.link) person(v.visiting.host, p => { p.there = true; });
-      const linked = p => !!(p.links.length || p.visit || p.watches.length || p.plot || p.there);
+      for (const w of v._watches.values()) if (!w.home) person(w.host, p => { p.plot = w; });   // (home is your own room)
+      const linked = p => !!(p.visit || p.watches.length || p.plot);
       const more = p => {   // a linked one, opened: where each sees the other (beyond its row's own word), what you can do
         const seen = [], btns = [];
-        for (const l of p.links) {
-          const id = esc(l.id);
-          if (!l.inside) seen.push(l.where === "world" ? "their room is in your world" : l.where === "aside" ? "their room waits for your corner" : "their room is in your corner");
-          if (l.where === "aside") btns.push(`<button data-v="show" data-x="${id}">Show</button>`);
-          else if (l.where === "corner" && !l.inside) btns.push(`<button class="go" data-v="step_in" data-x="${id}" title="walk into their room">Go there</button>${v._world ? `<button data-v="to_world" data-x="${id}" title="their room as a plot beside yours, walked onto">Put in my world</button>` : ""}`);
-        }
-        if (p.plot) seen.push("their room is in your world");
-        for (const x of p.watches) seen.push(x.link ? "they see your room" : "your room is in their world");
+        if (p.plot) seen.push(p.plot.inside ? "you are in their room" : "their room is in your world");
+        for (const x of p.watches) seen.push("your room is in their world");
         // How each of you is drawn where the other is (8.6): their model here, and yours there.
         const here = p.visit && v.visitors.find(x => x.id === p.visit.id);
         if (here && here.problem) seen.push(`their model can't be shown here: ${here.problem}`);
-        const inThere = [...v._links.values(), ...v._watches.values()].find(w => w.inside && (w.host.key === p.key || w.host.id === p.id));
-        const there = (inThere && v._bodies.get(inThere.channel)) || (p.there && v._viewer && v._bodies.get(v._viewer.channel));
+        const inThere = [...v._watches.values()].find(w => w.inside && (w.host.key === p.key || w.host.id === p.id));
+        const there = inThere && v._bodies.get(inThere.channel);
         if (there) seen.push(there.look === "theirs" ? "there, you look like your own model" : `there, you look like their model${there.problem ? ` (yours can't be shown: ${there.problem})` : ""}`);
         if (p.key) {
           const u = v.avatarUse(p.key);
@@ -5165,36 +5022,32 @@
         }
         if (p.visit) btns.push(`<button data-v="kick" data-x="${esc(p.visit.id)}" title="out of your room">Kick</button>`);
         if (p.key) btns.push(`<button data-v="ignore" data-key="${esc(p.key)}" data-name="${esc(p.name)}" title="${v.isIgnored(p.key) ? "hear them in chat again" : "their lines in chat never reach you (nothing tells them)"}">${v.isIgnored(p.key) ? "Unignore" : "Ignore"}</button>`);
-        btns.push(`<button data-v="cut" data-p="${esc(p.key || p.id)}" title="every link between you two ends${p.key && v.isPicked(p.key) ? ", and their room leaves your world" : ""}">Unlink</button>`);
+        btns.push(`<button data-v="cut" data-p="${esc(p.key || p.id)}" title="out of each other's rooms now${p.key && v.isPicked(p.key) ? ", and their room out of your world" : ""} (in a world together, either may walk in again)">Part</button>`);
         // (Plain text, each: a model's problem is the other room's word, or the other model's. 3.4.3: escaped.)
         return `<div class="row sub">${seen.length ? `<div class="muted">${[...new Set(seen)].map(esc).join(" · ")}</div>` : ""}<div class="btns">${btns.join("")}</div></div>`;
       };
+      const talkBtn = (key, name) => key && v.canTalk(key) ? `<button data-v="talk" data-key="${esc(key)}" title="talk with ${esc(name)}, voice alone, wherever you both are: it rings for them">🎧</button>` : "";
       for (const p of [...people.filter(linked), ...people.filter(p => !linked(p))]) {
         const o = p.office, dot = `<span class="dot ${o ? esc(o.status) : ""}"></span>`;
+        const who = (p.key && v.userOf(p.key)) || p.name, room = who !== p.name ? ` <span class="muted">(${esc(p.name)})</span>` : "";   // the name they go by, their office's after it
         if (linked(p)) {
-          const k = p.key || p.id, open = opened.has(k), inside = p.links.find(l => l.inside && l.where === "corner");
-          const state = p.visit ? "in your room" : p.there || inside ? "you are in their room" : "linked";
-          const back = p.there ? `<button data-v="leave">Leave</button>` : inside ? `<button data-v="step_out" data-x="${esc(inside.id)}" title="your own room; theirs back in the corner">Back to my room</button>` : "";
-          const who = (p.key && v.userOf(p.key)) || p.name, room = who !== p.name ? ` <span class="muted">(${esc(p.name)})</span>` : "";   // the name they go by, their office's after it
-          rows.push(`<div class="row">${dot}<button class="who grow" data-v="more" data-p="${esc(k)}" title="${open ? "less" : "more: where you see each other, their look, Unlink"}"><b>${esc(who)}</b>${room} <span class="muted">· ${state}</span></button>${back}${pickBtn(p.key, who)}<button class="caret" data-v="more" data-p="${esc(k)}">${open ? "▾" : "▸"}</button></div>`);
+          const k = p.key || p.id, open = opened.has(k);
+          const state = p.visit ? "in your room" : p.plot && p.plot.inside ? "you are in their room" : p.plot ? "in your world" : "your room is in their world";
+          rows.push(`<div class="row">${dot}<button class="who grow" data-v="more" data-p="${esc(k)}" title="${open ? "less" : "more: where you see each other, their look, Part"}"><b>${esc(who)}</b>${room} <span class="muted">· ${state}</span></button>${talkBtn(p.key, who)}${pickBtn(p.key, who)}<button class="caret" data-v="more" data-p="${esc(k)}">${open ? "▾" : "▸"}</button></div>`);
           if (open) rows.push(more(p));
           continue;
         }
         if (!o) continue;
-        const word = o.links ? "Link" : "Knock", asking = v.knocking.some(k => k.to === o.id);
-        const why = !o.ready ? "not ready" : o.status !== "available" ? o.status : !o.links && o.visitors >= o.maxVisitors ? "full" : asking ? "asking…" : "";
-        const ou = o.key && v.userOf(o.key);
         const kin = v.groupsWith(o.key);
-        rows.push(`<div class="row">${dot}<span class="grow" title="${esc(o.name)}${kin.length ? ` · in ${esc(kin.join(", "))} with you` : ""}">${ou ? `<b>${esc(ou)}</b> <span class="muted">(${esc(o.name)})</span>` : esc(o.name)}${kin.length ? " ⚑" : ""} <span class="muted">${esc(o.sim.name || "")} ${o.visitors}/${o.maxVisitors}</span>${o.about && o.about.text ? `<br><span class="muted">${esc(o.about.text)}${o.about.tags.length ? " · " + o.about.tags.map(t => "#" + esc(t)).join(" ") : ""}</span>` : ""}</span>
-          ${pickBtn(o.key, ou || o.name)}<button data-v="knock" data-o="${esc(o.id)}" ${why ? `disabled title="${esc(why)}"` : `title="${o.links ? "see their room in a corner, once they say yes: then go there, or put it in your world" : "an older Visit: you walk into their room once they say yes"}"`}>${asking ? `${word}ing…` : word}</button></div>`);
-        if (composing === o.id) rows.push(`<form class="row" data-o="${esc(o.id)}"><input maxlength="280" placeholder="a message for ${esc(o.name)}"><button class="go">${word}</button></form>`);
+        rows.push(`<div class="row">${dot}<span class="grow" title="${esc(o.name)} · in ${esc(kin.join(", "))} with you">${who !== o.name ? `<b>${esc(who)}</b> <span class="muted">(${esc(o.name)})</span>` : esc(o.name)} ⚑ <span class="muted">${esc(o.sim.name || "")} ${o.visitors}/${o.maxVisitors}</span>${o.about && o.about.text ? `<br><span class="muted">${esc(o.about.text)}${o.about.tags.length ? " · " + o.about.tags.map(t => "#" + esc(t)).join(" ") : ""}</span>` : ""}</span>
+          ${talkBtn(o.key, who)}${pickBtn(o.key, who)}</div>`);
       }
       // Picked, and not in the lobby now: their room stays in your world (from its last landscape), to take out here.
       for (const x of v.picks) if (!people.some(p => p.key === x.key)) {
         const name = v.userOf(x.key) || x.name || (v.guests.find(g => g.key === x.key) || {}).name || x.key.slice(0, 8);
         rows.push(`<div class="row"><span class="dot"></span><span class="grow">${esc(name)} <span class="muted">· away${v.isGuest(x.key) ? "" : " · in none of your worlds now"}</span></span>${pickBtn(x.key, name)}</div>`);
       }
-      if (v.state === "online" && v.offices.length < 2) rows.push(`<div class="row muted">nobody else is here yet</div>`);
+      if (v.state === "online" && !people.length) rows.push(`<div class="row muted">${v.groups.length ? "nobody from your worlds is here now" : "meet people in a world: Find one, or make one (New); 🌐 Lobby shows who is here"}</div>`);
       if (!folded) rows.push(`<div class="row ver"><span class="grow"></span><span class="muted">Visit ${VERSION}</span></div>`);
       paint(rows);
     }
@@ -5213,7 +5066,6 @@
       if (!b) return;
       const act = b.dataset.v;
       if (act === "fold") { folded = !folded; try { localStorage.setItem("visit:panel", folded ? "folded" : "open"); } catch (x) { /* not kept */ } draw(); }
-      else if (act === "knock") { composing = composing === b.dataset.o ? null : b.dataset.o; draw(); }
       else if (act === "lobby") v.openLobby().catch(x => note(`The lobby's page: ${x.message || x}`));
       else if (act === "qr") {
         if (qr) { qr = null; return draw(); }
@@ -5244,17 +5096,12 @@
       else if (act === "cut") {   // every link between you two, ended both ways; out of your world (else its watch would come back)
         const k = b.dataset.p, is = who => !!who && (who.key === k || who.id === k), ends = new Set();
         if (v.isPicked(k)) v.unpick(k);
-        for (const l of v.links) if (is(l.host)) v.unlink(l.id);
         for (const x of [...v.watchers, ...v.visitors]) if (is(x.visitor)) ends.add(x.id);
-        for (const w of v._watches.values()) if (!w.link && is(w.host)) ends.add(w.id);
+        for (const w of v._watches.values()) if (is(w.host)) ends.add(w.id);
         for (const id of ends) v.kick(id);
-        if (v.visiting && !v.visiting.link && is(v.visiting.host)) v.leave();
         opened.delete(k);
       }
-      else if (act === "in" || act === "out") {
-        v.answer(b.dataset.k, act === "in");
-      }
-      else if (act === "leave") v.leave();
+      else if (act === "talk") { if (!v.talk(b.dataset.key)) note("They cannot talk now"); }
       else if (act === "map") (v._mapView || (v._mapView = map(v))).open();
       else if (act === "perf") v.perf(!v._perf);
       else if (act === "ride") v.ride(v.riding ? null : mountChosen());
@@ -5264,11 +5111,6 @@
       else if (act === "hang_up") v.hangUp(b.dataset.key);
       else if (act === "speaker") v.speaker(b.dataset.key, !(v.calls.find(c => c.key === b.dataset.key) || {}).speaker);
       else if (act === "look") v.useAvatar(b.dataset.key, b.dataset.use === v.avatars.default ? null : b.dataset.use);
-      else if (act === "unlink") v.unlink(b.dataset.x);
-      else if (act === "step_in") v.stepIn(b.dataset.x);
-      else if (act === "step_out") v.stepOut(b.dataset.x);
-      else if (act === "to_world") v.toWorld(b.dataset.x);
-      else if (act === "show") v._toCorner(v._link(b.dataset.x)), v._changed();
       else if (act === "kick") v.kick(b.dataset.x);
       else if (act === "ban") { const k = b.dataset.key, now = v.banOf(k) || { voice: false, chat: false }; v.ban(k, { ...now, [b.dataset.what]: !now[b.dataset.what] }); }
       else if (act === "voice_kick") v.voiceKick(b.dataset.key);
@@ -5316,19 +5158,13 @@
         v.setAbout(f.elements.text.value.trim(), tags);
         describing = false; document.activeElement.blur(); return draw();
       }
-      const o = v.offices.find(x => x.id === f.dataset.o);
-      (o && o.links ? v.link : v.knock).call(v, f.dataset.o, f.querySelector("input").value.trim());
-      composing = null;
-      f.querySelector("input").blur();
-      draw();
     });
     root.addEventListener("focusout", () => setTimeout(draw, 0));
     v.on("change", draw);
-    timer = setInterval(() => { if (v.knocks.length) draw(); }, 1000);   // the knocks' countdown
     const speaking = setInterval(() => { if (v.mic || v.voices.length || v._calls.size) draw(); }, 250);   // who is near, and speaking
     draw();
     return { element: root, chat: cw,
-      release() { clearInterval(timer); clearInterval(speaking); v.off("change", draw); v.off("seen", onSeen); v.off("call", onCall); v.off("model", onModel); v.off("body", onBody); v.off("browsers", onBrowsers); for (const t of seenWait.values()) clearTimeout(t); if (cw) cw.release(); removeEventListener("keydown", mountKey); root.remove(); },
+      release() { clearInterval(speaking); v.off("change", draw); v.off("seen", onSeen); v.off("call", onCall); v.off("model", onModel); v.off("body", onBody); v.off("browsers", onBrowsers); for (const t of seenWait.values()) clearTimeout(t); if (cw) cw.release(); removeEventListener("keydown", mountKey); root.remove(); },
       say() { if (cw) cw.open(); } };   // the chat window, open to type a line (as Enter does)
   }
 
@@ -5525,7 +5361,7 @@
         + (talks ? "" : `<div class="ab no">${t.talk === "owner" ? "only its room's owner may talk to it" : "it does not answer"}</div>`)
         + `<div class="bt">${acts.map(a => `<button type="button" data-c="act" data-a="${esc(a.type)}">${esc(a.label)}</button>`).join("")}`
         + (withChat && talks ? `<button type="button" data-c="say" title="a line aloud, meant for ${esc(t.name)}">Say</button>${t.kind === "figure" || (o && o.whisper) ? `<button type="button" data-c="whisper" title="${t.kind === "figure" ? "to it alone" : "to them alone"}">Whisper</button>` : ""}` : "")
-        + (o && o.ready && o.status === "available" ? `<button type="button" data-c="${o.links ? "link" : "knock"}">${o.links ? "Link" : "Knock"}</button>` : "") + `</div>`;
+        + (o && v.canTalk(o.key) ? `<button type="button" data-c="talk" title="talk with ${esc(t.name)}, voice alone: it rings for them">🎧 Talk</button>` : "") + `</div>`;
       if (html !== drawn) { drawn = html; root.innerHTML = html; }
       root.hidden = false;
     };
@@ -5538,7 +5374,7 @@
       else if (c === "say") v._emit("chat_box", { scope: "aim", kind: t.kind, id: t.id, name: t.name, room: t.room });
       else if (c === "whisper" && t.kind === "figure") v._emit("chat_box", { scope: "figure", id: t.id, name: t.name, room: t.room });
       else if (c === "whisper" && o) v._emit("chat_box", { scope: "whisper", id: o.id, key: o.key, name: o.name });
-      else if ((c === "link" || c === "knock") && o) c === "link" ? v.link(o.id) : v.knock(o.id);
+      else if (c === "talk" && o) v.talk(o.key);
     });
     v.on("target", draw); v.on("change", draw);
     draw();
@@ -6676,11 +6512,10 @@
     root.className = "visit-stage big"; root.hidden = true;
     root.innerHTML = `<div class="screen"></div><div class="bar"><span class="grow"></span><span class="stats"></span>`
       + `<button type="button" data-s="small" title="your own room, with this one in the corner">Back to my room</button><button type="button" data-s="leave">Leave</button></div>`
-      + `<div class="menu" hidden><button type="button" class="go" data-s="in">Go there</button><button type="button" data-s="world">Put in my world</button>`
-      + `<button type="button" data-s="leave">Unlink</button><button type="button" data-s="close">Not now</button></div>`;
+      + `<div class="menu" hidden></div>`;
     parent.appendChild(root);
     const screen = root.querySelector(".screen"), cap = root.querySelector(".grow"), nums = root.querySelector(".stats"), menu = root.querySelector(".menu");
-    const leaveB = root.querySelector(".bar button[data-s=leave]"), worldB = menu.querySelector("button[data-s=world]");
+
     let view = null, big = true, shown = null;
     function set(on) { big = on; root.className = "visit-stage " + (on ? "big" : "small"); if (view) view.setActive(on); menu.hidden = true; draw(); stats(); }
     function draw() {
@@ -6688,14 +6523,8 @@
       if (!v.visiting && view) { view.release(); view = null; root.hidden = true; menu.hidden = true; shown = null; }
       if (!v.visiting) return;
       const vi = v.visiting, name = vi.host.name || "Their";
-      if (vi.link) {   // a link: big while in their room, in the corner while not
-        const want = !!vi.inside, now = vi.id + ":" + want;
-        if (shown !== now) { shown = now; if (want !== big) set(want); if (!want) menu.hidden = true; }
-      } else if (shown !== vi.id) { shown = vi.id; if (!big) set(true); }
-      leaveB.textContent = vi.link ? "Unlink" : "Leave";
-      worldB.hidden = !v._world;
-      cap.textContent = big ? `${name}'s room${vi.paused ? " (reloading)" : ""} · click to look around, WASD to walk, Shift to run, Esc frees the mouse`
-        : vi.link ? `${name}'s room · click: go there, or not` : `${name}'s room · click to go back in`;
+      if (shown !== vi.id) { shown = vi.id; if (!big) set(true); }
+      cap.textContent = big ? `${name}'s room${vi.paused ? " (reloading)" : ""} · click to look around, WASD to walk, Shift to run, Esc frees the mouse` : `${name}'s room · click to go back in`;
     }
     function stats() {
       const x = v.stats;
@@ -6703,18 +6532,13 @@
         x.latency != null && `input to screen ${Math.round(x.latency)} ms`, x.fps ? `${x.fps} fps` : ""].filter(Boolean).join(" · ");
     }
     root.addEventListener("click", e => {
-      const b = e.target.closest("button[data-s]"), s = b && b.dataset.s, link = v.visiting && v.visiting.link;
+      const b = e.target.closest("button[data-s]"), s = b && b.dataset.s;
       if (b) {
         e.stopPropagation();
-        menu.hidden = true;
-        if (s === "leave") return v.leave();
-        if (s === "in") return v.stepIn();
-        if (s === "world") return v.toWorld();
-        if (s === "close") return;
-        return link ? v.stepOut() : set(false);   // Back to my room
+        if (s === "leave") return v.visiting && v.kick(v.visiting.id);
+        return set(false);   // Back to my room
       }
-      if (big) return;
-      if (link) menu.hidden = !menu.hidden; else set(true);
+      if (!big) set(true);
     });
     v.on("change", draw); v.on("stats", stats);
     draw();

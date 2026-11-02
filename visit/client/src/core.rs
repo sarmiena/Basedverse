@@ -1052,8 +1052,15 @@ impl Core {
             "knock" if self.hosting.is_none() => {
                 self.page_error("not_hosting", "an office takes part once its page hosts its three.js scene (visit.host)", Some("knock"));
             }
+            // 4.0 (#57): a page knocks only to talk (3.5), and answers only a knock to talk: no knocks to walk in, nor links.
             "knock" | "answer" => {
                 let mut m = m;
+                if t == "knock" && m.get("voice") != Some(&json!(true)) {
+                    return self.page_error("not_supported", "Visit 4 has no knocks nor links: meet in a world (its members walk into each other's rooms)", Some("knock"));
+                }
+                if t == "answer" && !m.get("knock").and_then(Value::as_str).is_some_and(|k| self.knocks.contains_key(k)) {
+                    return self.page_error("not_found", "no knock to talk with that id waiting on you", Some("answer"));
+                }
                 if t == "answer" {   // answered: no longer waiting, so not shown again to a page that reconnects
                     if let Some((k, _)) = m.get("knock").and_then(Value::as_str).and_then(|k| self.knocks.remove(k)) {
                         // 3.5: a knock to talk let in: the voice visit the lobby agrees for it is a call (visit_agreed)
@@ -1695,19 +1702,6 @@ impl Core {
                 }
                 self.save_state();
                 self.tell_avatars();
-            }
-            // Where the page put a link: its world, or the corner (kept for a page that reloads: visit_started says).
-            "link_where" => {
-                let ch = m.get("channel").and_then(Value::as_u64).unwrap_or(0) as u16;
-                let world = match m.get("where").and_then(Value::as_str) {
-                    Some("world") => true,
-                    Some("corner") => false,
-                    _ => return self.page_error("bad_message", "where is \"world\" or \"corner\"", Some("link_where")),
-                };
-                match self.visits.values_mut().find(|v| v.channel == ch && v.role == Role::Visitor && v.link) {
-                    Some(v) => v.in_world = world,
-                    None => self.page_error("no_such_visit", "no link of yours on that channel", Some("link_where")),
-                }
             }
             "exit" => {
                 let ch = m.get("channel").and_then(Value::as_u64).unwrap_or(0) as u16;
@@ -2871,14 +2865,13 @@ impl Core {
                     }
                 }
             }
+            // 4.0 (#57): a knock to walk in, or to link (an older lobby's, from an office before 4.0): declined, the page never
+            // asked. Worlds are the way in.
             "knock" => {
-                if self.let_guest_in(&m) {
-                    return;
+                if let Some(kid) = m.get("id").and_then(Value::as_str) {
+                    let kid = kid.to_string();
+                    self.to_lobby(ToLobby::Answer { knock: Some(kid), accept: Some(false), message: Some("Visit 4: meet in a world".into()) });
                 }
-                if let Some(id) = m.get("id").and_then(Value::as_str) {
-                    self.knocks.insert(id.to_string(), (m.clone(), Instant::now()));
-                }
-                self.to_page(m);
             }
             // A line said to everyone in the lobby (8.9), checked as any line is, to the page.
             // A line said to everyone in the lobby, or whispered to this office's user (8.9): checked as any line is, to the page.
@@ -3044,6 +3037,10 @@ impl Core {
         let watch = m.get("watch").and_then(Value::as_bool) == Some(true);
         let link = watch && m.get("link").and_then(Value::as_bool) == Some(true);
         let voice = !watch && m.get("voice").and_then(Value::as_bool) == Some(true);
+        if (!watch || link) && !voice {   // 4.0 (#57): a visit by a knock, or a link: none (this office asks for none, and lets none in)
+            warn!(visit = id, "a visit by a knock, or a link: Visit 4 has none: ended");
+            return self.to_lobby(end(id, Some(if role == Role::Host { "kicked" } else { "left" })));
+        }
         let huddle = m.get("huddle").and_then(Value::as_str).filter(|_| voice).map(|g| g.chars().filter(|c| !c.is_control()).take(24).collect::<String>());
         if voice {
             // 3.5: a voice visit is a call at once: only one this office asked for (its knock to talk), or let in (with
@@ -3883,7 +3880,7 @@ fn role_may(role: PageRole, t: &str) -> bool {
     const HOST: &[&str] = &["host", "pose", "avatar_want", "possession_want", "phone", "body", "say_as", "sound_at"];
     const USER: &[&str] = &["input", "point", "keyframe", "scene_resync", "avatar_clear", "possessions", "user", "say", "attention", "read",
         "unhold", "media_get", "preview", "history", "shared", "voice_join", "call", "speaker", "world", "enter", "exit", "pick", "unpick", "place", "unplace", "ignore", "unignore", "ignore_clear", "act",
-        "seen", "plot_keep", "plot_load", "plot_forget", "link_where", "knock", "answer", "leave_lobby", "join_lobby", "status", "rename",
+        "seen", "plot_keep", "plot_load", "plot_forget", "knock", "answer", "leave_lobby", "join_lobby", "status", "rename",
         "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set", "group_owner", "group_delete", "groups", "admin",
         "lobby_pass", "browser_code", "browser_allow", "browsers", "browser_revoke", "huddle", "knock_cancel"];
     match role {
