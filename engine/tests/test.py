@@ -94,7 +94,9 @@ check("30 again with a visitor back (%s), idle false" % busy, (all(25 <= n <= 35
 # 4. A crash: failed, then loaded again and hosting.
 before = r["loaded"]
 urllib.request.urlopen(urllib.request.Request(ENGINE + "/debug/crash", data=b"", method="POST"), timeout=10).read()
-check("a crashed page: /health says failed, ok false", room_is("failed", 5) and health().get("ok"), False)
+# The engine notices on its next look, which may first wait out a question the crashed page never answers (6 s).
+h = until(lambda: (lambda h: h.get("room") == "failed" and h)(health()), 12) or {}
+check("a crashed page: /health says failed, ok false", (h.get("room"), h.get("ok")), ("failed", False))
 check("and hosting again", room_is("hosting", 15), True)
 h = health()
 check("one reload counted", h.get("reloads"), 1)
