@@ -136,10 +136,10 @@ v.interactions({
 // Bodies: Visit draws visitors' own models at their feet (visit/SPEC.md 8.6); draw yours only where look is "mine".
 // The owner's body is drawn here for OTHERS; their own page draws itself (SPEC 4).
 (function frame() {
-  requestAnimationFrame(frame);          // 60 a second while anyone is here; the engine slows it when nobody is
+  requestAnimationFrame(frame);          // 30 a second while anyone is here (ENGINE_TICK_BUSY); slower when nobody is
   stepAgents();                          // your room's own life
   for (const x of v.visitors) if (x.pose && x.look === "mine") placeMyModelFor(x);   // x.owner: the owner
-  renderer.render(scene, camera);        // harmless: the engine makes it a no-op
+  renderer.render(scene, camera);        // harmless: in the engine Visit makes it a no-op (4.0, #42), nothing is drawn
 })();
 </script>
 ```

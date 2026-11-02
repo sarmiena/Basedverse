@@ -1713,7 +1713,10 @@ v.host({
                                                     //   covers); unit: metres in one
   preview: { x, y, z, yaw, pitch },                 // optional (unused since 4.0: no links): where a link saw this room from (8.5); without
                                                     //   it, from above its plot, going round
+  beforeSample(now) {},                             // optional (4.0, #42): your room's own step, once before each sample of its
+                                                    //   scene (30 a second while anyone sees it): where to move what visitors see
 });
+// In the engine (engine/SPEC.md) your renderer's render() does nothing (4.0, #42): Visit reads your scene itself.
 
 // a world (8.4): after host(). Every frame, where your page has its user (in its room's terms) and what they press;
 // what comes back is where they are now: at home as given, or in a plot as its host has them (in: { key, name }), its
@@ -1725,7 +1728,7 @@ const world = v.world({ scene, renderer, ground, gap, clipOwn, bubbles, speaking
 const me = world.frame(dt, { x, y, z, yaw, pitch, air, facing }, { forward, strafe, up, run });   // air: how far above its floor your user
                    //   is (flying), so a plot it steps into has it that high (8.2); up: as a visitor's input; facing: the
                    //   way your user faces (radians, as yaw), for their mount at home (8.11; else yaw)
-world.render(camera);
+world.render(camera);   // 4.0 (#42): what never moves (a kept plot, a landscape on its plot's root) drawn merged by material
 world.plots        // [{ key, name, at: { x, z, turn }, rect: [x0, z0, x1, z1], inside, offline }] (offline: a picked plot
                    //   kept while its office is away, 8.10)
 world.inside; world.point(target, { wheel }); world.leave(); world.release()   // wheel: notches, a wheel point (8.3)

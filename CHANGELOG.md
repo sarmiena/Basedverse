@@ -10,7 +10,7 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
-## v4.0.0 — 2026-11-01 — worlds are the way to meet: Knock and Link gone (#57); 🎧 follows the chat box: talk, huddles (#58); rooms act out their interactions on a visitor's own model (#59, #60)
+## v4.0.0 — 2026-11-01 — worlds are the way to meet: Knock and Link gone (#57); 🎧 follows the chat box: talk, huddles (#58); rooms act out their interactions on a visitor's own model (#59, #60); friends' plots cost less (#42)
 
 **4.0 breaks the page's API** (Knock and Link are gone): every workroom upgrades, and the lobby is deployed again.
 Nothing in the protocols changes name; a 3.x office in the same lobby meets a 4.0 one in worlds, as before, and its
@@ -57,6 +57,15 @@ knock to walk in or to link is refused with a reason (a `--v3` lobby's 3.x offic
   the visitor too. Their own page is told (`perform`): its world's `frame` says `act` and `sit` (and `holding`), so a
   page that draws its own body there poses it the same. `v.visitors[i].act` and `.holding` say so on the room's side,
   for a room that draws its own figure (`look` "mine").
+- **A friend's plot costs your frames less** ([#42](https://github.com/sarmiena/Basedverse/issues/42); its first part,
+  out-of-view plots left out and their shadows on a beat, came in 3.2.3). What never moves is drawn merged by material:
+  a plot kept while its office is away, whole, and a live plot's landscape on its scene's root. A dense room went from
+  thousands of draws to about one for each of its materials (the issue's merge prototype: ~5 000 to ~1 000). What a
+  host moves, transparent or sorted meshes, and anything clickable are drawn as before. In the engine, the room's own
+  `renderer.render` does nothing (its draws already did nothing; three.js's walk for them cost a third of a core), and
+  the room ticks at `ENGINE_TICK_BUSY` (30, the rate Visit samples its scene at) while anyone is there, not 60. Sampling
+  your scene compares materials as values, not as text. New: `beforeSample` in `visit.host`, your room's own step
+  once before each sample.
 - **Back in the plot you were in** when its room's page reloads (or loses its `visit` a moment). Before, your world
   had you home, but still in that room by your `visit`'s word, and you could not walk back in.
 - New on the page: `v.talk`, `v.canTalk`, `v.huddle`, `v.joinHuddle`, `v.huddles`, `v.inHuddle`, the `huddle` event; the

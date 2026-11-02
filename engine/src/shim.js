@@ -1,8 +1,8 @@
 // visit-engine's shim (SPEC 5.1, points 2 to 5). The driver puts it into every document of the page before
-// the page's own scripts run (Page.addScriptToEvaluateOnNewDocument), with "__URL__", "__TOKEN__" and
-// __TICK_IDLE__ filled in. It touches nothing but what is listed here.
+// the page's own scripts run (Page.addScriptToEvaluateOnNewDocument), with "__URL__", "__TOKEN__",
+// __TICK_IDLE__ and __TICK_BUSY__ filled in. It touches nothing but what is listed here.
 (() => {
-  const E = window.VISIT_ENGINE = { url: "__URL__", token: "__TOKEN__", role: "host", idle: false, frames: 0, tickIdle: __TICK_IDLE__ };
+  const E = window.VISIT_ENGINE = { url: "__URL__", token: "__TOKEN__", role: "host", idle: false, frames: 0, tickIdle: __TICK_IDLE__, tickBusy: __TICK_BUSY__ };
   const noop = function () {};
 
   // Drawing is free: the WebGL context the page gets is the real one with its draw calls made no-ops (point 3).
@@ -39,12 +39,13 @@
   if (window.MediaDevices) MediaDevices.prototype.getUserMedia = noMicrophone;
   else Object.defineProperty(navigator, "mediaDevices", { value: { getUserMedia: noMicrophone }, configurable: true });   // an http origin has none
 
-  // The room ticks (point 5): callbacks run from the real requestAnimationFrame (60 a second) while someone is
-  // there, from a timer at tickIdle a second while VISIT_ENGINE.idle (the driver sets it once a second). The
+  // The room ticks (point 5): callbacks run at tickBusy a second while someone is there (4.0, #42 D: 30, the rate
+  // Visit samples the scene at; 60: from the real requestAnimationFrame), at tickIdle a second while
+  // VISIT_ENGINE.idle (the driver sets it once a second), each from a timer kept on its beat. The
   // loop itself always runs, callbacks or not, and counts its frames in VISIT_ENGINE.frames: the driver's sign
   // of life (point 6). Callbacks asked for during a frame run in the next, as with the real one.
   const rAF = window.requestAnimationFrame.bind(window);
-  let queue = new Map(), nextId = 1, wasIdle = false, dueAt = 0;
+  let queue = new Map(), nextId = 1, beat = 0, dueAt = 0;
   const frame = now => {
     const callbacks = queue;
     queue = new Map();
@@ -55,11 +56,11 @@
     schedule();
   };
   const schedule = () => {
-    const idle = !!E.idle;
-    if (!idle) { wasIdle = false; return rAF(frame); }
-    const now = performance.now(), period = 1000 / Math.min(60, Math.max(1, Number(E.tickIdle) || 10));
-    dueAt = wasIdle ? Math.max(dueAt + period, now) : now + period;   // kept on the beat; not stacked after a long frame
-    wasIdle = true;
+    const rate = Math.min(60, Math.max(1, Number(E.idle ? E.tickIdle : E.tickBusy) || (E.idle ? 10 : 30)));
+    if (rate >= 60) { beat = 0; return rAF(frame); }
+    const now = performance.now(), period = 1000 / rate;
+    dueAt = beat === rate ? Math.max(dueAt + period, now) : now + period;   // kept on the beat; not stacked after a long frame
+    beat = rate;
     setTimeout(() => frame(performance.now()), dueAt - now);
   };
   window.requestAnimationFrame = cb => { const id = nextId++; queue.set(id, cb); return id; };

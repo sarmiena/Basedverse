@@ -368,6 +368,16 @@
   const MAPS = ["map", "emissiveMap", "alphaMap", "normalMap", "bumpMap", "aoMap", "lightMap", "roughnessMap", "metalnessMap", "specularMap",
     "envMap", "gradientMap", "matcap", "displacementMap"];
   const list = x => Array.isArray(x) ? x : x ? [x] : [];
+  // A material's state as values in a fixed order, into `out` (4.0, #42 E: compared in place each sample, not as text;
+  // its props made only when it changed).
+  function matVals(m, out) {
+    let i = 0;
+    for (const k of COLORS) out[i++] = m[k] && m[k].isColor ? m[k].getHex() : undefined;
+    for (const k of VALUES) out[i++] = k in m && (typeof m[k] === "number" || typeof m[k] === "boolean") ? m[k] : undefined;
+    for (const k of MAPS) out[i++] = m[k] && m[k].isTexture ? m[k].uuid : "";
+    out.length = i;
+    return out;
+  }
   function matProps(m) {
     const p = {};
     for (const k of COLORS) if (m[k] && m[k].isColor) p[k] = m[k].getHex();
@@ -504,13 +514,19 @@
       for (const [uuid, r] of this.objs) if (!seen.has(uuid)) { this.objs.delete(uuid); this.dynamic.delete(r); gone.push(r); }
       const goneIds = new Set(gone.map(r => r.o.uuid));
       for (const r of gone) if (!goneIds.has(r.parent)) removes.push(r.idx);
-      // Materials: their state, or (their textures changed) all of them again.
+      // Materials: their state, or (their textures changed) all of them again. Compared as values (4.0, #42 E).
+      const vals = this.tmpVals || (this.tmpVals = []), nMaps = MAPS.length;
       for (const m of usedMats) {
-        const ps = JSON.stringify(matProps(m)), maps = MAPS.map(k => m[k] && m[k].isTexture ? m[k].uuid : "").join(), rec = this.mats.get(m.uuid);
+        matVals(m, vals);
         for (const k of MAPS) if (m[k] && m[k].isTexture) usedTexs.add(m[k]);
-        if (!rec) { this.mats.set(m.uuid, { props: ps, maps }); continue; }
-        if (maps !== rec.maps) { Object.assign(rec, { props: ps, maps }); res.set(m.uuid, ["material", m]); }
-        else if (ps !== rec.props) { rec.props = ps; props.push(Object.assign({ uuid: m.uuid }, JSON.parse(ps))); }
+        const rec = this.mats.get(m.uuid);
+        if (!rec) { this.mats.set(m.uuid, { vals: vals.slice() }); continue; }
+        let maps = false, other = false;
+        for (let i = 0; i < vals.length; i++) if (vals[i] !== rec.vals[i]) { if (i >= vals.length - nMaps) maps = true; else other = true; }
+        if (!maps && !other) continue;
+        rec.vals = vals.slice();
+        if (maps) res.set(m.uuid, ["material", m]);
+        else props.push(Object.assign({ uuid: m.uuid }, matProps(m)));
       }
       // Geometries and textures changed in place (their versions moved on): again, at most every 250 and 500 ms.
       const again = (map, x, ver, every, kind) => {
@@ -2956,6 +2972,13 @@
       const pv = hooks.preview;
       if (pv != null && !(isObj(pv) && ["x", "y", "z", "yaw", "pitch"].every(k => Number.isFinite(pv[k])))) throw new Error("visit.host: preview is { x, y, z, yaw, pitch }");
       this._hooks = hooks;
+      // 4.0 (#42 C): in the engine (engine/SPEC.md) the room's own picture is never seen: its draws are no-ops already,
+      // and three.js's walk of the scene for them (a third of a core, measured) is skipped too. Visit reads the scene
+      // itself (SceneSync), matrices and all.
+      if (typeof window !== "undefined" && window.VISIT_ENGINE && sc.renderer && typeof sc.renderer.render === "function" && !sc.renderer.visitQuiet) {
+        sc.renderer.render = function () {}; sc.renderer.visitQuiet = true;
+      }
+      if (hooks.beforeSample != null && typeof hooks.beforeSample !== "function") throw new Error("visit.host: beforeSample is a function (once before each sample of your scene, 30 a second)");
       this._sync = null;
       this._plotFrom = null;
       // Where this room's own user stands (8.7), for those who see it to hear them from there: an empty object in its
@@ -3064,6 +3087,9 @@
           this._sync = new SceneSync(this._hooks.scene);
           this._sync.perf = (part, ms) => this._pt(part, ms);
           for (const h of hs) h.sceneSent = false;
+        }
+        if (this._hooks.beforeSample) {   // 4.0 (#42 F): the room's own step, once before each sample of its scene
+          try { this._hooks.beforeSample(now); } catch (e) { console.error("visit: the room's beforeSample threw", e); }
         }
         const sync = this._sync, ready = hs.filter(h => h.sceneSent);
         sync.inter = this._interList();
@@ -3415,12 +3441,17 @@
         const at = i < s.landParents.length ? s.byIdx.get(s.landParents[i]) || s.root : null;
         if (!at) { if (o.parent) o.parent.remove(o); } else if (o.parent !== at) at.add(o);
       });
+      // 4.0 (#42 B): in a world's plot, the landscape on its scene's root merged (never what hangs under something its
+      // host moves); again whenever it is placed anew.
+      mergeUndo(l.merged);
+      l.merged = w.plot ? mergeStill(s.T, s.root, l.objs.filter(o => o.parent === s.root)) : null;
       s.bodiesAt = 0;
     }
     // Its landscape out of the scene and let go (`keep`: its JSON kept, to read again).
     _landDrop(w, keep = false) {
       const l = w.land;
       if (!l || !l.objs) { if (!keep) w.land = null; return; }
+      mergeUndo(l.merged); l.merged = null;
       for (const o of l.objs) {
         if (o.parent) o.parent.remove(o);
         o.traverse(c => { if (c.geometry) c.geometry.dispose(); for (const m of list(c.material)) { for (const k of MAPS) if (m[k] && m[k].isTexture) m[k].dispose(); m.dispose(); } });
@@ -4278,6 +4309,89 @@
   }
   // A plot lit one way drawn in a page lit the other keeps roughly its look: its lights' strength times pi (or
   // over it), and its bulbs no longer dimming with distance as the old way's did not. Approximate, on purpose.
+  // 4.0 (#42 B): what never moves (a kept plot, a landscape), drawn in fewer calls: the meshes under `objs` that share a
+  // material, an attribute layout, shadows, layers and culling, baked into one mesh each (in `root`'s terms) and added
+  // to `root`; the originals hidden (still there: walls are walked against by ray, which takes the hidden too).
+  // Left as they are: transparent, sorted (renderOrder), multi-material (a geometry's groups with one material are drawn
+  // whole: merged), skinned, instanced and morphed meshes, those
+  // with their own onBeforeRender, attributes other than position, normal, uv, color, and any group of one. Returns
+  // { merged, hidden } to undo (mergeUndo).
+  function mergeStill(T, root, objs) {
+    const out = { merged: [], hidden: [] };
+    try {
+      root.updateMatrixWorld(true);
+      const inv = root.matrixWorld.clone(), groups = new Map(), plain = T.Object3D.prototype.onBeforeRender;
+      if (typeof inv.invert === "function") inv.invert(); else inv.getInverse(root.matrixWorld);
+      const OK = ["color", "normal", "position", "uv"], arr = a => a.isInterleavedBufferAttribute ? null : a.array;
+      for (const top of objs) top.traverseVisible(o => {
+        const g = o.geometry, m = o.material;
+        if (!o.isMesh || o.isSkinnedMesh || o.isInstancedMesh || !g || !g.isBufferGeometry || !m || Array.isArray(m) || m.transparent || o.renderOrder
+          || o.onBeforeRender !== plain || !g.attributes.position || (o.userData && (o.userData.visitPoint || o.userData.visitor))) return;   // (a geometry's groups: drawn as one, with one material)
+        if (g.morphAttributes && Object.keys(g.morphAttributes).length) return;
+        const names = Object.keys(g.attributes).sort();
+        if (names.some(n => !OK.includes(n) || !(arr(g.attributes[n]) instanceof Float32Array) || g.attributes[n].normalized)) return;
+        const key = [m.uuid, names.map(n => n + g.attributes[n].itemSize).join(), !!g.index, o.castShadow, o.receiveShadow, o.layers.mask, o.frustumCulled].join("|");
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(o);
+      });
+      const p = new T.Vector3(), nm = new T.Matrix3(), mw = new T.Matrix4();
+      for (const meshes of groups.values()) {
+        if (meshes.length < 2) continue;
+        const g0 = meshes[0].geometry, names = Object.keys(g0.attributes), indexed = !!g0.index;
+        let verts = 0, idx = 0;
+        for (const o of meshes) { verts += o.geometry.attributes.position.count; idx += indexed ? o.geometry.index.count : 0; }
+        const bufs = Object.fromEntries(names.map(n => [n, new Float32Array(verts * g0.attributes[n].itemSize)]));
+        const index = indexed ? (verts > 65535 ? new Uint32Array(idx) : new Uint16Array(idx)) : null;
+        let v0 = 0, i0 = 0;
+        for (const o of meshes) {
+          const g = o.geometry, n = g.attributes.position.count;
+          mw.multiplyMatrices(inv, o.matrixWorld);
+          nm.getNormalMatrix(mw);
+          const flip = mw.determinant() < 0;
+          for (const name of names) {
+            const a = g.attributes[name], src = a.array, k = a.itemSize, dst = bufs[name];
+            for (let i = 0; i < n; i++) {
+              if (name === "position") { p.fromArray(src, i * 3).applyMatrix4(mw); p.toArray(dst, (v0 + i) * 3); }
+              else if (name === "normal") { p.fromArray(src, i * 3).applyMatrix3(nm).normalize(); p.toArray(dst, (v0 + i) * 3); }
+              else for (let c = 0; c < k; c++) dst[(v0 + i) * k + c] = src[i * k + c];
+            }
+          }
+          if (indexed) {
+            const ia = g.index.array;
+            for (let i = 0; i < ia.length; i += 3) {   // a mirrored mesh (negative determinant): its winding turned, to face out still
+              index[i0 + i] = ia[i] + v0; index[i0 + i + 1] = ia[flip ? i + 2 : i + 1] + v0; index[i0 + i + 2] = ia[flip ? i + 1 : i + 2] + v0;
+            }
+            i0 += ia.length;
+          } else if (flip) {
+            for (const name of names) {
+              const k = g.attributes[name].itemSize, d = bufs[name];
+              for (let t = v0; t + 2 < v0 + n; t += 3) for (let c = 0; c < k; c++) { const x = d[(t + 1) * k + c]; d[(t + 1) * k + c] = d[(t + 2) * k + c]; d[(t + 2) * k + c] = x; }
+            }
+          }
+          v0 += n;
+        }
+        const geo = new T.BufferGeometry();
+        for (const name of names) geo.setAttribute(name, new T.BufferAttribute(bufs[name], g0.attributes[name].itemSize));
+        if (index) geo.setIndex(new T.BufferAttribute(index, 1));
+        geo.computeBoundingBox(); geo.computeBoundingSphere();
+        const o0 = meshes[0], mesh = new T.Mesh(geo, o0.material);
+        Object.assign(mesh, { name: "visit:merged", castShadow: o0.castShadow, receiveShadow: o0.receiveShadow, frustumCulled: o0.frustumCulled });
+        mesh.layers.mask = o0.layers.mask;
+        mesh.userData.visitMerged = meshes.length;
+        root.add(mesh);
+        out.merged.push(mesh);
+        for (const o of meshes) { o.visible = false; out.hidden.push(o); }
+      }
+    } catch (e) { console.warn("visit: what never moves could not be merged: drawn as it is", e); mergeUndo(out); return { merged: [], hidden: [] }; }
+    return out;
+  }
+  function mergeUndo(m) {
+    if (!m) return;
+    for (const o of m.merged) { if (o.parent) o.parent.remove(o); o.geometry.dispose(); }
+    for (const o of m.hidden) o.visible = true;
+    m.merged = []; m.hidden = [];
+  }
+
   function relight(root, theirsLegacy, mineLegacy) {
     if (theirsLegacy === mineLegacy) return;
     root.traverse(o => {
@@ -4464,13 +4578,14 @@
       try { land = new T.ObjectLoader().parse(cleanScene(k.json, { vertices: 0, objects: 0 })); }
       catch (e) { console.warn("visit: a kept plot that could not be read: drawn empty", e); land = new T.Group(); }
       root.add(land);
+      const merged = mergeStill(T, land, [...land.children]);   // 4.0 (#42 B): it never moves
       let lit = false;
       land.traverse(o => { if (o.isLight) lit = true; });
       if (!lit) { root.add(new T.HemisphereLight(0xffffff, 0x445566, 0.6)); const d = new T.DirectionalLight(0xffffff, 0.45); d.position.set(5, 10, 7); root.add(d); }
       const label = bubble(T, `${k.name || "?"} · offline`, k.unit);
       label.position.set(k.plot.center[0], 3 / k.unit, k.plot.center[1]);
       root.add(label);
-      k.built = { T, root, land };
+      k.built = { T, root, land, merged };
       return k.built;
     }
     _keptForget(key) {
