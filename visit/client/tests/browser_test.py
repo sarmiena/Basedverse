@@ -1056,6 +1056,30 @@ async def run(a, b, url):
         await a.until("window.room && room.world && room.world.plots.some(p => p.name === 'B')", 30)
         await step_in(a, "B")   # (a world's page comes back at home: A walks in again)
 
+        print("\nscene assets (4.1, #67): a big drawn picture and a big mesh go by name, once; A's page fetches them and draws them")
+        await b.js("window.wholes = []; (s => { v._sendScene = (hs, edit, part) => { if (part === 'whole') wholes.push(JSON.stringify(edit)); return s(hs, edit, part); }; })(v._sendScene.bind(v))")
+        await b.js("""(() => {
+          const T = room.THREE, c = document.createElement('canvas');
+          c.width = c.height = 512;
+          const g = c.getContext('2d');
+          for (let i = 0; i < 6000; i++) { g.fillStyle = 'hsl(' + ((i * 37) % 360) + ',70%,50%)'; g.fillRect((i * 97) % 512, (i * 53) % 512, 9, 9); }
+          window.assetTex = new T.CanvasTexture(c);
+          window.assetGeo = new T.BufferGeometry().copy(new T.SphereGeometry(0.3, 96, 64));
+          const o = new T.Mesh(assetGeo, new T.MeshLambertMaterial({ map: assetTex }));
+          o.name = 'assetball'; o.position.set(7, 1, 2); room.scene.add(o);
+        })()""")
+        ids = await b.until("(t => t && t.id && (g => g && g.id && [t.id, g.id])(v._ownAssets.geos.get(assetGeo)))(v._ownAssets.texs.get(assetTex))", 20)
+        check("B's page makes them assets in the background (WebP, gzipped JSON), each named by its SHA-256", [len(x) for x in ids or []], [64, 64])
+        ids = ids or ["0" * 64, "1" * 64]
+        await b.js("for (const h of v._hosted.values()) if (!h.owner) h.sceneSent = false")   # (A's whole scene again: now by name)
+        check("B's next whole scene for A names both, and carries neither", await b.until(
+            f"(w => !!w && (j => j.images.some(im => im.asset === '{ids[0]}' && !('url' in im)) && j.geometries.some(g => g.asset === '{ids[1]}' && !g.data))(JSON.parse(w).json))(wholes.at(-1))", 20), True)
+        check("A's page fetches them and draws them: the picture (512 px) on the ball, its mesh (6305 vertices)", await a.until(
+            "(o => o && o.material.map && o.material.map.image && o.material.map.image.width === 512 && o.geometry.attributes.position && [o.material.map.image.width, o.geometry.attributes.position.count])"
+            "(here() && here().scene && here().scene.root.getObjectByName('assetball'))", 30), [512, 6305])
+        check("and keeps them: a scene that names them again draws them with nothing fetched", await a.js(f"v._have.has('{ids[0]}') && v._have.has('{ids[1]}')"), True)
+        await b.js("room.remove('assetball')")
+
         print("\ntargets (3.3, #48): the guide described, picked by a click, its card; a whisper to it, its answer to A alone; @")
         await b.js("window.addressed = []; v.on('addressed', e => addressed.push(e)); "
                    "v.figures([{ id: 'guide', name: 'Guide', title: 'the room\\'s guide', about: 'Asks what you came for.', actions: ['spin'] }])")
@@ -1274,6 +1298,38 @@ async def run(a, b, url):
         check("the person stands where their room spawned them, walked by it (its move, who.owner)", await b.until(
             "room.world.inside && Math.abs(room.me.z - 6.5) < 0.1 && Math.abs(room.me.x - 5) < 0.1", 20), True)
         await b.shot("c_user_home.png")
+        if engine_port:
+            print("\n#37 (4.1, #67): a heavy room on the engine (three dozen drawn panels) reaches its person by name: a small scene, the panels fetched")
+            inline = await hc.js("""(() => {
+              const T = room.THREE; window.panels = [];
+              for (let k = 0; k < 36; k++) {
+                const c = document.createElement('canvas'); c.width = c.height = 512;
+                const g = c.getContext('2d'), im = g.createImageData(512, 512);   // (a busy panel: 4-pixel blocks of colour, as a screen or a map has)
+                let seed = k * 7919 + 1;
+                const rnd = () => (seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296;
+                for (let by = 0; by < 128; by++) for (let bx = 0; bx < 128; bx++) {
+                  const col = [rnd() * 255, rnd() * 255, rnd() * 255];
+                  for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) { const i = ((by * 4 + y) * 512 + bx * 4 + x) * 4; im.data.set([...col, 255], i); }
+                }
+                g.putImageData(im, 0, 0);
+                const m = new T.Mesh(new T.PlaneGeometry(0.5, 0.5), new T.MeshBasicMaterial({ map: new T.CanvasTexture(c) }));
+                m.name = 'panel' + k; m.position.set(1 + (k % 6) * 1.4, 2.2, 0.5 + Math.floor(k / 6) * 1.2);
+                room.scene.add(m); panels.push(m);
+              }
+              window.wholes = [];
+              (s => { v._sendScene = (hs, edit, part) => { if (part === 'whole') wholes.push(JSON.stringify(edit).length); return s(hs, edit, part); }; })(v._sendScene.bind(v));
+              return panels.reduce((n, m) => n + m.material.map.image.toDataURL().length, 0);
+            })()""")
+            ready = await hc.until("panels.every(m => (r => !!r && !!r.id)(v._ownAssets.texs.get(m.material.map)))", 60)
+            check("the room's page makes each panel's picture an asset, in the background", ready, True)
+            await hc.js("for (const h of v._hosted.values()) h.sceneSent = false")
+            whole = await hc.until("wholes.length && wholes.at(-1)", 20)
+            print("      (the panels inline: %s bytes; the whole scene by name: %s bytes)" % (inline, whole))
+            check("its whole scene for its person: under a relay's 1 MiB, the panels by name (inline they are past it)",
+                  (isinstance(whole, int) and whole < 1 << 20, isinstance(inline, int) and inline > 1 << 20), (True, True))
+            check("and the person's page fetches and draws every panel's picture", await b.until(
+                "(s => !!s && [...Array(36).keys()].every(k => (o => !!o && !!o.material.map.image && o.material.map.image.width === 512)(s.root.getObjectByName('panel' + k))))(v._homeScene())", 60), True)
+            await hc.js("panels.forEach(m => room.scene.remove(m)); true")
         z0 = await b.js("room.me.z")
         await b.key("KeyW", "w", 87, True)
         await asyncio.sleep(1.0)

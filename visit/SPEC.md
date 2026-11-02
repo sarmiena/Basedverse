@@ -432,6 +432,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `speaker` | `channel`, `on` (bool) | a call on this office's phone's speaker (8.8), or back to the ear (`no_call` if none is on there) |
 | `voice_where` | `me` [x, y, z] \| null, `phone` [x, y, z] \| null, `visitors` [[`channel`, x, y, z], …], `world` [[`key`, x, y, z], …] (metres, this room's terms) | where everyone in this office's room is (8.7): its own user (null: not in it), its phone, each visitor in it; and where its world has each friend at home in their own room, a plot in it (by their key; Visit 0.20). Who hears whom in the room, and across its plot's sides, goes by it. Sent when it changes, at most 10 a second |
 | `media_get` | `id`, `channel`? | a picture or a voice message (8.12) this page would show or play: sent as a binary message (5.4, bit 7) once this office has it (it asks the link the line came by, if it has not), or `media_none`. `channel` (3.4): a room's sound, from the room on that channel (8.13): asked of its host if this office does not have it |
+| `asset_want` | `id` (64 hex), `channel` (of the visit or watch whose scene named it), `at` (from where, bytes; 0 first) | 4.1: a piece of an asset (8.14): from what this visit-client keeps, else (`at` 0) asked of that room; its pieces come as binary frames (5.4, `ASSET`), one per ask; `asset_none` if not to be had |
 | `sound_at` | `id`, `at` [x, y, z], `volume`?, `ref`?, `far`? | 3.4, the room's page (host): one of its sounds (8.13), once, from that point (its units): to everyone in its room; at most 10 a second (`rate_limited`) |
 | `preview` | `url` (http or https), `req` | a link's preview (8.12), made by this visit-client (it fetches the page once): `preview` back, with `req` |
 | `history` | `before`? (ms since 1970; none: now), `limit`? (1–200, 50), `req` | the chat before then (8.12), from the database: `history` back, newest last |
@@ -470,6 +471,10 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `seen` | `key`, `name`, `at` (as the page message `seen`'s, their plot's `size`) \| null | where a friend's world has this office's plot (8.4), as they said; null: not in it, or their last link gone. `ready` has every one known: `seen`: [{`key`, `name`, `at`}] |
 | `landscape` | `channel`, `key`, `json` | an office's landscape (8.10), as JSON: the room's on that visit's `channel` (kept here, or asked for and sent once), or a kept plot's (channel 0). Also to a page that comes back, for each visit it is on. `ready` has the kept plots: `kept`: [{`key`, `name`, `plot`, `unit`}] |
 | `landscapes` | `channel` | this visitor reads landscapes (8.10): its whole room goes without its landscape (also `landscapes` in `visit_started`). Host side |
+| `assets` | `channel` | 4.1: this visitor reads a scene's assets (8.14): the room's big pictures and meshes go to it by name (also `assets` in `visit_started`). Host side |
+| `asset_want` | `id` | 4.1: give this asset of this room's again (8.14: a visitor asked for it, and this visit-client no longer keeps it). Host side |
+| `asset_kept` | `id`, `size` | 4.1: an asset this room's page gave, kept, by its name (8.14). Host side |
+| `asset_none` | `id` | 4.1: an asset asked for (`asset_want`) that is not to be had (8.14) |
 | `plot_forgotten` | `key` | a kept plot let go: its host ended this office's visit on purpose (`kicked`: its door shut, a guest no longer), declined its watch, or this office took it out of its world (`unpick`) |
 | `avatars` | `default`, `by`: [{`key`, `use`}] | whose look visitors have here (also in `ready`), after `avatars` or `avatar_use` |
 | `avatar` | `channel`, `avatar` {`unit`, `json`} | a visitor's avatar, which this page asked for (host side, 8.6): unpacked and checked as a scene edit is |
@@ -529,6 +534,11 @@ Both directions, one scene delta (or, from the host's page, one scene edit) per 
 | 2 | flags: bit 0 = a key delta (everything that has moved, 8.1); bit 1 = a scene edit (host page to visit-client only, alone); bit 2 = this office's avatar (8.6: page to visit-client only, alone, its channel 0); bit 3 = a packet of voice (8.7: from the page, its own user's, its channel saying where it may go, added: 1 in person, 2 their calls, 4 the room voice they are in; to it, another office's, on the visit's channel); bit 4 = someone else's voice passed on (8.7, 8.8: to the page only, on the visit's channel it came by: who spoke, an id or an office's key, then the packet); bit 5 = this room's landscape (8.10: page to visit-client only, alone, its channel 0; gzipped JSON, at most 16 MiB); bit 6 = one of this office's possessions' models (8.11: page to visit-client only, alone, its channel its slot in the `possessions` list; gzipped JSON, at most 4 MiB); bit 7 = a picture shared in chat, or (3.4) a room's sound (8.12, 8.13: from the page, one to keep, alone, its channel a slot the page picks, answered by `media_ready`; to it, one it asked for, its channel 0: who it is (a length byte, its id), its type (a length byte, its MIME type), then its bytes; never dropped, unlike a frame) |
 | 3–10 | timestamp, u64 big-endian, microseconds: the host page's clock when it took the delta (unused for an edit). Voice to the page: byte 3 says how it came (8.7: 0 in person, 1 a call, 2 a room voice), the rest 0 |
 | 11… | the delta (8.1), or the edit, gzipped JSON |
+
+Bits 0 and 1 together (`ASSET`, 4.1, 8.14), alone, its channel 0 and timestamp unused: from the room's page, one of its
+assets, its bytes (at most 16 MiB: a PNG, JPEG or WebP picture, or a gzipped mesh; `bad_asset` otherwise); to a page,
+a piece of one it asked for: its name (64 bytes, hex), its whole length and where this piece starts (u32 big-endian
+each), then the piece (at most 256 KiB). Never dropped, unlike a frame.
 
 A delta larger than 1 MiB, an edit larger than 16 MiB, or an avatar larger than 4 MiB, is dropped. A visit-client sends deltas on the
 link as they come (7.4) and edits on the visit's scene stream, and passes the visitor's page each delta as
@@ -890,6 +900,9 @@ Messages are JSON, each prefixed by its length (u32 big-endian). In order, relia
 | visitor | `{"landscapes": true}` | its visit-client reads landscapes (8.10): sent each time the link is up, passed to the host's page as `landscapes` |
 | host | `{"landscape": "<hash>"}` | this room's landscape is this one (8.10: blake3 of its gzipped JSON, hex): sent when the link is up and whenever it changes. The visitor's visit-client gives its page the one it keeps of that office by that hash, or asks for it |
 | visitor | `{"landscape_want": "<hash>"}` | send that landscape: on a stream of its own (7.4), once a link for a hash |
+| visitor | `{"assets": true}` | 4.1: its visit-client reads a scene's assets (8.14): sent each time the link is up, passed to the host's page as `assets` (and in `visit_started`) |
+| visitor | `{"asset_want": "<name>"}` | 4.1: send that asset of this room's own (8.14): on a stream of its own (stream 6), from what is kept, else its page is asked; at most 2000 a minute |
+| host | `{"asset_none": "<name>"}` | 4.1: not an asset of this room's (or its page did not give it in 30 s): the visitor's page hears `asset_none` |
 | visitor | `{"shared_adds": true}` | its page reads an `add` that names what it already has by uuid only (8.3; Visit 0.7 on): sent each time the link is up, passed to the host's page once as `shared_adds` |
 | host | `{"paused": true}` / `{"paused": false}` | the host's page went away / came back |
 | host | `{"perform": {"act": {"clip", "loop", "secs"} \| null, "hold"}}` | 4.0 (8.6): what the room has this visitor do and hold, to the visitor's page as `perform` (only while it is in the room) |
@@ -946,6 +959,10 @@ And host to visitor, once the visitor asked (`landscape_want`):
 - **3, its landscape** (8.10): its length (u32 big-endian, at most 16 MiB) then the gzipped JSON, the stream then
   finished. The visitor's visit-client unpacks it to check it (as an edit), keeps it as it came if its blake3 hash
   is the one the host named (else drops it), and passes it to its page as `landscape`.
+- **6, an asset** (4.1, 8.14), as the visitor asked for it (`asset_want`): its name (a length byte, then it), its
+  length (u32 big-endian, at most 16 MiB), then its bytes. The visitor's visit-client takes it only if it asked for it,
+  its bytes hash to its name (SHA-256) and are of a kind kept (a PNG, JPEG or WebP picture, or gzipped JSON); at most
+  2000 a minute from a link. A host sends at most 48 MiB of them at once to one visitor.
 
 Datagrams (unreliable): the visitor's input (7.3), JSON, so starting with `{`; either side's own user's voice (8.7),
 one byte 0xA0 then one Opus packet (at most 100 a second taken, each at most 1 000 bytes); and someone else's voice
@@ -1529,6 +1546,45 @@ and side, as voices are (8.7). Files, never code: what runs on a visitor's page 
   its own room's sounds itself (its own synth, a mixer, an echo) says so (`v.ownSounds(false)`): Visit then plays them
   for its visitors only, and every other room's for it as ever. Nothing goes quieter under voices (yet).
 
+### 8.14 Assets (4.1)
+
+A scene's big pictures and meshes travel by name, once, the way its landscape does (8.10), but for things that move
+too: a room's drawn signs and screens, a detailed figure's textures and its mesh. What a page is sent when it joins
+is then the scene's structure (its objects, where they are, their materials, small things inline), and what is
+heavy comes after, a piece at a time, at that page's own pace, kept. So a room with three dozen drawn panels and a
+textured, rigged receptionist joins within a relay's 1 MiB (../engine/SPEC.md 6.3) on the first visit and costs next
+to nothing on the next.
+
+- **Assets.** A picture of a texture (a canvas, an image, an image bitmap; at most 4096 px a side) or a plain mesh
+  (a `BufferGeometry` with its vertices in it), as the room's scene has it now, of at least 16 KiB once made: a
+  canvas as WebP (as a redrawn one goes), an image from a data URL as it is, any other picture drawn as three.js would
+  write it (PNG; JPEG past 2048 px a side); a mesh as three.js's JSON of it without its uuid, gzipped. At most 16 MiB.
+  Its **name** is the SHA-256 of its bytes (64 hex, lower case): the same picture, the same mesh, the same name, at
+  every load. A drawn picture too small to be one goes inline as made (its WebP, not the PNG three.js would write).
+- **The room's page** makes each in the background (encoded, hashed: nothing on its frame's time) and gives it to
+  its visit-client (5.4, bits 0 and 1 together: `ASSET`, alone; answered `asset_kept` with its `id`), which keeps it
+  (`--asset-dir`, by name; the least lately used let go past 1 GiB) as this office's own. Until one is made, it goes
+  inline as before. Before a visitor's first whole scene, the page makes the whole room's (at most 4 s).
+- **Named, not carried.** To a visitor whose visit-client reads assets (it says so, `assets`, when the link is up;
+  the room's page hears it as `assets` and in `visit_started`), the whole scene, an added object and resources sent
+  again name each made one instead: an image `{ uuid, asset }` with no `url`; a geometry `{ uuid, type:
+  "BufferGeometry", asset }` with no `data`. An edit for several visitors names them only if every one reads them; a
+  visitor on an older Visit gets everything inline, as ever. A canvas redrawn goes inline in the edit, as before.
+- **Fetched, a piece at a time.** A page draws the scene at once, a blank picture and an empty mesh in each named
+  one's place, and asks its visit-client for what it lacks (`asset_want`: its `id`, the `channel` of the visit or
+  watch whose scene named it, and `at`, from where), at most 2 at once: one piece of at most 256 KiB at a time, the
+  next asked for when one comes (5.4: `ASSET`, never dropped). So nothing between them (a workroom's relay, a slow
+  link) ever holds more than a few pieces. The visit-client gives it from what it keeps, else asks the room's
+  visit-client over their link (`asset_want`), which gives it (stream 6) if it is that room's own (from what it keeps,
+  else its page is asked, `asset_want`, and gives it again), else `asset_none`; nothing else it keeps (another room's,
+  seen visiting) is given. Each comes checked against its name (its SHA-256) and is kept: a page that reloads, or
+  another scene naming it, has it without the room. A page keeps up to 256 MiB of them itself, so a page whose
+  connection drops (a relay's 4408) fetches nothing again. One not to be had (`asset_none`, or 45 s without a piece)
+  stays blank.
+- **Put in place.** A picture is checked from its header (kind, at most 4096 px a side) and decoded before it is a
+  texture's; a mesh is unpacked (at most 64 MiB), checked as an inline one (cleanScene, the scene's budget of
+  vertices) and copied into the geometry the scene has under that uuid.
+
 ## 9. The library: `visit.js`
 
 The normative surface; INTEGRATING.md shows it in use. Loaded with
@@ -1863,7 +1919,8 @@ office keeps its name), `no_phone` (ringing a room with no phone), `no_call`
 the page hosts its scene, 4.2), `no_such_visit` (`end`, `keyframe` or `scene_resync` for a visit you are not
 in), `offline` (an action while the lobby is down), `away` (an action
 while the office is out of the lobby on purpose: `join_lobby` first), `signed_out` (an action while nobody is signed
-in on the workroom), `bad_message`; from worlds (6.6): `already_member`, `password_required`, `wrong_password`, `bad_password`,
+in on the workroom), `bad_asset` (4.1: an asset frame that is not a PNG, JPEG or WebP picture nor a gzipped mesh, or past
+16 MiB, 8.14), `bad_message`; from worlds (6.6): `already_member`, `password_required`, `wrong_password`, `bad_password`,
 `banned`, `closed`, `full`, `not_owner`, `rate_limited`, `busy`; from linked browsers (6.11): `not_found`, `rate_limited`,
 `bad_confirm`; from the lobby's
 operators (6.7): `not_admin`, and `banned`. The lobby's own, before a session: `bad_proof` (closed 4401), `banned`

@@ -55,6 +55,15 @@ const STREAM_LAND: u8 = 3;
 const STREAM_POSSESSION: u8 = 4;
 /// A picture shared in chat (8.12), either way, as the other side asked for it: its id, its type, then its bytes.
 const STREAM_MEDIA: u8 = 5;
+/// One of a host's scene's assets (8.14, 4.1), as the visitor asked for it: its name (a length byte, then the name),
+/// then its bytes. An older Visit ignores the stream (and never asks).
+const STREAM_ASSET: u8 = 6;
+/// The most assets taken from a host a minute (a room's first visit asks for each of its own once).
+const ASSETS_PER_MINUTE: u32 = 2000;
+/// Assets on their way to a visitor, at most this many bytes a link and over all of them (as pictures, MediaOut).
+const ASSET_OUT_LINK: usize = 48 << 20;
+const ASSET_OUT_ALL: usize = 256 << 20;
+static ASSET_OUT: AtomicUsize = AtomicUsize::new(0);
 /// The most pictures taken from the other side a minute (and, 3.4.3, the most sent it: core.rs MEDIA_WANTS).
 const MEDIA_PER_MINUTE: u32 = 30;
 /// 3.4.3: pictures on their way to the other side, at most this many bytes a link and over all of them; each given
@@ -67,31 +76,42 @@ static MEDIA_OUT: AtomicUsize = AtomicUsize::new(0);
 
 /// A picture on its way (3.4.3): its bytes counted against MEDIA_OUT_LINK and MEDIA_OUT_ALL until it has gone, or
 /// failed, or its link ended (its task ended, aborted or not).
+/// (4.1: a scene's assets the same way, against ASSET_OUT_LINK and ASSET_OUT_ALL: AssetOut.)
 struct MediaOut {
     link: Arc<Mutex<(usize, HashSet<String>)>>,
     id: String,
     n: usize,
+    all: &'static AtomicUsize,
 }
 
 impl MediaOut {
     fn take(link: &Arc<Mutex<(usize, HashSet<String>)>>, id: &str, n: usize) -> Option<MediaOut> {
+        Self::take_of(link, id, n, (MEDIA_OUT_LINK, &MEDIA_OUT, MEDIA_OUT_ALL))
+    }
+
+    fn take_of(link: &Arc<Mutex<(usize, HashSet<String>)>>, id: &str, n: usize, (cap, all, cap_all): (usize, &'static AtomicUsize, usize)) -> Option<MediaOut> {
         let mut l = link.lock().expect("media out");
-        if l.1.contains(id) || l.0 + n > MEDIA_OUT_LINK {
+        if l.1.contains(id) || l.0 + n > cap {
             return None;
         }
-        if MEDIA_OUT.fetch_add(n, Ordering::SeqCst) + n > MEDIA_OUT_ALL {
-            MEDIA_OUT.fetch_sub(n, Ordering::SeqCst);
+        if all.fetch_add(n, Ordering::SeqCst) + n > cap_all {
+            all.fetch_sub(n, Ordering::SeqCst);
             return None;
         }
         l.0 += n;
         l.1.insert(id.to_string());
-        Some(MediaOut { link: link.clone(), id: id.to_string(), n })
+        Some(MediaOut { link: link.clone(), id: id.to_string(), n, all })
     }
+}
+
+/// An asset on its way (4.1), counted as a picture is.
+fn asset_out(link: &Arc<Mutex<(usize, HashSet<String>)>>, id: &str, n: usize) -> Option<MediaOut> {
+    MediaOut::take_of(link, id, n, (ASSET_OUT_LINK, &ASSET_OUT, ASSET_OUT_ALL))
 }
 
 impl Drop for MediaOut {
     fn drop(&mut self) {
-        MEDIA_OUT.fetch_sub(self.n, Ordering::SeqCst);
+        self.all.fetch_sub(self.n, Ordering::SeqCst);
         if let Ok(mut l) = self.link.lock() {
             l.0 -= self.n;
             l.1.remove(&self.id);
@@ -148,6 +168,8 @@ pub enum LinkCmd {
     Voice { up: bool, data: Bytes },
     /// A picture (its id and type) the other side asked for (8.12).
     Media { id: String, mime: String, bytes: Bytes },
+    /// One of this office's scene's assets (its name), for the visitor who asked for it (8.14, 4.1).
+    Asset { id: String, bytes: Bytes },
     /// End the link, saying why.
     Close(String),
 }
@@ -186,6 +208,7 @@ async fn local_host_side(mut rx: mpsc::Receiver<LinkCmd>, to: String, core: mpsc
             LinkCmd::Relay(data) => core.send(Ev::LinkRelay { visit: to.clone(), data }),
             LinkCmd::Voice { up, data } => core.send(Ev::LinkVoice { visit: to.clone(), up, data }),
             LinkCmd::Media { id, mime, bytes } => core.send(Ev::LinkMedia { visit: to.clone(), id, mime, bytes }),
+            LinkCmd::Asset { id, bytes } => core.send(Ev::LinkAsset { visit: to.clone(), id, bytes }),   // (this office's own: as kept)
             LinkCmd::Input(_) | LinkCmd::Avatar(_) | LinkCmd::Possession(..) => Ok(()),   // not a host's to send
             LinkCmd::Close(_) => break,
         };
@@ -225,7 +248,7 @@ async fn local_user_side(mut rx: mpsc::Receiver<LinkCmd>, to: String, own: Strin
                 Some(LinkCmd::Relay(data)) => core.send(Ev::LinkRelay { visit: to.clone(), data }),
                 Some(LinkCmd::Voice { up, data }) => core.send(Ev::LinkVoice { visit: to.clone(), up, data }),
                 Some(LinkCmd::Media { id, mime, bytes }) => core.send(Ev::LinkMedia { visit: to.clone(), id, mime, bytes }),
-                Some(LinkCmd::Frame(_)) | Some(LinkCmd::Scene(_)) | Some(LinkCmd::Land(_)) => Ok(()),   // not a visitor's to send
+                Some(LinkCmd::Frame(_)) | Some(LinkCmd::Scene(_)) | Some(LinkCmd::Land(_)) | Some(LinkCmd::Asset { .. }) => Ok(()),   // not a visitor's to send
                 Some(LinkCmd::Close(_)) | None => break,
             },
             _ = tick.tick() => core.send(Ev::LinkStats { visit: own.clone(), relay: false, rtt_ms: 0.0 }),
@@ -516,6 +539,7 @@ async fn run(role: Role, visit: &str, est: Established, cmds: &mut mpsc::Receive
     let mut tasks: Vec<JoinHandle<()>> = vec![tokio::spawn(read_ctl(recv, ctl_tx))];
     let (need_key, newest) = (Arc::new(AtomicBool::new(true)), Arc::new(AtomicU64::new(0)));
     let media_out = Arc::new(Mutex::new((0usize, HashSet::new())));   // (3.4.3: pictures on their way, MediaOut)
+    let assets_out = Arc::new(Mutex::new((0usize, HashSet::new())));   // (4.1: assets on their way, asset_out)
     let deltas = match role {
         Role::Host => {
             let (tx, rx) = mpsc::channel::<Frame>(32);
@@ -607,6 +631,12 @@ async fn run(role: Role, visit: &str, est: Established, cmds: &mut mpsc::Receive
                 Some(LinkCmd::Media { id, mime, bytes }) => match MediaOut::take(&media_out, &id, bytes.len()) {
                     Some(out) => tasks.push(tokio::spawn(write_media(conn.clone(), id, mime, bytes, visit.to_string(), out))),
                     None => debug!(%visit, "a picture asked for while too much is on its way (or it is): not sent"),
+                },
+                Some(LinkCmd::Asset { id, bytes }) => if role == Role::Host {
+                    match asset_out(&assets_out, &id, bytes.len()) {
+                        Some(out) => tasks.push(tokio::spawn(write_asset(conn.clone(), id, bytes, visit.to_string(), out))),
+                        None => debug!(%visit, "an asset asked for while too much is on its way (or it is): not sent"),
+                    }
                 },
                 Some(LinkCmd::Voice { up, data }) => {
                     let mut d = Vec::with_capacity(1 + data.len());
@@ -785,6 +815,50 @@ async fn write_media(conn: Connection, id: String, mime: String, bytes: Bytes, v
     drop(out);
 }
 
+/// One of this office's scene's assets the visitor asked for (8.14, 4.1), on a stream of its own: its name, then its
+/// bytes; let go as a picture is (MEDIA_OUT_WAIT).
+async fn write_asset(conn: Connection, id: String, bytes: Bytes, visit: String, out: MediaOut) {
+    let sent = async {
+        let mut s = conn.open_uni().await?;
+        s.write_all(&[STREAM_ASSET, id.len() as u8]).await?;
+        s.write_all(id.as_bytes()).await?;
+        frames::write_scene_msg(&mut s, &bytes).await?;
+        s.finish()?;
+        anyhow::Ok(())
+    };
+    match tokio::time::timeout(MEDIA_OUT_WAIT, sent).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => debug!(%visit, "an asset did not go: {e:#}"),
+        Err(_) => debug!(%visit, "an asset the visitor did not take in {} s: let go", MEDIA_OUT_WAIT.as_secs()),
+    }
+    drop(out);
+}
+
+/// The visitor's side: one of the host's scene's assets it asked for, its bytes what its name says (their SHA-256:
+/// checked off the async threads), and of a kind kept.
+async fn read_asset(mut stream: RecvStream, visit: String, core: mpsc::UnboundedSender<Ev>) {
+    let read = async {
+        let mut n = [0u8];
+        stream.read_exact(&mut n).await?;
+        let mut id = vec![0u8; n[0] as usize];
+        stream.read_exact(&mut id).await?;
+        let id = String::from_utf8(id).ok().filter(|id| crate::assets::id_ok(id)).ok_or_else(|| anyhow::anyhow!("not an asset's name"))?;
+        let bytes = frames::read_blob(&mut stream, crate::assets::MAX_ASSET).await?.ok_or_else(|| anyhow::anyhow!("no asset"))?;
+        anyhow::Ok((id, bytes))
+    };
+    let (id, bytes) = match tokio::time::timeout(Duration::from_secs(120), read).await {
+        Ok(Ok(x)) => x,
+        Ok(Err(e)) => return warn!(%visit, "an asset that is not what it should be: {e:#}"),
+        Err(_) => return,
+    };
+    let (check, want) = (bytes.clone(), id.clone());
+    match tokio::task::spawn_blocking(move || crate::assets::ok(&check) && crate::assets::id_of(&check) == want).await {
+        Ok(true) => { let _ = core.send(Ev::LinkAsset { visit, id, bytes }); }
+        Ok(false) => warn!(%visit, "an asset that is not what it was said to be: dropped"),
+        Err(e) => warn!(%visit, "{e}"),
+    }
+}
+
 /// A picture or a voice message from the other side (8.12): its bytes must be what its id says (their hash), and one
 /// of them, at most its most (media::shared).
 async fn read_media(mut stream: RecvStream, visit: String, core: mpsc::UnboundedSender<Ev>) {
@@ -930,7 +1004,7 @@ pub fn possession_id_ok(id: &str) -> bool {
 /// one is never waited for.
 async fn read_streams(conn: Connection, visit: String, core: mpsc::UnboundedSender<Ev>) {
     let (mut deltas, mut scene, mut land): (Option<JoinHandle<()>>, Option<JoinHandle<()>>, Option<JoinHandle<()>>) = (None, None, None);
-    let mut media = (Instant::now(), 0u32);
+    let (mut media, mut assets) = ((Instant::now(), 0u32), (Instant::now(), 0u32));
     while let Ok(mut stream) = conn.accept_uni().await {
         let mut kind = [STREAM_DELTAS];
         if !matches!(tokio::time::timeout(HANDSHAKE, stream.read_exact(&mut kind)).await, Ok(Ok(()))) {
@@ -956,6 +1030,15 @@ async fn read_streams(conn: Connection, visit: String, core: mpsc::UnboundedSend
             STREAM_MEDIA => {
                 if media_counted(&mut media) {
                     tokio::spawn(read_media(stream, visit, core));
+                }
+            }
+            STREAM_ASSET => {
+                if assets.0.elapsed() >= Duration::from_secs(60) {
+                    assets = (Instant::now(), 0);
+                }
+                assets.1 += 1;
+                if assets.1 <= ASSETS_PER_MINUTE {
+                    tokio::spawn(read_asset(stream, visit, core));
                 }
             }
             other => debug!(%visit, other, "a stream of a kind this version does not know: ignored"),

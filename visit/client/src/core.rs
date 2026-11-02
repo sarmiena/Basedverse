@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
 
 use crate::{
+    assets::{self, Assets},
     db::{self, DbCmd, Held, Loaded, MediaTo, CHAT_KEPT, UNSEEN_KEPT},
     frames::{self, Frame},
     land::{self, Kept, Lands},
@@ -85,6 +86,8 @@ pub enum Ev {
     LinkVoice { visit: String, up: bool, data: Bytes },
     /// A picture the other side sent, as asked (8.12): checked (its bytes are its id's), its type.
     LinkMedia { visit: String, id: String, mime: String, bytes: Bytes },
+    /// One of a host's scene's assets this office asked for (8.14, 4.1): its bytes are its name's (checked).
+    LinkAsset { visit: String, id: String, bytes: Bytes },
     /// The database's answers (8.12): a picture asked for (none: not here); whether it has one a line named; and
     /// what the page asked for (its history, what was shared), to the page as it is.
     DbMedia { id: String, to: MediaTo, found: Option<(String, Bytes)> },
@@ -189,6 +192,10 @@ struct Visit {
     landscapes: bool,
     land_sent: Option<String>,
     land_hash: Option<String>,
+    /// 4.1 (#67, host side): the visitor reads a scene's assets (else its page gets every picture and mesh inline),
+    /// and how many of this room's it asked for in the current minute (at most ASSET_WANTS).
+    assets: bool,
+    asset_wants: (Instant, u32),
     /// Who the host says is near this office's user in its room (visitor side, 8.7), by key: they are heard in
     /// person, and a call or a room voice with them goes quiet.
     near_keys: Vec<String>,
@@ -250,6 +257,10 @@ const MEDIA_RECENT: usize = 8;
 /// 3.4.3: the most pictures a linked office may ask this one for a minute (as many as it takes from it: link.rs
 /// MEDIA_PER_MINUTE); more, and they are not read nor sent.
 const MEDIA_WANTS: u32 = 30;
+/// 4.1 (#67): the most of this room's assets one visitor may ask for a minute (as many as it takes: link.rs
+/// ASSETS_PER_MINUTE); and how long one asked for (of this room's page, or over a link) is waited for.
+const ASSET_WANTS: u32 = 2000;
+const ASSET_WAIT: Duration = Duration::from_secs(30);
 /// The most points a second taken from a visitor (a click at the middle of its view: 8.3); more are dropped.
 /// Its page sends at most one every 200 ms.
 const POINTS_PER_SECOND: u32 = 5;
@@ -379,6 +390,13 @@ pub struct Core {
     /// This office's own landscape (8.10), as its page last gave it: its hash, and it gzipped. And friends' kept.
     land: Option<(String, Bytes)>,
     lands: Lands,
+    /// A scene's assets (8.14, 4.1), kept by name. Those of this office's own room (its page gave them: they go to
+    /// its visitors, and nothing else kept here does); those its page was asked for, and by which visits (host side);
+    /// those asked for over a link for this office's page, and when (visitor side).
+    assets: Assets,
+    own_assets: HashSet<String>,
+    asset_wait: HashMap<String, (Instant, Vec<String>)>,
+    asset_asked: HashMap<String, Instant>,
     /// Where this office's page has put others in its world (8.4), by key: each told over every link up with it.
     seen_out: HashMap<String, Value>,
     /// Where others have put this office in their worlds, by key: (their name, where), for a page that comes back;
@@ -408,7 +426,7 @@ pub struct Core {
 
 impl Core {
     pub fn new(lobby_url: Option<String>, lobby: mpsc::UnboundedSender<LobbyOut>, me: mpsc::UnboundedSender<Ev>, relays: Option<Relays>, max_visitors: u8, idle_exit: u64,
-               saved: Saved, fresh: bool, state_file: Option<PathBuf>, lands: Lands, db: mpsc::UnboundedSender<DbCmd>, loaded: Loaded) -> Core {
+               saved: Saved, fresh: bool, state_file: Option<PathBuf>, lands: Lands, assets: Assets, db: mpsc::UnboundedSender<DbCmd>, loaded: Loaded) -> Core {
         let key = saved.key.public().to_string();
         let core = Core {
             lobby_url,
@@ -469,6 +487,10 @@ impl Core {
             banned_by: HashMap::new(),
             land: None,
             lands,
+            assets,
+            own_assets: HashSet::new(),
+            asset_wait: HashMap::new(),
+            asset_asked: HashMap::new(),
             seen_out: HashMap::new(),
             seen_in: HashMap::new(),
             knocks: BTreeMap::new(),
@@ -510,6 +532,7 @@ impl Core {
                         self.watchers_still_allowed();
                     }
                     self.media_expire();
+                    self.assets_expire();
                     self.admitted.retain(|_, (_, at)| at.elapsed() < ADMITTED_FOR);
                     if self.world && self.user_page.is_none() && self.page_gone.elapsed() >= WORLD_NO_PAGE {
                         info!("no page for a minute: its world's watches end");
@@ -639,6 +662,7 @@ impl Core {
             Ev::LinkRelay { visit, data } => self.voice_in(&visit, data, true),
             Ev::LinkVoice { visit, up, data } => self.room_voice_in(&visit, up, data),
             Ev::LinkMedia { visit, id, mime, bytes } => self.media_in(&visit, id, mime, bytes),
+            Ev::LinkAsset { visit, id, bytes } => self.asset_in(&visit, &id, bytes),
             Ev::DbMedia { id, to, found } => self.db_media(id, to, found),
             Ev::DbHas { id, visit, has } => self.db_has(id, &visit, has),
             Ev::DbReply(m) => self.to_page(m),
@@ -831,7 +855,7 @@ impl Core {
                 last_seq: 0, inputs: (Instant::now(), 0), want_key: false, host_state: None, ctl: (Instant::now(), 0), key_asked: None, resync_asked: None, resync_due: false,
                 points: (Instant::now(), 0), guest: false, watch: true, inside: false, shared_adds: false, link: false, in_world: false, avatar_asked: false, possessions_asked: Vec::new(), peer_possessions: json!([]), peer_phone: false,
                 call_on: false, speaker: false, ring: None, voice: false, huddle: None, performs: (Instant::now(), 0), performed: Value::Null, wants: (Instant::now(), 0), says: (Instant::now(), 0),
-                landscapes: false, land_sent: None, land_hash: None, near_keys: Vec::new(), peer_user: None,
+                landscapes: false, land_sent: None, land_hash: None, assets: false, asset_wants: (Instant::now(), 0), near_keys: Vec::new(), peer_user: None,
             });
         }
         info!("the owner's visit: the room has its owner");
@@ -1807,6 +1831,29 @@ impl Core {
                 };
                 let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "keyframe": true })));
             }
+            // 4.1 (#67): a piece of an asset a scene this page draws names (its visit's or watch's channel): from what is
+            // kept here; else asked for of that room, over its link (the first piece comes when it does). Its pieces
+            // go one at a time, as the page asks for each (`at`), so nothing before it holds more than a few.
+            "asset_want" => {
+                let Some(id) = m.get("id").and_then(Value::as_str).filter(|id| assets::id_ok(id)).map(str::to_string) else {
+                    return self.page_error("bad_message", "id is an asset's name: 64 hex digits, lower case", Some("asset_want"));
+                };
+                let at = m.get("at").and_then(Value::as_u64).map_or(0, |a| a.min(u32::MAX as u64) as usize);
+                if let Some((total, piece)) = self.assets.piece(&id, at) {
+                    return self.asset_to_page(&id, total, at, &piece);
+                }
+                if at > 0 {   // past its end, or let go meanwhile
+                    return self.to_page(json!({ "type": "asset_none", "id": id }));
+                }
+                let ch = m.get("channel").and_then(Value::as_u64);
+                let Some(v) = self.visits.values().find(|v| v.up && v.role == Role::Visitor && ch == Some(v.channel as u64)) else {
+                    return self.to_page(json!({ "type": "asset_none", "id": id }));
+                };
+                if self.asset_asked.get(&id).is_none_or(|t| t.elapsed() >= ASSET_WAIT) {
+                    let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "asset_want": id })));
+                    self.asset_asked.insert(id, Instant::now());
+                }
+            }
             other => {
                 let other = other.to_string();
                 self.page_error("unknown_type", &format!("no message type {other:?}"), Some(&other));
@@ -1816,6 +1863,9 @@ impl Core {
 
     /// A delta of this office's scene for one of its visitors, or an edit of it.
     fn page_frame(&mut self, data: &[u8]) {
+        if let Some(bytes) = frames::asset_from_page(data) {   // 4.1 (#67): one of this room's assets
+            return self.asset_from_page(bytes);
+        }
         if let Some((slot, bytes)) = frames::media_from_page(data) {   // a picture or a voice message to share (8.12): kept, and its id told
             return match media::shared(&bytes) {
                 Some((id, mime)) => {
@@ -2630,6 +2680,86 @@ impl Core {
         }
     }
 
+    // ---------- a scene's assets (8.14, 4.1, #67): its big pictures and meshes, by name, once ----------
+
+    /// One of this room's assets, from its page: kept, this room's own from now on, and to any visit waiting for it.
+    fn asset_from_page(&mut self, bytes: Bytes) {
+        let Some(id) = self.assets.keep(&bytes) else {
+            return self.page_error("bad_asset", &format!("an asset is a PNG, JPEG or WebP picture, or a gzipped mesh, of at most {} MB", assets::MAX_ASSET >> 20), Some("asset"));
+        };
+        self.own_assets.insert(id.clone());
+        self.to_page(json!({ "type": "asset_kept", "id": id, "size": bytes.len() }));
+        for vid in self.asset_wait.remove(&id).map(|w| w.1).unwrap_or_default() {
+            if let Some(v) = self.visits.get(&vid).filter(|v| v.up) {
+                let _ = v.cmd.try_send(LinkCmd::Asset { id: id.clone(), bytes: bytes.clone() });
+            }
+        }
+    }
+
+    /// One of this room's own assets, to the visit that asked for it: at once, if it is here; else its page is asked
+    /// for it (once each ASSET_WAIT), and it goes when the page gives it; else (no page) none. Only this room's own:
+    /// what else is kept here (another room's, seen visiting) is nobody else's to have from this office.
+    fn asset_give(&mut self, vid: &str, id: &str) {
+        if self.own_assets.contains(id) {
+            if let Some(bytes) = self.assets.get(id) {
+                if let Some(v) = self.visits.get(vid) {
+                    let _ = v.cmd.try_send(LinkCmd::Asset { id: id.to_string(), bytes });
+                }
+                return;
+            }
+            self.own_assets.remove(id);   // (let go here: its page gives it again)
+        }
+        if self.host_page.is_none() {
+            if let Some(v) = self.visits.get(vid) {
+                let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "asset_none": id })));
+            }
+            return;
+        }
+        let w = self.asset_wait.entry(id.to_string()).or_insert_with(|| (Instant::now(), Vec::new()));
+        let ask = w.1.is_empty() || w.0.elapsed() >= ASSET_WAIT;
+        if !w.1.iter().any(|x| x == vid) {
+            w.1.push(vid.to_string());
+        }
+        if ask {
+            w.0 = Instant::now();
+            self.to_page(json!({ "type": "asset_want", "id": id }));
+        }
+    }
+
+    /// One of a host's assets this office asked for, kept, and its first piece to the page that waits for it. One
+    /// nobody asked for is not kept.
+    fn asset_in(&mut self, visit: &str, id: &str, bytes: Bytes) {
+        if !self.visits.get(visit).is_some_and(|v| v.role == Role::Visitor) || self.asset_asked.remove(id).is_none() {
+            return;
+        }
+        if !self.assets.put_known(id, &bytes) {
+            return self.to_page(json!({ "type": "asset_none", "id": id }));
+        }
+        let end = bytes.len().min(assets::PIECE);
+        self.asset_to_page(id, bytes.len(), 0, &bytes[..end]);
+    }
+
+    /// A piece of an asset, to the person's page (never dropped, as a frame may be).
+    fn asset_to_page(&self, id: &str, total: usize, at: usize, piece: &[u8]) {
+        if let Some(p) = &self.user_page {
+            let _ = p.text.send(PageOut::Binary(frames::asset_to_page(id, total, at, piece)));
+        }
+    }
+
+    /// Waits given up: an asset this room's page did not give in ASSET_WAIT is none to those who asked; one asked for
+    /// over a link may be asked for again.
+    fn assets_expire(&mut self) {
+        let gone: Vec<String> = self.asset_wait.iter().filter(|(_, w)| w.0.elapsed() >= ASSET_WAIT).map(|(id, _)| id.clone()).collect();
+        for id in gone {
+            for vid in self.asset_wait.remove(&id).map(|w| w.1).unwrap_or_default() {
+                if let Some(v) = self.visits.get(&vid) {
+                    let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "asset_none": id })));
+                }
+            }
+        }
+        self.asset_asked.retain(|_, at| at.elapsed() < ASSET_WAIT * 2);
+    }
+
     // ---------- chat (8.9): a line said, to everyone who can see its speaker ----------
 
     /// A line this office's user says, to everyone who can see them: to the room they are in (another's: its owner's
@@ -3131,7 +3261,7 @@ impl Core {
                     last_seq: 0, inputs: (Instant::now(), 0), want_key: false, host_state: None, ctl: (Instant::now(), 0), key_asked: None, resync_asked: None, resync_due: false,
                     points: (Instant::now(), 0), guest, watch, inside: !watch && !voice, shared_adds: false, link, in_world: false, avatar_asked: false, possessions_asked: Vec::new(), peer_possessions: json!([]), peer_phone: false,
                     call_on: voice && huddle.is_none(), speaker: false, ring: None, voice, huddle, performs: (Instant::now(), 0), performed: Value::Null, wants: (Instant::now(), 0), says: (Instant::now(), 0),
-                    landscapes: false, land_sent: None, land_hash: None, near_keys: Vec::new(), peer_user: None,
+                    landscapes: false, land_sent: None, land_hash: None, assets: false, asset_wants: (Instant::now(), 0), near_keys: Vec::new(), peer_user: None,
                 });
             }
             Err(e) => {
@@ -3421,6 +3551,7 @@ impl Core {
                     let _ = cmd.try_send(LinkCmd::Ctl(json!({ "possessions": self.possessions.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>() })));
                 }
                 let _ = cmd.try_send(LinkCmd::Ctl(json!({ "landscapes": true })));
+                let _ = cmd.try_send(LinkCmd::Ctl(json!({ "assets": true })));   // 4.1 (#67)
                 if !first {   // back after a blip: where everything is now
                     let _ = cmd.try_send(LinkCmd::Ctl(json!({ "keyframe": true })));
                 }
@@ -3664,6 +3795,22 @@ impl Core {
                             let _ = v.cmd.try_send(LinkCmd::Land(gz.clone()));
                         }
                     }
+                } else if m.get("assets") == Some(&json!(true)) {   // 4.1 (#67): the visitor reads a scene's assets: its page told, once
+                    if !v.assets {
+                        v.assets = true;
+                        self.to_page(json!({ "type": "assets", "channel": ch }));
+                    }
+                } else if let Some(want) = m.get("asset_want").and_then(Value::as_str).filter(|id| assets::id_ok(id)).map(str::to_string) {
+                    // One of this room's assets, as its scene named it: at most ASSET_WANTS a minute.
+                    if v.asset_wants.0.elapsed() >= Duration::from_secs(60) {
+                        v.asset_wants = (Instant::now(), 0);
+                    }
+                    v.asset_wants.1 += 1;
+                    if v.asset_wants.1 > ASSET_WANTS {
+                        return debug!(visit = %v.id, "asked for too many assets this minute: not sent");
+                    }
+                    let vid = v.id.clone();
+                    self.asset_give(&vid, &want);
                 } else if m.get("shared_adds") == Some(&json!(true)) {
                     if !v.shared_adds {
                         v.shared_adds = true;
@@ -3757,6 +3904,11 @@ impl Core {
                     }
                 } else if let Some(p) = m.get("paused").and_then(Value::as_bool) {
                     self.to_page(json!({ "type": if p { "host_paused" } else { "host_resumed" }, "channel": ch }));
+                } else if let Some(id) = m.get("asset_none").and_then(Value::as_str).filter(|id| assets::id_ok(id)) {   // 4.1: an asset the host does not have
+                    let id = id.to_string();
+                    if self.asset_asked.remove(&id).is_some() {
+                        self.to_page(json!({ "type": "asset_none", "id": id }));
+                    }
                 } else if let Some(line) = m.get("said").and_then(said_from) {   // a line said in the host's room (8.9)
                     // 4.0.1: one of its figures' lines aloud, watching its plot from outside it: not this office's to
                     // hear (a room on 4.0.0 or older sends them to everyone who sees its plot, wherever they stand).
@@ -3867,6 +4019,9 @@ fn started(v: &Visit) -> Value {
     if v.landscapes {
         m["landscapes"] = json!(true);
     }
+    if v.assets {
+        m["assets"] = json!(true);
+    }
     if v.peer_phone {
         m["phone"] = json!(true);
     }
@@ -3922,12 +4077,12 @@ fn page_for(v: &Value) -> PageRole {
             else { PageRole::Both }
         }
         "input" | "point" | "keyframe" | "scene_resync" | "shared_adds" | "landscapes" | "enter" | "exit" | "addressed" | "act"
-        | "avatar" | "avatar_none" | "possessions" | "possession" => PageRole::Host,
+        | "avatar" | "avatar_none" | "possessions" | "possession" | "assets" | "asset_want" | "asset_kept" => PageRole::Host,
         "chat" | "chat_log" | "unseen" | "held" | "held_sent" | "media_none" | "preview" | "history" | "shared"
         | "voice_near" | "room_voice" | "voice_members" | "user" | "banned" | "seen" | "layout" | "landscape"
         | "plot_forgotten" | "knock" | "knock_sent" | "knock_cancelled" | "answered" | "link_stats" | "scene"
         | "scene_lost" | "host_paused" | "host_resumed" | "enter_refused" | "body" | "call" | "phone" | "lobby_pass" | "browser_pending"
-        | "browser_confirm" | "browsers" | "ignored" | "sound" | "huddle" | "perform" => PageRole::User,
+        | "browser_confirm" | "browsers" | "ignored" | "sound" | "huddle" | "perform" | "asset_none" => PageRole::User,
         _ => PageRole::Both,
     }
 }
@@ -3940,7 +4095,7 @@ fn role_may(role: PageRole, t: &str) -> bool {
         "unhold", "media_get", "preview", "history", "shared", "voice_join", "call", "speaker", "world", "enter", "exit", "pick", "unpick", "place", "unplace", "ignore", "unignore", "ignore_clear", "act",
         "seen", "plot_keep", "plot_load", "plot_forget", "knock", "answer", "leave_lobby", "join_lobby", "status", "rename",
         "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set", "group_owner", "group_delete", "groups", "admin",
-        "lobby_pass", "browser_code", "browser_allow", "browsers", "browser_revoke", "huddle", "knock_cancel"];
+        "lobby_pass", "browser_code", "browser_allow", "browsers", "browser_revoke", "huddle", "knock_cancel", "asset_want"];
     match role {
         PageRole::Both => true,
         PageRole::Host => !USER.contains(&t),

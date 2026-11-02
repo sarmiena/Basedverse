@@ -39,6 +39,10 @@ pub const POSSESSION: u8 = 64;
 /// A picture shared in chat (8.12): from the page, one to keep (its channel a slot the page names, answered with
 /// `media_ready`); to the page, one it asked for (who it is, its type, then its bytes; never dropped).
 pub const MEDIA: u8 = 128;
+/// One of a scene's assets (8.14, 4.1): from the room's page, one to keep and give its visitors (its bytes; the
+/// channel and timestamp unused); to a page, a piece of one it asked for (its name, 64 hex digits; its whole length
+/// and where this piece starts, u32 each; then the piece). Both bits of a key delta and an edit: no frame has them.
+pub const ASSET: u8 = KEY | EDIT;
 /// The most one packet of voice takes (20 ms of Opus is some tens of bytes).
 pub const MAX_AUDIO: usize = 1000;
 /// The most an avatar takes gzipped, and unpacked.
@@ -145,6 +149,27 @@ pub fn media_from_page(b: &[u8]) -> Option<(u16, Bytes)> {
         return None;
     }
     Some((u16::from_be_bytes([b[0], b[1]]), Bytes::copy_from_slice(&b[11..])))
+}
+
+/// One of the room's assets from its page, if the frame is one and not too big.
+pub fn asset_from_page(b: &[u8]) -> Option<Bytes> {
+    if b.len() < 12 || b[2] != ASSET || b.len() - 11 > crate::assets::MAX_ASSET {
+        return None;
+    }
+    Some(Bytes::copy_from_slice(&b[11..]))
+}
+
+/// A piece of an asset for the page: its name, its whole length, where the piece starts, the piece.
+pub fn asset_to_page(id: &str, total: usize, at: usize, piece: &[u8]) -> Bytes {
+    let mut out = BytesMut::with_capacity(11 + 64 + 8 + piece.len());
+    out.put_u16(0);
+    out.put_u8(ASSET);
+    out.put_u64(0);
+    out.extend_from_slice(id.as_bytes());
+    out.put_u32(total as u32);
+    out.put_u32(at as u32);
+    out.extend_from_slice(piece);
+    out.freeze()
 }
 
 /// A picture for the page: who it is (its id), its type, then its bytes.
