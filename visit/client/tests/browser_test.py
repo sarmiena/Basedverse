@@ -291,210 +291,15 @@ async def run(a, b, url):
         check("A folds its panel: its first line alone, remembered, the element given marked", await a.until(
             "document.querySelectorAll('.visit-panel .row').length === 1 && localStorage.getItem('visit:panel') === 'folded' && document.querySelector('.visit-panel').parentElement.classList.contains('visit-folded')"), True)
 
-        print("\nknocking and letting in")
-        await b.js("v.knock(v.offices.find(o => o.name === 'A').id, 'can I look around?')")
-        check("A's panel shows the knock", await a.until("document.querySelector('.visit-panel .knock') && document.querySelector('.visit-panel .knock').textContent.includes('can I look around?')"), True)
+        print("\nfolded, the panel shows what asks you: someone who wants to talk (4.0: no knocks)")
+        await b.js("v.talk(v.offices.find(o => o.name === 'A').key)")
+        check("B rings A: A's folded panel shows it", await a.until("(r => !!r && r.textContent.includes('B wants to talk'))(document.querySelector('.visit-panel .ring'))"), True)
         check("folded, it shows that alone (no status, no door)", await a.js("!document.querySelector('.visit-panel select[data-v=status]')"), True)
-        await a.js("document.querySelector('.visit-panel .knock button.go').click()")
+        await a.js("document.querySelector('.visit-panel .ring button[data-v=hang_up]').click()")
+        check("A: Not now. B's call is over", await b.until("v.calls.length === 0"), True)
         await a.js("document.querySelector('.visit-panel button[data-v=fold]').click()")
         check("and opened again: all of it back", await a.until(
             "!!document.querySelector('.visit-panel select[data-v=status]') && localStorage.getItem('visit:panel') === 'open' && !document.querySelector('.visit-panel').parentElement.classList.contains('visit-folded')"), True)
-        check("B is in A's room", await b.until("v.visiting && v.visiting.host.name"), "A")
-        check("A has B as its visitor", await a.until("v.visitors.length && v.visitors[0].visitor.name"), "B")
-        check("and move() is told whose pose it moves", await a.until("window.movedFor === v.visitors[0].id"), True)
-        check("B's stage is up, full-window", await b.js("!document.querySelector('.visit-stage').hidden && document.querySelector('.visit-stage').classList.contains('big')"), True)
-
-        print("\nA's scene, drawn by B's own browser")
-        check("B draws A's scene (three.js r128, fetched and checked against its hash)", bool(await b.until("!!(v._viewer && v._viewer.scene) && v.frames > 30", 30)), True)
-        n = await a.js("(() => { let n = 0; room.scene.traverse(() => n++); return n; })()")
-        got = await b.until("v._viewer.scene && (n => n === %d && n)((() => { let n = 0; v._viewer.scene.root.traverse(() => n++); return n; })())" % n)
-        check("B has every object of A's scene (B's own body is one of them), its landscape too", got, n)
-        check("A's floor, walls and desk came apart, as A's landscape: read once by B, each where A has it", await b.until(
-            "(l => !!l && !!l.objs && l.objs.length === 6 && l.objs.every(o => o.parent === v._viewer.scene.root))(v._viewer.land)"), True)
-        land_a = await a.until("v._landText")
-        check("A's landscape, as A's page gave it: the 6, every uuid named in order (no three.js uuid left in it)",
-              (len(json.loads(land_a)["object"]["children"]), re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-", land_a) is None) if land_a else None, (6, True))
-        check("B's own body is there, not drawn in its own eyes", await b.until("(s => s.own.length === 1 && !s.own[0].visible)(v._viewer.scene)"), True)
-        check("A's renderer settings came along (shadows)", await b.js("v._viewer.scene.renderer.shadowMap.enabled"), True)
-        check("A's sun aims where A's does (its target, in the scene)", await b.js(
-            "(s => { let l; s.root.traverse(o => { if (o.isDirectionalLight) l = o; }); return l && l.target.parent === s.root && l.target.position.toArray(); })(v._viewer.scene)"), [5, 0, 4])
-        await b.shot("b_visiting.png")
-
-        print("\nwalking, at once")
-        await a.js("window.panelChanges = 0; new MutationObserver(() => window.panelChanges++).observe(document.querySelector('.visit-panel'), { childList: true, subtree: true, characterData: true })")
-        await b.call("Runtime.evaluate", expression="document.querySelector('.visit-stage canvas:not([style*=none])').focus()")
-        p0 = await b.js("({ ...v._viewer.scene.pose })")
-        a0 = await a.js("({ ...v.visitors[0].pose })")
-        await b.key("KeyW", "w", 87, True)
-        await asyncio.sleep(0.12)
-        early = await b.js("({ ...v._viewer.scene.pose })")
-        check("B walks in its own view at once, before A's answer (120 ms in)", p0["z"] - early["z"] > 0.1, True)
-        await asyncio.sleep(0.9)
-        await b.key("KeyW", "w", 87, False)
-        await asyncio.sleep(0.6)
-        p1 = await b.js("({ ...v._viewer.scene.pose })")
-        a1 = await a.js("({ ...v.visitors[0].pose })")
-        check("A walked B as far, forward (toward -z): its answer", (round(a1["x"], 1) == round(a0["x"], 1), 1.5 < a0["z"] - a1["z"] < 3.5), (True, True))
-        check("and B's own idea of where it is agrees with A's", (abs(p1["x"] - a1["x"]) < 0.15, abs(p1["z"] - a1["z"]) < 0.15), (True, True))
-        check("A's panel stays as it is while B walks (its menus stay open, its buttons take clicks)", await a.js("window.panelChanges"), 0)
-        await b.js("v._view.yaw = Math.PI / 2; v._sendInput(performance.now(), true)")
-        await asyncio.sleep(0.3)
-        check("turning B's view turns B in A's room", round(await a.js("v.visitors[0].pose.yaw"), 2), round(3.14159 / 2, 2))
-        await b.key("KeyW", "w", 87, True)
-        await asyncio.sleep(2.5)
-        await b.key("KeyW", "w", 87, False)
-        await asyncio.sleep(0.8)
-        p2 = await b.js("({ ...v._viewer.scene.pose })")
-        a2 = await a.js("({ ...v.visitors[0].pose })")
-        check("into A's wall: A stops B, and B's view is put right (no walking through)", (a2["x"] >= 0.3, abs(p2["x"] - a2["x"]) < 0.15), (True, True))
-        st = await b.until("v.stats.latency != null && v.stats.path && v.stats.fps > 0 && v.stats", timeout=10)
-        check("B's numbers: input to screen, the link's path, frames drawn", (st["latency"] > 0, st["path"], st["fps"] > 0), (True, "direct", True))
-        check("input to screen, drawn here: a frame's time, not a round trip's (under 50 ms)", st["latency"] < 50, True)
-        check("the stage shows them", await b.js("document.querySelector('.visit-stage .stats').textContent.includes('input to screen')"), True)
-        print("      (input to screen %d ms, link %.1f ms, %d fps)" % (st["latency"], st["rtt"] or 0, st["fps"]))
-        await b.shot("b_walked.png")
-
-        print("\nwhat changes in A's room")
-        spin = "(() => { const o = v._viewer.scene.root.getObjectByName('spinner'); return o && o.position.toArray(); })()"
-        s0 = await b.js(spin)
-        await asyncio.sleep(0.5)
-        s1 = await b.js(spin)
-        check("A's spinning cube moves in B's view too", s0 != s1 and s1 is not None, True)
-        await a.js("room.frozen = true")
-        await asyncio.sleep(0.6)
-        check("where A stopped it, B shows it", [round(x, 2) for x in await b.js(spin)], [round(x, 2) for x in await a.js("room.spinner.position.toArray()")])
-        await a.js("room.frozen = false")
-        await a.js("room.spinner.material.color.setHex(0xff0000)")
-        check("A colours it red: red in B's view", await b.until("v._viewer.scene.root.getObjectByName('spinner').material.color.getHex() === 0xff0000"), True)
-        uuid = await a.js("room.add('newcomer')")
-        check("A adds an object: B has it", await b.until("!!v._viewer.scene.root.getObjectByProperty('uuid', %s)" % json.dumps(uuid)), True)
-        await a.js("room.remove('newcomer')")
-        check("A takes it away: gone from B's", await b.until("!v._viewer.scene.root.getObjectByProperty('uuid', %s)" % json.dumps(uuid)), True)
-        sign = json.dumps(await a.js("room.sign.uuid"))
-        v0 = await b.js("v._viewer.scene.root.getObjectByProperty('uuid', %s).material.map.version" % sign)
-        await a.js("room.write('changed')")
-        check("A redraws its sign: B's sign is redrawn", await b.until("v._viewer.scene.root.getObjectByProperty('uuid', %s).material.map.version > %d" % (sign, v0)), True)
-        await a.js("document.querySelector('.visit-panel button[data-v=perf]').click()")
-        check("A turns on the telemetry from its panel (⏱): a corner of the page says how it is doing", await a.until(
-            "(e => !!e && e.textContent.includes('fps') && e.textContent.includes('Visit'))(document.querySelector('.visit-perf'))", 10), True)
-        rep = await a.until("(r => r.length >= 2 && r[r.length - 1])(v.perfReport())", 10)
-        check("…a row a second: frames, stalls, Visit's work by part (A has a visitor: its scene scanned), what it had to do",
-              (rep["fps"] > 0, "scan" in rep["parts"], rep["counts"]["visitors"], "long_tasks" in rep), (True, True, 1, True)) if rep else check("a telemetry row", None, "a row")
-        check("…each row with Visit's version, and the corner says it", (rep and rep.get("visit"), await a.js("document.querySelector('.visit-perf').textContent.includes('Visit ' + Visit.version)")),
-              (await a.js("Visit.version"), True))
-        await a.js("document.querySelector('.visit-perf button[data-p=off]').click()")
-        check("and off again: the corner goes, remembered off", await a.until("!document.querySelector('.visit-perf') && localStorage.getItem('visit:perf') === 'off'"), True)
-        await a.js("room.scene.background.setHex(0x334455)")
-        check("A's background changes: B's too", await b.until("v._viewer.scene.root.background.getHex() === 0x334455"), True)
-        su = await a.js("room.shader()")
-        check("a ShaderMaterial (a program) reaches B as plain grey, not as code", await b.until(
-            "(o => o && o.material.type)(v._viewer.scene.root.getObjectByProperty('uuid', %s))" % json.dumps(su)), "MeshLambertMaterial")
-
-        print("\npointing")
-        keys = await b.js("(() => { const k = new Set(); v._viewer.scene.root.traverse(o => Object.keys(o.userData || {}).forEach(x => k.add(x))); return [...k].sort(); })()")
-        check("B's copy of A's scene has none of A's own userData: only what Visit reads", keys, ["visitPoint", "visitor"])
-        check("the cube A marked as one to click: an interaction A takes, spin, with its label", (await b.js("v._viewer.scene.root.getObjectByName('spinner').userData"),
-              await b.js("[...v._viewer.scene.interactions]")), ({"visitPoint": "spin"}, [["spin", {"label": "spin it", "cosmetic": True, "wheel": False}]]))
-        check("an interaction that is not cosmetic is refused unless the user agreed to it", await a.js(
-            "(() => { try { v.interactions({ wipe: { run() {} } }); return 'taken'; } catch (e) { v.interactions({ spin: { cosmetic: true, label: 'spin it', run: x => { x.object.rotation.y += 1; window.spins.push({ who: x.visitor.name, type: x.type }); } } }); return e.message.slice(0, 40); } })()"),
-            'visit.interactions: "wipe" is not cosmet')
-        await a.js("room.frozen = true; room.spinner.position.set(%f, 1.4, %f)" % (a2["x"] + 1.5, a2["z"] - 1.5))
-        await asyncio.sleep(0.5)
-        look = """(() => { const s = v._viewer.scene, o = s.root.getObjectByName('spinner'), dx = o.position.x - s.pose.x, dy = o.position.y - s.pose.y,
-          dz = o.position.z - s.pose.z; v._view.yaw = Math.atan2(-dx, -dz) - s.yaw0 + %s; v._view.pitch = Math.atan2(dy, Math.hypot(dx, dz));
-          v._sendInput(performance.now(), true); v._view.cross.style.display = 'block'; return true; })()"""
-        await b.js(look % "0")
-        check("looking at it, B's crosshair is hot, with what it does", (bool(await b.until("!!v._view.cross.style.background")), await b.js("v._view.hint.textContent")), (True, "spin it"))
-        await b.js(look % "Math.PI")
-        check("looking away, it is not", await b.until("!v._view.cross.style.background"), True)
-        await b.js(look % "0")
-        await asyncio.sleep(0.3)
-        await b.js("v._pointNow()")
-        pt = await a.until("window.points.length && window.points[0]")
-        pose = await a.js("({ ...v.visitors[0].pose, eyes: v.visitors[0].eyes })")
-        check("B points: A hears it, from B's eyes where A has B (its feet, and its eyes over them), toward the cube: A's ray hits it",
-              (pt["visitor"]["name"], [round(x, 2) for x in pt["from"]], round(sum(x * x for x in pt["dir"]), 3), pt["hit"]),
-              ("B", [round(pose["x"], 2), round(pose["y"] + pose["eyes"], 2), round(pose["z"], 2)], 1.0, "spinner"))
-        check("and it spins: A's interaction ran, for B", await a.until("window.spins.length === 1 && window.spins[0]"), {"who": "B", "type": "spin"})
-        await asyncio.sleep(0.25)   # past the first point's 200 ms: one of the ten may go, and only one
-        await b.js("for (let i = 0; i < 10; i++) v._pointNow()")
-        await asyncio.sleep(0.6)
-        check("ten points at once from B: its page sends one of them (one every 200 ms at most)", await a.js("window.points.length"), 2)
-
-        print("\nthe wheel")
-        await asyncio.sleep(0.25)
-        await b.js("v._wheelNow(2)")
-        await a.until("window.points.length === 3")
-        await asyncio.sleep(0.2)
-        check("B turns the wheel at the cube: A hears a point with its notches (a click's are 0), and spin, which does not take the wheel, does not run",
-              (await a.js("window.points[2].wheel"), await a.js("window.points[1].wheel"), await a.js("window.spins.length")), (2, 0, 2))
-        await a.js("v.interactions({ spin: { cosmetic: true, label: 'spin it', wheel: true, run: x => { x.object.rotation.y += 1; window.spins.push({ who: x.visitor.name, type: x.type, wheel: x.wheel }); } } })")
-        check("spin takes the wheel now: B's copy says so, and B's crosshair on it knows", await b.until("(i => !!i && i.wheel)(v._viewer.scene.interactions.get('spin')) && v._view.wheelOn"), True)
-        await asyncio.sleep(1.0)   # a second of points apart: A's visit-client takes 5 a second from B
-        await b.js("v._wheelNow(1); v._wheelNow(1); v._wheelNow(-1); v._wheelNow(1)")
-        check("four notches at once from B: one point, their sum, and spin runs with it", await a.until("window.spins.length === 3 && window.spins[2]"), {"who": "B", "type": "spin", "wheel": 2})
-        await asyncio.sleep(1.0)
-        n = await a.js("window.points.length")
-        await b.js("v._wheelNow(25)")
-        await asyncio.sleep(0.9)
-        check("25 notches at once: at most 10 a point, the rest in the next ones (one every 200 ms)", await a.js("window.points.slice(%d).map(p => p.wheel)" % n), [10, 10, 5])
-        await a.js("v.interactions({ spin: { cosmetic: true, label: 'spin it', who: 'owner', wheel: true, run: x => { window.spins.push({ who: x.visitor.name, type: x.type, wheel: x.wheel }); } } })")
-        check("a type for A's owner alone: never in a visitor's copy, so B's crosshair is not hot on it", await b.until("!v._viewer.scene.interactions.has('spin') && !v._view.cross.style.background && !v._view.wheelOn"), True)
-        await asyncio.sleep(1.0)
-        spun = await a.js("window.spins.length")
-        await b.js("v._pointNow(); v._wheelNow(1)")
-        await a.until("window.points.length === %d" % (n + 5))
-        await asyncio.sleep(0.2)
-        check("and B's click and wheel there (sent anyway) run nothing: A heard both points", await a.js("window.spins.length"), spun)
-        await a.js("v.interactions({ spin: { cosmetic: true, label: 'spin it', run: x => { x.object.rotation.y += 1; window.spins.push({ who: x.visitor.name, type: x.type }); } } })")
-        await a.js("room.vault.position.set(%f, 1.4, %f)" % (a2["x"] + 1.5, a2["z"] - 1.5))   # in the cube's place: marked, but with a type A does not take
-        await a.js("room.spinner.position.set(0.5, 0.2, 0.5)")
-        await asyncio.sleep(0.5)
-        spun = await a.js("window.spins.length")
-        await b.js(look.replace("'spinner'", "'vault'") % "0")
-        check("looking at a thing marked with a type A does not take: not hot", await b.until("!v._view.cross.style.background && !v._view.hint.textContent"), True)
-        await asyncio.sleep(0.25)
-        np = await a.js("window.points.length")
-        await b.js("v._pointNow()")
-        await a.until("window.points.length === %d" % (np + 1))
-        await asyncio.sleep(0.2)
-        check("and clicked, nothing runs (A heard the point, and took no interaction)", (await a.js("window.points[%d].hit" % np), await a.js("window.spins.length")), ("vault", spun))
-        await b.js("v._view.cross.style.display = 'none'")
-        await a.js("room.frozen = false; room.vault.position.set(9, 1.2, 1.2)")
-
-        print("\npicture in picture")
-        await b.js("document.querySelector('.visit-stage button[data-s=small]').click()")
-        check("Back to my room: A's room shrinks to a corner, and takes no keys", await b.js("[document.querySelector('.visit-stage').classList.contains('small'), v.viewFocused]"), [True, False])
-        q0 = await a.js("v.visitors[0].pose")
-        await b.key("KeyW", "w", 87, True)
-        await asyncio.sleep(0.6)
-        await b.key("KeyW", "w", 87, False)
-        await asyncio.sleep(0.3)
-        q1 = await a.js("v.visitors[0].pose")
-        check("W then walks nobody in A's room (B's own room has the keys)", (round(q1["x"], 2), round(q1["z"], 2)), (round(q0["x"], 2), round(q0["z"], 2)))
-        check("and the corner still draws A's room", bool(await b.until("(f => new Promise(r => setTimeout(() => r(v.frames > f + 10), 600)))(v.frames)")), True)
-        await b.js("document.querySelector('.visit-stage').click()")
-        check("a click on the corner: back to A's room, full-window, with the keys", await b.js("[document.querySelector('.visit-stage').classList.contains('big'), v.viewFocused]"), [True, True])
-
-        print("\nreloads")
-        await b.js("window.sawPause = false; v.on('change', () => { if (v.visiting && v.visiting.paused) window.sawPause = true; })")
-        await a.call("Page.reload")
-        check("A reloading: B sees its host paused", await b.until("window.sawPause"), True)
-        check("A back: B's host resumes, and B gets A's scene again", bool(await b.until(
-            "v.visiting && !v.visiting.paused && v._viewer.scene && !!v._viewer.scene.root.getObjectByName('spinner')", 30)), True)
-        check("A reloaded makes the same landscape, to the byte (so it is never sent again)", await a.until("v._landText", 30) == land_a, True)
-        check("and B has it in A's room again", await b.until("(l => !!l && !!l.objs && l.objs.every(o => o.parent === v._viewer.scene.root))(v._viewer.land)"), True)
-        check("A kept B where it was", round((await a.until("v.visitors.length && v.visitors[0].pose && v.visitors[0].pose.x")) or 0, 1), round(a2["x"], 1))
-        await b.call("Page.reload")
-        check("B reloading comes back still in A's room", await b.until("window.v && v.visiting && v.visiting.host.name", 30), "A")
-        check("and draws it again", bool(await b.until("!!(v._viewer && v._viewer.scene) && v.frames > 15", 30)), True)
-        check("with A's landscape, given again by B's visit-client (it has it)", await b.until(
-            "(l => !!l && !!l.objs && l.objs.length === 6 && l.objs.every(o => o.parent === v._viewer.scene.root))(v._viewer && v._viewer.land)", 20), True)
-
-        print("\nleaving")
-        await b.js("document.querySelector('.visit-stage button[data-s=leave]').click()")
-        check("B leaves: its stage goes", await b.until("!v.visiting && document.querySelector('.visit-stage').hidden"), True)
-        check("and A has no visitors", await a.until("v.visitors.length === 0"), True)
 
         print("\ngoing offline from the panel, and back")
         await a.js("document.querySelector('.visit-panel button[data-v=away]').click()")
@@ -519,19 +324,11 @@ async def run(a, b, url):
         check("and it says so", await a.until("%s.textContent === '🗺 ✓'" % pk), True)
         await a.js("%s.click()" % pk)
         check("clicked again: out of A's world", await a.until("v.picks.length === 0 && %s.textContent === '🗺 +'" % pk), True)
-        await a.js("window.knocksSeen = 0; v.on('knock', () => window.knocksSeen++)")
-        await b.js("v.knock(v.offices.find(o => o.name === 'A').id)")
-        check("B knocks: in A's room at once, the door being open", await b.until("v.visiting && v.visiting.host.name"), "A")
-        check("A's panel never asked: B walked in (one row for B: in your room)", (await a.until(
-            "v.visitors.length === 1 && document.querySelector('.visit-panel').textContent.includes('B · in your room') && document.querySelectorAll('.visit-panel button.wpick[data-name=B]').length === 1"),
-                                                     await a.js("window.knocksSeen")), (True, 0))
-        await b.js("v.leave()")
-        await a.until("v.visitors.length === 0")
+        check("4.0: A's panel lists B (in a world with A) once, with 🎧 to talk and 🗺 +, and no Link nor Knock anywhere", await a.until(
+            "document.querySelectorAll('.visit-panel button.wpick[data-name=B]').length === 1 && !!document.querySelector('.visit-panel button[data-v=talk]')"
+            " && ![...document.querySelectorAll('.visit-panel button')].some(b => /^(Link|Knock|Let in)$/.test(b.textContent))"), True)
         await a.js("(s => { s.value = 'closed'; s.dispatchEvent(new Event('change', { bubbles: true })); })(document.querySelector('.visit-panel select[data-v=door]'))")
         check("A closes its door from the panel", await a.until("v.door === 'closed' && v.door"), "closed")
-        await b.js("v.knock(v.offices.find(o => o.name === 'A').id)")
-        check("then B knocks, and A's panel asks", await a.until("!!document.querySelector('.visit-panel .knock')"), True)
-        await a.js("document.querySelector('.visit-panel .knock button[data-v=out]').click()")
         await a.js("v.setDoor(true)")
         check("door open again", await a.until("v.door === 'open'"), True)
 
@@ -785,83 +582,42 @@ async def run(a, b, url):
         check("the Map, B's room: Take out of my world: unpicked, its plot gone", await a.until("v.picks.length === 0 && !room.world.plots.some(p => p.name === 'B')"), True)
         await a.js("document.querySelector('.visit-map button[data-m=close]').click()")
         await b.js("v.unpick(v.picks[0].key)")
-        await b.js("v.leaveGroup('Yard')")   # (not A's guest now: its links and visits ask)
-        await a.until("v.guests.length === 0")
+        await b.until("v.picks.length === 0 && !room.world.plots.some(p => p.name === 'A')")
 
-        print("\nlinks: their room in a corner, then gone to, or put in your world")
-        btn = "(id => document.querySelector(`.visit-panel button[data-v=knock][data-o=\"${id}\"]`))(v.offices.find(o => o.name === 'B').id)"
-        await a.until("!!%s && !%s.disabled" % (btn, btn), 30)   # (A's watch of B, its pick, over first)
-        check("A's panel offers B a link (B takes them)", await a.js(btn + ".textContent"), "Link")
-        await a.js(btn + ".click()")
-        await a.js("(f => { f.querySelector('input').value = 'look?'; f.querySelector('button.go').click(); })(document.querySelector('.visit-panel form'))")
-        check("B's panel: A wants to link, with its message", await b.until("(k => k && k.textContent.includes('wants to link') && k.textContent.includes('look?'))(document.querySelector('.visit-panel .knock'))"), True)
-        check("no ★ always on the knock (3.3: a guest is whoever shares a world)", await b.js("!document.querySelector('.visit-panel .knock input')"), True)
-        await b.js("document.querySelector('.visit-panel .knock button[data-v=in]').click()")
-        check("A: B's room in the stage's corner, not in it", await a.until(
-            "v.links.length === 1 && v.links[0].where === 'corner' && !v.links[0].inside && !document.querySelector('.visit-stage').hidden && document.querySelector('.visit-stage').classList.contains('small')"), True)
-        check("drawn with B's own three.js (r160), from above, going round", await a.until(
-            "(w => !!(w.scene && w.scene.T.REVISION === '160' && w.count > 10 && w.scene.camera.position.y > 3))(v._viewer)"), True)
-        check("B's panel: A is linked, seeing B's room, not in it", await b.until(
-            "v.watchers.length === 1 && v.watchers[0].link && v.visitors.length === 0 && document.querySelector('.visit-panel').textContent.includes('A · linked')"), True)
-        await b.js("document.querySelector('.visit-panel button.who[data-v=more]').click()")
-        check("B opens A's row: A sees B's room; A's look in B's room, their model by default; Kick, no; Unlink", await b.until(
-            "(r => !!r && [r.querySelector('.muted').textContent, [...r.querySelectorAll('button')].map(b => b.textContent + (b.classList.contains('on2') ? '*' : '')).join()])(document.querySelector('.visit-panel .sub'))"),
-            ["they see your room", "their model*,our model,ban voice,ban chat,Ignore,Unlink"])
-        await a.shot("a_link_corner.png")
-        await a.js("document.querySelector('.visit-stage').click()")
-        check("a click on the corner: go there, put it in my world, unlink", await a.js(
-            "[...document.querySelectorAll('.visit-stage .menu button')].filter(b => !b.hidden).map(b => b.textContent)"), ["Go there", "Put in my world", "Unlink", "Not now"])
-        await a.js("document.querySelector('.visit-stage .menu button[data-s=in]').click()")
-        check("Go there: A is in B's room, full-window, with the keys", await a.until(
-            "v.visiting.inside && document.querySelector('.visit-stage').classList.contains('big') && v.viewFocused"), True)
-        check("B has A, where B's spawn put it", await b.until("v.visitors.length === 1 && v.visitors[0].link && v.visitors[0].pose && v.visitors[0].pose.x"), 2)
-        await a.shot("a_link_in.png")
-        await a.js("document.querySelector('.visit-stage button[data-s=small]').click()")
-        check("Back to my room: B's room in the corner again, B's visitor gone, the link on", (await a.until(
-            "!v.visiting.inside && document.querySelector('.visit-stage').classList.contains('small') && !v.viewFocused"), await b.until("v.visitors.length === 0 && v.watchers.length === 1")), (True, True))
-        await a.js("v.knock(v.offices.find(o => o.name === 'B').id)")   # an ordinary visit (B's panel asks: B lets A in)
-        await b.until("!!document.querySelector('.visit-panel .knock button[data-v=in]')")
-        await b.js("document.querySelector('.visit-panel .knock button[data-v=in]').click()")
-        check("a visit to B meanwhile: it has the stage, full-window; the link waits aside", await a.until(
-            "v.visiting && !v.visiting.link && v.links[0].where === 'aside' && document.querySelector('.visit-stage').classList.contains('big')"), True)
-        await a.js("v.leave()")
-        check("the visit over: the link in the corner again, its room drawn anew", await a.until(
-            "v.links[0] && v.links[0].where === 'corner' && (w => !!(w && w.scene && w.count > 5))(v._viewer) && document.querySelector('.visit-stage').classList.contains('small')"), True)
-        await a.js("document.querySelector('.visit-stage').click()")
-        await a.js("document.querySelector('.visit-stage .menu button[data-s=world]').click()")
-        check("Put in my world: the corner empties, B's plot round A's room", await a.until(
-            "v.links[0].where === 'world' && document.querySelector('.visit-stage').hidden && (p => !!(p && p.name === 'B'))(room.world.plots[0])"), True)
-        check("read again with A's own three.js (r128)", await a.until("(w => !!(w && w.scene && w.scene.T.REVISION === '128'))([...v._watches.values()].find(w => w.link))"), True)
-        await a.goto(world)
-        check("A's page reloads: the link comes back in A's world, not the corner", await a.until(
-            "window.v && window.room && room.world && v.links.length === 1 && v.links[0].where === 'world' && room.world.plots.some(p => p.name === 'B') && document.querySelector('.visit-stage').hidden", 30), True)
-        await a.shot("a_link_world.png")
-        await a.js("document.querySelector('.visit-panel button.who[data-v=more]').click()")
-        check("A opens B's row: B's room in A's world", await a.until("(r => !!r && r.querySelector('.muted').textContent)(document.querySelector('.visit-panel .sub'))"), "their room is in your world")
-        await a.js("document.querySelector('.visit-panel .sub button[data-v=cut]').click()")
-        check("A unlinks from its panel: gone for both", (await a.until("v.links.length === 0 && room.world.plots.length === 0"), await b.until("v.watchers.length === 0")), (True, True))
+        async def step_in(tab, host):
+            """4.0 (#57): into `host`'s room the one way there is: its room picked for this world (the two in Yard), its plot
+            stood on (here() is it)."""
+            await tab.js("v.pick(v.offices.find(o => o.name === %s).key, %s)" % (json.dumps(host), json.dumps(host)))
+            rect = await tab.until("(p => p && p.rect)(room.world.plots.find(p => p.name === %s))" % json.dumps(host), 30)
+            await tab.js("Object.assign(room.me, { x: %f, z: %f, yaw: 0 })" % (rect[0] + 2, rect[1] + 6))   # (2 m in, 6 m back: clear of its desk, in the middle)
+            await tab.until("room.where && room.where.name === %s && !!here() && !!here().scene" % json.dumps(host), 30)
+
+        async def step_out(tab, host):
+            """Home, and their room out of this world."""
+            await tab.js("room.world.leave(); Object.assign(room.me, { x: 0, z: 0 })")   # (in a plot, its host has the last word on where you are)
+            await tab.until("!room.where", 15)
+            await tab.js("v.unpick(v.offices.find(o => o.name === %s).key)" % json.dumps(host))
+            await tab.until("!room.world.plots.some(p => p.name === %s)" % json.dumps(host), 15)
 
         print("\navatars: a visitor as itself, when the room it visits says so")
-        await b.js("v.knock(v.offices.find(o => o.name === 'A').id, 'as myself?')")
-        await a.until("!!document.querySelector('.visit-panel .knock button[data-v=in]')")
-        await a.js("document.querySelector('.visit-panel .knock button[data-v=in]').click()")
+        await step_in(b, "A")
         check("B visits A: A shows B as their own model (Visit's default)", await a.until(
             "v.avatars.default === 'theirs' && v.visitors.length === 1 && v.visitors[0].look === 'theirs' && !!room.scene.getObjectByName('avatar:B') && !room.scene.getObjectByName('body:B')"), True)
         check("read with A's three.js (r128, from B's r160): B's torso and head, its walk and idle", await a.js(
             "(h => [h.avatar.object.getObjectByName('torso').geometry.type, !!h.avatar.object.getObjectByName('head'), !!h.avatar.walk, !!h.avatar.idle])([...v._hosted.values()].find(h => h.avatar))"),
             ["CylinderGeometry", True, True, True])
-        check("and B, in A's room, does not see itself", await b.until("(s => !!s && s.own.some(o => o.name === 'avatar:B'))(v._viewer && v._viewer.scene)"), True)
+        check("and B, in A's room, does not see itself", await b.until("(s => !!s && s.own.some(o => o.name === 'avatar:B'))(here() && here().scene)"), True)
         check("Visit draws it, not A's room: at B's feet, facing B's way", await a.until(
             "(o => !!o && o.parent === room.scene && Math.abs(o.position.x - v.visitors[0].pose.x) < 0.01 && Math.abs(o.position.y - v.visitors[0].pose.y) < 0.01 && Math.abs(o.rotation.y - v.visitors[0].pose.yaw) < 0.01)(room.scene.getObjectByName('avatar:B'))"), True)
-        check("B sees from its own model's eyes (its \"eyes\" point, 1.5 m): A says so, and B's camera is there", (
+        check("B sees from its own model's eyes (its \"eyes\" point, 1.5 m): A says so, and B hears it", (
             await a.until("Math.abs(v.visitors[0].eyes - 1.5) < 0.01 && v.visitors[0].look"),
-            await b.until("(bd => !!bd && bd.look === 'theirs' && Math.abs(bd.eyes - 1.5) < 0.01 && Math.abs(v._viewer.scene.pose.y - 1.5) < 0.05)(v._bodies.get(v._viewer.channel))")), ("theirs", True))
+            await b.until("(bd => !!bd && bd.look === 'theirs' && Math.abs(bd.eyes - 1.5) < 0.01)(v._bodies.get(here().channel))")), ("theirs", True))
         await a.shot("a_avatar.png")
         await a.js("document.querySelector('.visit-panel button.who[data-v=more]').click()")
         await a.js("document.querySelector('.visit-panel .sub button[data-v=look][data-use=mine]').click()")
         check("A opens B's row, our model: B set apart, one of A's own (a box)", await a.until(
             "v.avatarUse(v.visitors[0].visitor.key) === 'mine' && v.avatars.by.length === 1 && v.visitors[0].look === 'mine' && !!room.scene.getObjectByName('body:B')"), True)
-        check("and B sees from A's room's eyes now (1.6 m), as B hears", await b.until("(bd => !!bd && bd.look === 'mine' && Math.abs(bd.eyes - 1.6) < 0.01 && Math.abs(v._viewer.scene.pose.y - 1.6) < 0.05)(v._bodies.get(v._viewer.channel))"), True)
+        check("and B sees from A's room's eyes now (1.6 m), as B hears", await b.until("(bd => !!bd && bd.look === 'mine' && Math.abs(bd.eyes - 1.6) < 0.01)(v._bodies.get(here().channel))"), True)
         await a.js("document.querySelector('.visit-panel .sub button[data-v=look][data-use=theirs]').click()")
         check("their model again: the default, so no longer apart", await a.until("v.avatars.by.length === 0 && v.visitors[0].look === 'theirs' && !!room.scene.getObjectByName('avatar:B')"), True)
         await a.js("(s => { s.value = 'mine'; s.dispatchEvent(new Event('change', { bubbles: true })); })(document.querySelector('.visit-panel select[data-v=looks]'))")
@@ -878,7 +634,7 @@ async def run(a, b, url):
             " return nx.textContent.includes(\"yours can't be shown: <img src=x\") && [!!nx.querySelector('img'), typeof window.__pwned]; })(%s)" % a_row), [False, "undefined"])
         await b.js("(btn => btn && btn.click())(%s)" % a_row)
         await a.js(body % ("'theirs'", "null"))
-        await b.until("(bd => !!bd && bd.look === 'theirs' && !bd.problem)(v._bodies.get(v._viewer.channel))")
+        await b.until("(bd => !!bd && bd.look === 'theirs' && !bd.problem)(v._bodies.get(here().channel))")
         print("\nmodels, checked as other rooms will read them (Visit.checkModel, MODELS.md)")
         check("B's own avatar: fine, its eyes at its eyes point, its clips", await b.js(
             "(c => [c.ok, c.eyes, c.clips.join()])(Visit.checkModel(v._avatarOwn.object, { three: v._hooks.scene.three }))"), [True, 1.5, "idle,walk"])
@@ -917,8 +673,11 @@ async def run(a, b, url):
             " && Math.abs(o.position.x - v.visitors[0].pose.x) < 0.01 && Math.abs(o.position.y) < 0.01)(room.scene.getObjectByName('mount:B'))" % y0), True)
         await a.shot("a_pony.png")
         check("A's move hears what B rides, at the pony's pace", await a.until("window.movedWith && window.movedWith.riding && window.movedWith.riding.speed"), 2)
-        check("B's copy of A's room has the pony, unseen from B's own eyes", await b.until("(s => !!s && s.ownMount.length === 1 && !s.ownMount[0].visible)(v._viewer && v._viewer.scene)"), True)
+        await b.js("document.activeElement && document.activeElement.blur()")
         await b.key("KeyW", "w", 87, True)
+        if not await a.until("(r => !!r && !!r.playing && r.playing === r.clips.walk)([...v._hosted.values()][0].ride)", 6):
+            print("      walk: A's visitor", await a.js("JSON.stringify({ visitors: v.visitors.map(x => [x.visitor.name, x.pose, x.riding]), ride: (r => r && { playing: !!r.playing, clips: Object.keys(r.clips || {}) })([...v._hosted.values()][0] && [...v._hosted.values()][0].ride) })"),
+                  "B:", await b.js("JSON.stringify({ me: room.me, where: room.where && room.where.name, riding: v.riding, keys: [...room.keys], active: document.activeElement && document.activeElement.tagName })"))
         check("B walks on: A plays the pony's own walk clip", await a.until("(r => !!r && !!r.playing && r.playing === r.clips.walk)([...v._hosted.values()][0].ride)"), True)
         await b.key("KeyW", "w", 87, False)
         await b.js("v.ride('rug')")   # at once: its model may come sooner than a host takes them, and waits its turn
@@ -949,14 +708,12 @@ async def run(a, b, url):
                             " && room.scene.children.filter(c => c.name === 'mount:B').length === 1 && room.scene.children.filter(c => c.name === 'avatar:B').length <= 1", 30), True)
         await b.js("v.ride(null)")
         await a.until("!room.scene.getObjectByName('mount:B')")
-        await b.js("v.leave()")
+        await step_out(b, "A")
         await a.until("v.visitors.length === 0")
 
         print("\nvoice: by who is near, in the same room")
         await a.until("v.offices.some(o => o.name === 'B')")   # A's page just came back: the lobby's list again, first
-        await a.js("v.knock(v.offices.find(o => o.name === 'B').id, 'talk?')")
-        await b.until("v.knocks.length === 1")
-        await b.js("v.answer(v.knocks[0].id, true)")
+        await step_in(a, "B")
         await b.until("v.visitors.length === 1")
         await b.js("document.querySelector('.visit-panel button[data-v=mic]').click()")
         check("B's microphone on from its panel", await b.until("v.mic && !!v._mic"), True)
@@ -975,8 +732,8 @@ async def run(a, b, url):
         await a.js("v.setName(null)")
         await b.until("v.voices.some(x => x.name === 'A')")
         check("B's panel shows A near, speaking", await b.until("document.querySelector('.visit-panel').textContent.includes('🔊 A')"), True)
-        check("A's view of B's room draws a 🔊 over B, as A hears B (Visit's own, by default)", await a.until(
-            "(b => !!b && [...b.by.keys()].some(k => k.startsWith('speak:')))(v._viewer && v._viewer.scene && v._viewer.scene.bubbles)"), True)
+        check("A's world draws a 🔊 over B, in B's room, as A hears B (Visit's own, by default)", await a.until(
+            "!!room.world.bubbles && [...room.world.bubbles.by.keys()].some(k => k.startsWith('speak:'))"), True)
         check("and B's world one over A's body, as B hears A", await b.until("!!room.world.bubbles && [...room.world.bubbles.by.keys()].some(k => k.startsWith('speak:'))"), True)
         check("heard within 45 m, as both visit-clients say", (await a.js("v.voiceRange"), await b.js("v.voiceRange")), (45, 45))
         bx0 = await b.js("room.me.x")
@@ -1016,9 +773,11 @@ async def run(a, b, url):
         who = f"(n => n ? [n.textContent, n.style.color] : null)({cw}.querySelector('.log').lastChild.querySelector('.who'))"
         wa, wb = await a.js(who), await b.js(who)
         check("B's name in it in B's own colour, the same in both windows (by B's key, as WoW colours a name by its class)", (wa, bool(wb and wb[1])), (wb, True))
-        check("A's view of B's room draws it over B (B's mark), not A's own line (A's eyes are there)", await a.until(
-            f"(b => !!b && (l => l.length === 1 && l[0].text === 'hi A, from my chat')({said('b')}))(v._viewer && v._viewer.scene && v._viewer.scene.bubbles)"), True)
-        check("and B's world draws B's own over B's head too", await b.until(f"{said('room.world.bubbles')}.length === 2"), True)
+        check("A's world draws it over B, in B's room", await a.until(
+            f"{said('room.world.bubbles')}.some(l => l.text === 'hi A, from my chat')"), True)
+        if not await b.until(f"{said('room.world.bubbles')}.length === 2", 5):
+            print("      B's world's bubbles:", await b.js(f"JSON.stringify({said('room.world.bubbles')}.map(l => l.text))"), "B at", await b.js("JSON.stringify([room.me, room.where])"))
+        check("and B's world draws B's own over B's head too", await b.js(f"{said('room.world.bubbles')}.some(l => l.text === 'hi A, from my chat')"), True)
         await enter(b)
         await b.call("Input.insertText", text="/w A ")
         check("/w A and a space: the box whispers to A, the command gone", await b.until(
@@ -1084,8 +843,8 @@ async def run(a, b, url):
               await b.js(f"({cw}.querySelector('button.sound').click(), {cw}.querySelector('button.sound').textContent)"), await b.js(f"({cw}.querySelector('button.sound').click(), {cw}.querySelector('button.sound').textContent)")), ("🔔", "🔕", "🔔"))
         check("Esc: the box goes, its line unsaid", (await b.until(f"!{cw}.classList.contains('typing')"), await a.js("v.chatLog.some(l => l.text === 'half a thought')")), (True, False))
         await enter(b)
-        check("B, with A linked (visiting): its own room's chat among the choices", await b.js(f"[...{cw}.querySelector('select').options].map(o => o.textContent)"),
-              ["Say:", "Tell A:", "To your room:", "To A's room:", "Lobby:"])
+        check("B, with A in its room: its own room's chat among the choices (and Yard's, B's world)", await b.js(f"[...{cw}.querySelector('select').options].map(o => o.textContent)"),
+              ["Say:", "Tell A:", "To your room:", "To A's room:", "Lobby:", "World Yard:"])
         await b.call("Input.insertText", text="kept")
         steps = []
         for shift in [False] * 5 + [True] * 5:
@@ -1094,7 +853,7 @@ async def run(a, b, url):
             steps.append(await b.js(f"{cw}.querySelector('select').selectedOptions[0].textContent"))
         check("Tab: the box on to the next place, round again (Shift+Tab: back); one Tell, to whom B last whispered with; the line kept, the box still typed in",
               (steps, await b.js(f"(c => [c.dataset.scope, c.querySelector('input').value, document.activeElement === c.querySelector('input')])({cw})")),
-              (["Say:", "Tell A:", "To your room:", "To A's room:", "Lobby:", "To A's room:", "To your room:", "Tell A:", "Say:", "Lobby:"], ["lobby", "kept", True]))
+              (["World Yard:", "Say:", "Tell A:", "To your room:", "To A's room:", "To your room:", "Tell A:", "Say:", "World Yard:", "Lobby:"], ["lobby", "kept", True]))
         await b.js(f"{cw}.querySelector('input').value = ''")
         await b.call("Input.insertText", text="/s")
         await b.key("Tab", "Tab", 9, True)
@@ -1137,7 +896,7 @@ async def run(a, b, url):
         await b.js(f"{cw}.querySelector('button.headset').click()")
         check("B's box on its own room, its 🎧: into its own room's voice, a line over the box saying so", await b.until(
             f"!!v.roomVoice && v.roomVoice.key === v.key && {cw}.querySelector('.voice').textContent.startsWith('🎧 Your room: you')"), True)
-        await a.js("v.joinVoice(v.visiting.host.key)")
+        await a.js("v.joinVoice(here().host.key)")
         voice = f"{cw}.querySelector('.voice').textContent.replace(/🔊 /g, '')"   # who is in it, not who is speaking (the fake tones)
         check("A joins it: both lines say who is in it", (await a.until(f"(t => t.startsWith('🎧 B') && t.includes('B · you'))({voice})"),
               await b.until(f"{voice}.includes('you · A')")), (True, True))
@@ -1242,26 +1001,27 @@ async def run(a, b, url):
         await b.shot("b_chat.png")
         # one of B's room's own figures (a receptionist, a guide): its line over its object, in everyone's chat, kept, never as B's user
         await b.js("room.add('visit:npc:guide')")
-        await a.until("!!(v._viewer && v._viewer.scene && v._viewer.scene.root.getObjectByName('visit:npc:guide'))")
+        await a.until("!!(here() && here().scene && here().scene.root.getObjectByName('visit:npc:guide'))")
         check("a bad figure id is refused at once", await b.js("v.sayAs('../x', 'Guide', 'no')"), False)
         check("B's room's guide says a line (sayAs)", await b.js("v.sayAs('guide', 'Guide', 'welcome to my room')"), True)
         check("A, in B's room, has it from the guide, by its name, not from B", await a.until(
             "(c => c && c.npc === 'guide' && !c.owner && !c.id && c.text)(v.chats.find(c => c.name === 'Guide'))"), "welcome to my room")
-        check("A's view draws it over the guide's object", await a.until(
-            "(s => (o => !!o && [...s.bubbles.by.values()].some(x => x.text === 'welcome to my room' && Math.abs(x.sprite.position.x - o.position.x) < 0.5 && x.sprite.position.y > o.position.y))"
-            "(s.root.getObjectByName('visit:npc:guide')))(v._viewer.scene)"), True)
+        check("A's world draws it, in B's room", await a.until("[...room.world.bubbles.by.values()].some(x => x.text === 'welcome to my room')"), True)
         check("and A's window says it under the guide's name", await a.until(f"(t => t.includes('welcome') && t)({cw}.querySelector('.log').lastChild.textContent)"), "[Guide] says: welcome to my room")
         check("B has it too, its own room's figure's, not B's own line", await b.until("(l => l && l.npc === 'guide' && !l.mine && l.name === 'Guide' && l.text)(v.chatLog.at(-1))"), "welcome to my room")
-        check("and B's world draws it over the guide", await b.until("[...room.world.bubbles.by.values()].some(x => x.text === 'welcome to my room')"), True)
+        if not await b.until("[...room.world.bubbles.by.values()].some(x => x.text === 'welcome to my room')", 5):
+            print("      B's world's bubbles:", await b.js("JSON.stringify([...room.world.bubbles.by.values()].map(x => x.text))"), "B at", await b.js("JSON.stringify([room.me, room.where])"))
+        check("and B's world draws it over the guide", await b.js("[...room.world.bubbles.by.values()].some(x => x.text === 'welcome to my room')"), True)
         check("six lines at once: the sixth not said (5 every 10 s)", await a.js("(r => r[5])(Array.from({ length: 6 }, (_, i) => v.say('n' + i)))"), False)
         await a.call("Page.reload")
         check("A's page reloads: its chat window has the chat A had, kept by its visit-client, its own lines too, before the window's note; no bubbles, all old",
-              await a.until(f"window.v && v.visiting && v.chatLog.length > 5 && (c => !!c && (t => [t.includes('[B] whispers: psst'), t.includes('[Your room] [A]: for everyone here'), "
+              await a.until(f"window.v && v.chatLog.length > 5 && (c => !!c && (t => [t.includes('[B] whispers: psst'), t.includes('[Your room] [A]: for everyone here'), "
                             f"t.includes('[B] says: wake up'), t.at(-1).startsWith('Enter to chat'), v.chats.length === 0, v.chatLog.every(l => l.old)])"
                             f"([...c.querySelectorAll('.log .line')].map(d => d.textContent)))({cw})", 30), [True] * 6)
         check("and the guide's line among it, kept by A's visit-client as the guide's", await a.js("v.chatLog.some(l => l.old && l.npc === 'guide' && l.name === 'Guide')"), True)
         check("and the box still says where A's lines went (this tab): Say, as A last chose", await a.js("JSON.parse(sessionStorage.getItem('visit:chat-to')).scope"), "say")
-        await a.until("v.visiting && !v.visiting.paused && !!(v._viewer && v._viewer.scene)", 30)
+        await a.until("window.room && room.world && room.world.plots.some(p => p.name === 'B')", 30)
+        await step_in(a, "B")   # (a world's page comes back at home: A walks in again)
 
         print("\ntargets (3.3, #48): the guide described, picked by a click, its card; a whisper to it, its answer to A alone; @")
         await b.js("window.addressed = []; v.on('addressed', e => addressed.push(e)); "
@@ -1269,9 +1029,9 @@ async def run(a, b, url):
         check("B describes its guide (v.figures): A, in B's room, has it", await a.until("(f => f && [f.name, f.title, f.actions])(v.figuresHere.find(f => f.id === 'guide'))", 10),
               ["Guide", "the room's guide", ["spin"]])
         await asyncio.sleep(6)   # (A's lines above: at most 5 every 10 s)
-        await a.js("(s => { const T = s.T, g = s.root.getObjectByName('visit:npc:guide').getWorldPosition(new T.Vector3()), c = s.camera.getWorldPosition(new T.Vector3()); "
-                   "v._pick(s, s.camera, 'click', s.unit || 1, g.sub(c)); })(v._viewer.scene)")
-        check("A clicks the guide (B's room picks by a click, its default): A's target, private to A", await a.until("(t => t && [t.kind, t.id, t.name, t.title, t.room === v.visiting.host.key])(v.target)"),
+        await a.js("(w => { const s = here().scene, T = s.T, g = s.root.getObjectByName('visit:npc:guide').getWorldPosition(new T.Vector3()), c = w._cam.getWorldPosition(new T.Vector3()); "
+                   "w._pickHere('click', g.sub(c)); })(room.world)")   # (4.0: A in B's plot, its world picks)
+        check("A clicks the guide (B's room picks by a click, its default): A's target, private to A", await a.until("(t => t && [t.kind, t.id, t.name, t.title, t.room === here().host.key])(v.target)"),
               ["figure", "guide", "Guide", "the room's guide", True])
         card = "document.querySelector('.visit-card')"
         check("its card: name, title, line; the guide's action, Say, Whisper", await a.until(f"(c => !c.hidden && [c.querySelector('b').textContent, c.querySelector('.ti').textContent, c.querySelector('.ab').textContent, [...c.querySelectorAll('.bt button')].map(b => b.textContent)])({card})"),
@@ -1341,27 +1101,29 @@ async def run(a, b, url):
         await b.js("room.scene.remove(room.scene.getObjectByName('hummer'))")
         check("B takes the humming thing away: A's loop stops", await a.until("![...v._loops.values()].some(L => L.kind === 'hum')", 15), True)
         await a.js("v.setTarget({ kind: 'figure', id: 'guide' })")
-        await a.js("v.leave()")
+        await a.js("room.world.leave(); Object.assign(room.me, { x: 0, z: 0 })")   # A home again; B's room still in its world (4.0: what a link was)
+        await a.until("!room.where")
         await b.until("v.visitors.length === 0")
-        check("A's target set again, then A leaves B's room: no target", await a.until("!v.target"), True)
+        DIAG = "JSON.stringify({ me: room.me, where: room.where && room.where.name, in: room.world.in, roomKey: v._roomKey() && v._roomKey().slice(0, 8), target: v.target && v.target.room && v.target.room.slice(0, 8), voices: v.voices, near: v._nearHome, watches: [...v._watches.values()].map(w => [w.host.name, w.inside]) })"
+        if not await a.until("!v.target", 5):
+            print("      A:", await a.js(DIAG))
+            print("      B:", await b.js(DIAG))
+        check("A's target set again, then A leaves B's room: no target", await a.js("!v.target"), True)
         await a.js("v.setMic(false)")
         await b.js("v.setMic(false)")
         check("each back in its own room, microphones off: nobody near, nothing captured", (await a.until("v.voices.length === 0 && !v._mic"), await b.until("v.voices.length === 0 && !v._mic")), (True, True))
 
         print("\na phone: a call across rooms")
-        await a.js("v.link(v.offices.find(o => o.name === 'B').id)")
-        await b.until("v.knocks.length === 1 && v.knocks[0].link")
-        await b.js("v.answer(v.knocks[0].id, true)")
-        await a.until("v.links.length === 1")
+        await a.until("room.world.plots.some(p => p.name === 'B') && [...v._watches.values()].some(w => w.host.name === 'B')")   # (A, at home, B's room in its world)
         kb = await a.js("v.offices.find(o => o.name === 'B').key")
-        check("linked: A sees B's room has a phone (and B A's)", (await a.until("v.phones.length === 1 && v.phones[0].name"), await b.until("v.phones.length === 1 && v.phones[0].name")), ("B", "A"))
+        check("B's plot in A's world (watched): A sees B's room has a phone (and B A's)", (await a.until("v.phones.length === 1 && v.phones[0].name"), await b.until("v.phones.length === 1 && v.phones[0].name")), ("B", "A"))
         await b.js("v.phone(true, { at: { x: room.me.x + 1, y: 1, z: room.me.z } })")   # B's phone, a step from B: Visit's ready-made one
         check("B's room has Visit's ready-made phone, where B said", await b.until("(p => !!p && !!p.g.parent && p.g.name === 'visit:phone-model')(v._phoneObj)"), True)
         check("A's panel offers B's phone to call", await a.until("(b => b && b.textContent)(document.querySelector('.visit-panel button[data-v=call]'))"), "B")
         await a.js("document.querySelector('.visit-panel button[data-v=call]').click()")
         check("A calls B: B's phone rings (its panel too)", await b.until("v.calls.length === 1 && v.calls[0].state === 'ringing' && document.querySelector('.visit-panel').textContent.includes('A is calling')"), True)
         check("B's phone shakes and says RING RING while it rings", await b.until("(p => Math.abs(p.handset.rotation.z) > 0.01 || p.ring.visible)(v._phoneObj)"), True)
-        check("and A sees it in B's room (it is in B's scene)", await a.until("!!(v._viewer && v._viewer.scene && v._viewer.scene.root.getObjectByName('visit:phone-model'))"), True)
+        check("and A sees it in B's room (it is in B's scene: its plot in A's world)", await a.until("(w => !!(w && w.scene && w.scene.root.getObjectByName('visit:phone-model')))([...v._watches.values()].find(w => w.host.name === 'B'))"), True)
         await b.js("document.querySelector('.visit-panel button[data-v=pick_up]').click()")
         check("B picks up: on, both ways, each in its own room", (await a.until("v.calls.length === 1 && v.calls[0].state === 'on'"), await b.until("v.calls.length === 1 && v.calls[0].state === 'on'")), (True, True))
         check("A hears B, as a telephone (not by where anyone stands), and B A", (await a.until("(s => !!s && s.frames > 50 && s.level > 0.005)(v._voices.get('call:' + v.calls[0].key))"),
@@ -1388,7 +1150,7 @@ async def run(a, b, url):
         check("back to the handset: only B, to its ear, heard by A again", (await b.until("!v.calls[0].speaker && v._voiceTo === 2"), await growing(a)), (True, True))
         await a.js("v.hangUp(%s)" % json.dumps(kb))
         check("A hangs up: over for both, microphones off again", (await a.until("v.calls.length === 0 && !v._mic"), await b.until("v.calls.length === 0 && !v._mic")), (True, True))
-        await a.js("v.unlink()")
+        await a.js("v.unpick(%s)" % json.dumps(kb))
         await b.until("v.watchers.length === 0")
 
         print("\ntalking (3.5, #58): the chat window's 🎧 with its box on a whisper rings the other, as a phone; answered, each hears the other")

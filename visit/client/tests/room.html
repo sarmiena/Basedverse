@@ -22,6 +22,8 @@ html, body { height: 100%; margin: 0; background: #0d1117; color: #e6edf3; font:
 <canvas id="own"></canvas>
 <div id="panel"></div>
 <script>
+// 4.0 (#57): the room this page's user is in, elsewhere: the watched plot they stand on (worlds are the way in).
+window.here = () => window.v ? [...v._watches.values()].find(w => w.inside && !w.home) || null : null;
 "use strict";
 // The room: 10 x 8 units, walls round it, a desk in the middle; y up, a visitor's yaw 0 looking toward -z.
 const ROOM = { w: 10, d: 8, desk: { x: 4, z: 3, w: 2, d: 1.2 } };
