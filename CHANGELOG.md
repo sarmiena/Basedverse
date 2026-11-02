@@ -10,10 +10,25 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
-## v3.5.0 — 2026-11-01 — 🎧 follows the chat box: talk with someone, or a world's huddle, ringing like a phone (#58)
+## v4.0.0 — 2026-11-01 — worlds are the way to meet: Knock and Link gone (#57); 🎧 follows the chat box: talk, huddles (#58)
 
-**The lobby is deployed again** for any of it (an older lobby carries no voice knocks: Visit then offers none).
-Nothing in the protocols changes name; an office before 3.5 is never rung.
+**4.0 breaks the page's API** (Knock and Link are gone): every workroom upgrades, and the lobby is deployed again.
+Nothing in the protocols changes name; a 3.x office in the same lobby meets a 4.0 one in worlds, as before, and its
+knock to walk in or to link is refused with a reason (a `--v3` lobby's 3.x offices keep theirs).
+
+- **Knock and Link are gone: worlds are the way to meet** ([visit/SPEC.md](visit/SPEC.md) 8.5;
+  [#57](https://github.com/sarmiena/Basedverse/issues/57)). Since 3.3 a world is who may come in: its members are each
+  other's guests, pick each other's rooms for their worlds (🗺 +) and walk onto them, through an open door. Knock (0.5)
+  and Link (0.8) were a second way in, to anyone in the lobby, from before worlds; they made the panel read like a
+  directory of everyone online. Now: a version-4 office's knock to walk in, or to link, is refused by the lobby and by
+  its own `visit` (`not_supported`, naming worlds); one an older lobby passes on is declined without asking the page;
+  the door closed means nobody comes in. The panel lists those you share a world with, your visitors, and whose rooms
+  your world shows (🎧 to talk, 🗺 +, **Part**), not the whole lobby (that is the lobby's page, 🌐 Lobby, which offers
+  Whisper, not Knock nor Link); the target card offers 🎧 Talk. A call (8.8) reaches those with a visit between you;
+  anyone else, talk (below).
+- Gone from the page: `v.knock`, `v.link`, `v.answer` (but for a knock to talk: `v.pickUp`), `v.leave`, `v.stepIn`,
+  `v.stepOut`, `v.toWorld`, `v.unlink`, `v.knocks`, `v.knocking`, `v.links`, the stage's corner, and `link_where`.
+  `Visit.stage` stays (your own room, for a page that draws no world); `v.kick` ends anyone's visit or watch.
 
 - **🎧 follows the box** ([visit/SPEC.md](visit/SPEC.md) 8.7; [#58](https://github.com/sarmiena/Basedverse/issues/58)).
   The chat window's 🎧 talks with whoever its box talks to. On a whisper (`/w name`): **talk with that person**,
@@ -36,8 +51,12 @@ Nothing in the protocols changes name; an office before 3.5 is never rung.
   `call` event and `v.calls` say `voice`. On the wire: page `knock` `voice`/`huddle`, `knock_cancel`, `huddle`; lobby
   `hello`/`welcome`/`knock`/`answered`/`visit` `voice`, `knock_cancel`, `group_huddle`, `huddle` (5.2, 5.3, 6.2, 6.3, 6.4).
 
-**What an integration does:** upgrade (`VISIT_VERSION=v3.5.0`); the lobby's operator deploys it. With Visit.panel
-and its chat window, nothing more. A room that draws its own chat: point its own 🎧 at `v.talk(key)` for a person and
+**What an integration does:** upgrade (`VISIT_VERSION=v4.0.0`); the lobby's operator deploys it. With Visit.panel,
+its chat window and a world (INTEGRATING.md step 9), nothing more: your user visits rooms through their world. A page
+that called `v.knock`, `v.link`, `v.answer`, `v.leave`, `v.stepIn`, `v.stepOut`, `v.toWorld` or `v.unlink`, or read
+`v.knocks`, `v.knocking` or `v.links`: take it out (they are gone); a page that drew a visited room in its own view
+(`v.view`): visiting is your world's now (step 6, step 9). With no world, your user visits nobody (others still walk
+into your room from theirs, and anyone can talk with them). A room that draws its own chat: point its own 🎧 at `v.talk(key)` for a person and
 `v.huddle(group)` / `v.joinHuddle(group)` for a world, and show a call in `v.calls` with `voice` and `state:
 "ringing"` as someone who wants to talk (`v.pickUp(key)` answers). A room that played every call through its phone:
 a voice call is not the phone's (`voice: true`).

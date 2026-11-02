@@ -628,8 +628,8 @@ async def t_whisper(L):
 
 
 async def t_voice(L):
-    """3.5: a knock to talk (voice alone): rung on a door that takes voice, however busy or full; answered, a voice
-    visit, counted toward neither visitors nor watchers; to an office before 3.5, refused (it would take it for a
+    """4.0: a knock to talk (voice alone): rung on a door that takes voice, however busy or full; answered, a voice
+    visit, counted toward neither visitors nor watchers; to an office before 4.0, refused (it would take it for a
     knock to visit)."""
     a, b = await join(L, "V A", proto=P4, voice=True), await join(L, "V B", proto=P4, voice=True)
     old = await join(L, "V Old", proto=P4)
@@ -638,7 +638,7 @@ async def t_voice(L):
     check("the lobby says who takes voice", (office(lob, "V B").get("voice"), office(lob, "V Old").get("voice")), (True, None))
     await a.send(type="knock", to=old.id, voice=True)
     e = await a.expect("error")
-    check("to an office before 3.5: not_supported, by name", (e["code"], e.get("ref"), "V Old" in e["message"]), ("not_supported", "knock", True))
+    check("to an office before 4.0: not_supported, by name", (e["code"], e.get("ref"), "V Old" in e["message"]), ("not_supported", "knock", True))
     check("and it heard nothing", [m["type"] for m in await old.quiet() if m["type"] != "lobby"], [])
     await old.send(type="knock", to=a.id, voice=True)
     check("from one that did not say voice: refused too", (await old.expect("error"))["code"], "not_supported")
@@ -696,7 +696,7 @@ async def t_v4_no_knocks(L):
 
 
 async def t_huddle(L):
-    """3.5: a huddle in a world: its members online who take voice hear it start and end; one at a time in a world;
+    """4.0: a huddle in a world: its members online who take voice hear it start and end; one at a time in a world;
     joining is a voice knock to its starter, saying the world."""
     a, b, c = await join(L, "H A", proto=P4, voice=True), await join(L, "H B", proto=P4, voice=True), await join(L, "H C", proto=P4, voice=True)
     old = await join(L, "H Old", proto=P4)

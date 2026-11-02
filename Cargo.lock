@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "auth"
-version = "3.5.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -954,7 +954,7 @@ checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
 name = "engine"
-version = "3.5.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1998,7 +1998,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "lobby"
-version = "3.5.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2022,7 +2022,7 @@ dependencies = [
 
 [[package]]
 name = "lobby-proto"
-version = "3.5.0"
+version = "4.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4740,7 +4740,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "visit"
-version = "3.5.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "auth",

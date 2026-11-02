@@ -1319,7 +1319,7 @@ async def main():
         await a.send(type="ban", key=kb, chat=True)
         check("A keeps B out of its chat (kept in its database, until lifted: see A's restart)", (await a.until(lambda m: m["type"] == "bans"))["bans"],
               [{"key": kb, "name": "B", "voice": False, "chat": True}])
-        print("\nvoice visits and huddles (3.5, #58): a knock to talk rings; answered, a call at once; a world's huddle, joined by a knock its starter's visit-client answers")
+        print("\nvoice visits and huddles (4.0, #58): a knock to talk rings; answered, a call at once; a world's huddle, joined by a knock its starter's visit-client answers")
         async def gathered(pg, secs=1.0):   # every message that comes in `secs`
             await asyncio.sleep(secs)
             return [m for m in [pg.texts.get_nowait() for _ in range(pg.texts.qsize())] if m]

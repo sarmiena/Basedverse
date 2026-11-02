@@ -891,7 +891,7 @@ async def run(a, b, url):
         check("B's window: [A's room] [A]; A's: [Your room] [A]", (await b.until(f"(t => t.includes('everyone') && t)({cw}.querySelector('.log').lastChild.textContent)"),
               await a.js(f"{cw}.querySelector('.log').lastChild.textContent")), ("[A's room] [A]: for everyone here", "[Your room] [A]: for everyone here"))
         await b.js("v._emit('chat_box', { scope: 'say' })")
-        check("3.5: B's box on Say: no 🎧 there (who is near hears you; 🎧 follows the box: a person, a world, a room)", await b.until(f"{cw}.querySelector('button.headset').hidden"), True)
+        check("4.0: B's box on Say: no 🎧 there (who is near hears you; 🎧 follows the box: a person, a world, a room)", await b.until(f"{cw}.querySelector('button.headset').hidden"), True)
         await b.js("v._emit('chat_box', { scope: 'sim', key: v.key, name: v.office.name })")   # /room: B's own
         await b.js(f"{cw}.querySelector('button.headset').click()")
         check("B's box on its own room, its 🎧: into its own room's voice, a line over the box saying so", await b.until(
@@ -1153,7 +1153,7 @@ async def run(a, b, url):
         await a.js("v.unpick(%s)" % json.dumps(kb))
         await b.until("v.watchers.length === 0")
 
-        print("\ntalking (3.5, #58): the chat window's 🎧 with its box on a whisper rings the other, as a phone; answered, each hears the other")
+        print("\ntalking (4.0, #58): the chat window's 🎧 with its box on a whisper rings the other, as a phone; answered, each hears the other")
         cw = "document.querySelector('.visit-chat')"
         await a.js("v._emit('chat_box', (o => ({ scope: 'whisper', id: o.id, key: o.key, name: o.name }))(v.offices.find(o => o.name === 'B')))")
         check("A's box on a whisper to B: its 🎧 talks with B", await a.until(f"(h => !h.hidden && h.title.startsWith('talk with B'))({cw}.querySelector('button.headset'))"), True)
@@ -1179,7 +1179,7 @@ async def run(a, b, url):
         await b.js(f"{cw}.querySelector('.ring button[data-v=decline]').click()")
         check("A rings again, B: Not now. A's window says so", await a.until(f"v.calls.length === 0 && {cw}.querySelector('.log').textContent.includes('B: not now, they said')"), True)
 
-        print("\na huddle (3.5, #58): 🎧 with the box on a world starts one; it rings for the world's members; joined from the ring")
+        print("\na huddle (4.0, #58): 🎧 with the box on a world starts one; it rings for the world's members; joined from the ring")
         await b.js("v.joinGroup('Yard')")
         await b.until("v.groups.some(g => g.name === 'Yard')")
         await a.js("v._emit('chat_box', { scope: 'group', key: 'yard', name: 'Yard' })")

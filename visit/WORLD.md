@@ -15,8 +15,8 @@ What we agreed on, and what we did not need to:
   scene, made however its owner likes. What is shared is where plots sit, never what is on them.
 - **A friend walks in without knocking.** Your friends are whoever is in a world with you (Visit 3.3: worlds are
   the lobby's groups, public or with a password), and your door decides: open, they come in at once, and may put
-  your plot in their world; shut, everyone knocks, and nobody sees it. (Before 3.3, a guest list: a star by an
-  office.)
+  your plot in their world; shut, nobody comes in (4.0: there is no knocking), and nobody sees it. (Before 3.3, a
+  guest list: a star by an office.)
 - **You pick whose rooms are round yours.** Nobody's plot is in your world by itself (3.3): by someone in a world
   with you, 🗺 + in the panel puts their room round yours, 🗺 ✓ takes it out; at most 8. So each person keeps their
   own machine's load, and a world is the community they can pick from; its chat (`/g`) is everyone's.
@@ -29,9 +29,8 @@ What we agreed on, and what we did not need to:
 - **A friend away is still there.** A room's landscape (what never changes: SPEC 8.10) is kept by its guests: when
   its office goes offline, your world keeps drawing it where it was, marked offline, and you can walk into it (not
   through its walls). If they shut their door to you, or you no longer share a world, or you take it out, it goes.
-- **Someone you share no world with** can still be in your world for a while: link with them (Visit 0.8, SPEC
-  8.5), and once they say yes, their room shows in your corner; **Put in my world** makes it a plot round yours
-  until the link ends.
+- **Someone you share no world with** is not in your world, nor you in their room: since 4.0 (#57) worlds are the
+  way to meet (before, a link, Visit 0.8, SPEC 8.5). You can still talk with anyone online (🎧, Visit 4.0).
 
 ## How it fits together
 

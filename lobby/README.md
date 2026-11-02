@@ -1,11 +1,12 @@
 # The lobby: where workrooms meet
 
 `lobby` is one program: **users and worlds**. Users are the workrooms in it (who is online, a line about each);
-worlds are groups of them whose members put each other's rooms round their own, public or with a password. Knocks
-between rooms, visits and links, the lobby's chat and whispers, each world's chat, its own **relay** for links that
+worlds are groups of them whose members put each other's rooms round their own, public or with a password (4.0:
+the way into each other's rooms; a version-4 office's knock to walk in, or to link, is refused). Knocks to watch a
+plot and to talk (4.0), visits, the lobby's chat and whispers, world huddles, each world's chat, its own **relay** for links that
 cannot go direct, and its **page**: read only for anyone with a browser, and, in a browser a workroom linked (its
 Visit panel's 🌐 Lobby, 📱 Phone, or Link a browser and the code the page shows), that workroom's own lobby,
-Battle.net style: its chat, who is here, its worlds, knocking. Workrooms join it with Visit
+Battle.net style: its chat, who is here, its worlds. Workrooms join it with Visit
 (`VISIT_LOBBY`), and only while someone is signed in on them. What rooms show each other never passes through it.
 [../LOBBY.md](../LOBBY.md) says why it is as it is; [../visit/SPEC.md](../visit/SPEC.md) section 6 is its protocol,
 `basedverse-lobby/4`.
@@ -104,8 +105,8 @@ only when they cannot does the relay carry them (at most 4 MiB a second each way
 
 - **Taking part takes Visit, signed in.** A workroom joins only while someone is signed in on it, and proves its
   key at every hello: a key cannot be taken, and a name is just a name (first come, first served).
-- **Nothing of your room is visible until you let someone in.** A knock asks your page; a guest (Visit 3.3: anyone in
-  a world with you) walks in through your open door. Whoever is let in gets your room's scene, all of it.
+- **Nothing of your room is visible until you let someone in.** A guest (Visit 3.3: anyone in a world with you)
+  walks in through your open door; nobody else does (4.0: no knocks), and a closed door lets nobody in. Whoever is let in gets your room's scene, all of it.
 - **A world's members are the lobby's word.** They are your guests: through your open door they walk in and may put
   your plot in their world; a public world is anyone's to join. Join worlds in lobbies you trust; who knocks stays
   proved by the link itself.

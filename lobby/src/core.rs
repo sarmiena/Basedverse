@@ -215,7 +215,7 @@ const STATUSES: [&str; 2] = ["available", "busy"];
 /// Groups one office may make in an hour.
 const GROUPS_AN_HOUR: usize = 3;
 const END_REASONS: [&str; 3] = ["left", "kicked", "link_failed"];
-/// 3.5: the voice visits an office may have at once, either way (a huddle's starter carries one for each who joined).
+/// 4.0: the voice visits an office may have at once, either way (a huddle's starter carries one for each who joined).
 const MAX_TALKING: usize = 50;
 
 struct Session {
@@ -235,7 +235,7 @@ struct Session {
     links: bool,
     chat: bool,
     whisper: bool,
-    /// 3.5: it said it takes voice knocks and huddles.
+    /// 4.0: it said it takes voice knocks and huddles.
     voice: bool,
     about: Option<About>,
     admin: bool,
@@ -244,7 +244,7 @@ struct Session {
     hosting: HashSet<String>,
     watching: HashSet<String>,
     watched: HashSet<String>,
-    /// 3.5: its voice visits, either way.
+    /// 4.0: its voice visits, either way.
     talking: HashSet<String>,
     knocked: VecDeque<Instant>,
     knocked_watch: VecDeque<Instant>,
@@ -278,12 +278,12 @@ struct Visit {
     ticket: String,
     watch: bool,
     link: bool,
-    /// 3.5: voice alone (no scene), and the huddle it joins, if one.
+    /// 4.0: voice alone (no scene), and the huddle it joins, if one.
     voice: bool,
     huddle: Option<String>,
 }
 
-/// 3.5: a world's huddle going on: who started it (an office), and when.
+/// 4.0: a world's huddle going on: who started it (an office), and when.
 struct Huddle {
     by: String,
     since: Instant,
@@ -299,7 +299,7 @@ pub struct Core {
     by_key: HashMap<String, String>,
     resumes: HashMap<String, String>,
     knocks: HashMap<String, Knock>,
-    /// 3.5: the huddles going on, by their world's name as it is spelled.
+    /// 4.0: the huddles going on, by their world's name as it is spelled.
     huddles: HashMap<String, Huddle>,
     /// The order knocks were made in, for a resumed office's replay.
     knock_order: Vec<String>,
@@ -1404,7 +1404,7 @@ impl Core {
         self.tell(oid, &FromLobby::KnockSent { id: kid, to: tid, watch, link, voice: false });
     }
 
-    /// 3.5: a knock to talk, voice alone: to an office that takes voice (its hello said so), however busy, full or
+    /// 4.0: a knock to talk, voice alone: to an office that takes voice (its hello said so), however busy, full or
     /// linked it is. Answered yes, a voice visit (counted toward neither visitors nor watchers: at most MAX_TALKING
     /// each). `huddle`: to join the huddle the door started in that world (its visit-client lets a co-member in itself).
     fn on_voice_knock(&mut self, oid: &str, to: Option<String>, message: Option<String>, huddle: Option<String>) {
@@ -1468,7 +1468,7 @@ impl Core {
         self.tell(oid, &FromLobby::KnockSent { id: kid, to: tid, watch: false, link: false, voice: true });
     }
 
-    /// 3.5: a huddle in one of this office's worlds, started or over. One at a time in a world: its starter's (their
+    /// 4.0: a huddle in one of this office's worlds, started or over. One at a time in a world: its starter's (their
     /// office carries it: those who join knock on it to talk). Every member online who takes voice hears.
     fn on_huddle(&mut self, oid: &str, group: Option<String>, on: bool) {
         let r = "group_huddle";
@@ -1507,7 +1507,7 @@ impl Core {
         }
     }
 
-    /// 3.5: huddles whose starter is gone, or no longer in that world (or the world is gone): over.
+    /// 4.0: huddles whose starter is gone, or no longer in that world (or the world is gone): over.
     fn huddles_kept(&mut self) {
         let over: Vec<(String, String)> = self.huddles.iter().filter(|(g, h)| {
             let key = self.offices.get(&h.by).and_then(|o| o.key.clone());
@@ -1560,7 +1560,7 @@ impl Core {
         if !accept {
             return self.tell(&knocker, &answered(&k, false, Some("declined"), &msg));
         }
-        if k.voice {   // 3.5: to talk
+        if k.voice {   // 4.0: to talk
             let (me, them) = (&self.offices[oid], &self.offices[&knocker]);
             let talking = me.talking.iter().chain(them.talking.iter()).filter_map(|v| self.visits.get(v)).any(|v| (v.host == oid && v.visitor == knocker) || (v.host == knocker && v.visitor == oid));
             if me.talking.len() >= MAX_TALKING || them.talking.len() >= MAX_TALKING || talking {
@@ -1618,7 +1618,7 @@ impl Core {
         self.announce();
     }
 
-    /// 3.5: a voice visit agreed (the door its host): both get `visit` with `voice`, and the other's link. It moves
+    /// 4.0: a voice visit agreed (the door its host): both get `visit` with `voice`, and the other's link. It moves
     /// nobody, and counts toward neither visitors nor watchers.
     fn start_voice(&mut self, host: &str, visitor: &str, huddle: Option<String>) {
         let vid = format!("v{}", hex(6));
@@ -1973,7 +1973,7 @@ impl Core {
         if let Some(g) = &done.changed {
             self.group_changed(g);
         }
-        self.huddles_kept();   // (3.5: a starter out of its world, or a world gone, ends its huddle)
+        self.huddles_kept();   // (4.0: a starter out of its world, or a world gone, ends its huddle)
     }
 }
 

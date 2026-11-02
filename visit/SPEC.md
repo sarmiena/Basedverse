@@ -72,10 +72,8 @@ visit-clients talk to each other**. A page reload breaks nothing but the localho
   outside it, sending nothing, until the watcher **steps in** (`enter`) and is in the room as a visitor is,
   and **steps out** (`exit`). **Layout**: where an office has put each friend's plot in its world, by key: its
   own, agreed with nobody. **Seen**: where a friend's layout has put this office's plot, as that friend said.
-- **Linking** (8.5): what the panel offers on an office that takes it: a knock that, let in, starts a watch its
-  knocker sees in a corner, from outside, and goes into, puts in its world, or ends. That watch is "a link" to
-  people (`link: true` in messages); every visit, linked or not, also has a link in the sense above, its QUIC
-  connection.
+- **Linking** (before 4.0): a knock that, let in, started a watch seen in a corner. Gone with knocks to walk in
+  (4.0, #57, 8.5): worlds are the way to meet. "A link" is a visit's QUIC connection, as above.
 
 ## 3. Security
 
@@ -417,7 +415,6 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `plot_keep` | `key`, `name`, `plot` {`center`, `size`}, `unit` | a picked plot in this office's world, to keep while its office is away (8.10): drawn from its last landscape. At most 64 |
 | `plot_load` | `key` | that kept plot's landscape, please: sent as `landscape` on channel 0 (`not_found` if none is kept) |
 | `plot_forget` | `key` | let that kept plot and its landscape go |
-| `link_where` | `channel`, `where` (`"world"` \| `"corner"`) | where the page put a link (8.5): kept, and said again in `visit_started` to a page that reloads |
 | `avatar_clear` | — | this office has no avatar (8.6) from now on (its own goes as a binary frame, 5.4) |
 | `avatar_want` | `channel` | ask a visitor for its avatar (host side, 8.6): its visit-client sends it, now and whenever its page gives a new one |
 | `possessions` | `list`: [{`id`, `name`, `mount`, `fly`, `speed`, `lift`}] | what this office's user owns (8.11), as its room makes them: at most 8, ids 1 to 40 letters, digits, `_` `.` `-`, each once; `speed` 0.25 to 5 (times walking pace), `lift` 0 to 5 m. Every host this office visits is told (now, and at each link). Each model goes as a binary frame (5.4, bit 6, its slot in this list as its channel) |
@@ -425,8 +422,8 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `avatars` | `default` (`"mine"` \| `"theirs"`) | whose look visitors have in this room by default: this room's models, or their own avatars (`"theirs"` until this office's user chooses; the state file says it was chosen: `set`); kept in the state file |
 | `avatar_use` | `key`, `use` (`"mine"` \| `"theirs"` \| null: the default) | the same for one office, apart from the default; kept in the state file |
 | `phone` | `on` (bool) | this room has a phone (8.8), or no longer: every link is told |
-| `call` | `channel`, `act` (`"ring"` \| `"answer"` \| `"hangup"`) | a call on that visit (8.8): ring their phone (refused `no_phone` if their room has none), answer it (3.4.3: only a call they rang and nobody has answered; else `no_call`), end it. On a voice visit (3.5, 8.7), `hangup` ends it; ringing or answering it is refused (`bad_message`: it is a call already) |
-| `huddle` | `group`, `on` (bool) | 3.5: a huddle in one of this office's worlds (8.7), started (its user into their own room's voice, which carries it) or over (every voice visit that joined it ends; its user out of that voice). Refused `not_supported` when the lobby carries no voice |
+| `call` | `channel`, `act` (`"ring"` \| `"answer"` \| `"hangup"`) | a call on that visit (8.8): ring their phone (refused `no_phone` if their room has none), answer it (3.4.3: only a call they rang and nobody has answered; else `no_call`), end it. On a voice visit (4.0, 8.7), `hangup` ends it; ringing or answering it is refused (`bad_message`: it is a call already) |
+| `huddle` | `group`, `on` (bool) | 4.0: a huddle in one of this office's worlds (8.7), started (its user into their own room's voice, which carries it) or over (every voice visit that joined it ends; its user out of that voice). Refused `not_supported` when the lobby carries no voice |
 | `user` | `name` (1–24 characters) \| null | the name this office's user goes by (8.9; null: this office's): told to every office linked with it, now and as each links |
 | `say` | `text` (1 to 200 characters; may be empty with pictures or links), `to`? (none or `"here"`; `{"whisper"}`; `{"key"}`; `"room"`; `"lobby"`; `{"group"}`), `media`? (pictures shared, at most 4: [{`id`, `mime`, `size`}]; among them at most one voice message, with `secs`), `links`? (at most 2: [{`url`, `title`, `description`, `site`, `image`}]) | a line this office's user says (8.9). No `to`: to everyone who can see them (the room they are in, and those who see it from outside). `{"whisper": "<office id>"}`: to that office's user alone, through the lobby (its errors, `ref: "whisper"`: `not_found`, `not_supported`). `{"whisper": "<key>", "name"?}` (0.22.0): to whoever has that office in the lobby, if it takes whispers; else kept for them (`held`), text only (`no_link` with pictures or links; `too_many` past 20 for one person or 100 in all), and passed on once they and this office are both in the lobby. `{"key"}`: into the room of an office linked with this one, either way (`no_link` if none). `"lobby"`: to everyone in the lobby (`not_supported` if the lobby does not carry chat). `{"group": "<name>"}` (3.0.0): to everyone in one of this office's worlds (6.6), text only (`not_found`: in no world of that name). Control characters become spaces; trimmed; at most 5 every 10 s, whatever their `to` (`rate_limited`) |
 | `say_as` | `id` (1 to 40 letters, digits, `_` `.` `-`), `name` (what it goes by, 1 to 24 characters), `text` (1 to 200 characters) | a line one of this office's room's own figures says (8.9: a receptionist, a guide; never a person): in this office's room, to everyone who can see it, and in its chat, as `said` with `npc`. Never as this office's user: control characters become spaces; trimmed; at most 5 every 10 s from each figure, apart from the user's own (`rate_limited`); a bad `id` or empty `name` or `text`: `bad_message`. `to`? (3.3, #48): to one person alone, a whisper from the figure (no bubble, nobody else): `"owner"` (this office's user) or the id of a visit in its room (`not_found` otherwise) |
@@ -445,9 +442,9 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `voice_kick` | `key` | one out of this office's room's voice, now (8.7): they may join again |
 | `ignore` / `unignore` / `ignore_clear` | `key`, `npc`? (a room's figure's id), `name`? (≤ 24) / `key`, `npc`? / — | 3.3, the user's: whom they ignore in chat (8.9): a person by their office's key (not this office's own), or one of a room's figures by that room's key and its id. At most 50 (`too_many`). Kept in the state file; `ignored` back |
 | `ban` | `key`, `name`?, `voice`, `chat` (bools) | keep that office's user out of this office's room's voice, its chat, both, or neither (8.9). Kept in its database (8.12) until lifted (both false); the other office told |
-| `knock` | `to` (office id), `message`? (≤ 280), `link`? (true: a link, 8.5), `voice`? (3.5, true: to talk, 8.7), `huddle`? (with `voice`: to join the huddle `to` started in this world) | ask to visit an office, to link with it, or to talk with its user (refused `not_hosting` before `host`; a knock to talk, `not_supported` when the lobby carries no voice) |
-| `knock_cancel` | `knock` | 3.5: a knock of this office's withdrawn (a call given up): its door hears `knock_cancelled` (`"withdrawn"`) |
-| `answer` | `knock`, `accept` (bool), `message`? | let a knocker in, or not |
+| `knock` | `to` (office id), `voice`: true (to talk, 8.7), `huddle`? (a world: to join the huddle `to` started there), `message`? (≤ 280) | ask to talk with an office's user (refused `not_hosting` before `host`; `not_supported` when the lobby carries no voice). 4.0 (#57): a knock to walk in, or to link (no `voice`), is refused, `not_supported`: worlds are the way in |
+| `knock_cancel` | `knock` | 4.0: a knock of this office's withdrawn (a call given up): its door hears `knock_cancelled` (`"withdrawn"`) |
+| `answer` | `knock`, `accept` (bool), `message`? | answer a knock to talk on you (4.0: the only kind; `not_found` for any other id) |
 | `end` | `visit` | end a visit: yours as a visitor (leave), or a visitor's to you (kick) |
 | `input` | `forward`, `strafe`, `run`, `yaw`, `pitch`, `t` (8.2) | the visitor's input, whole: whenever it changes (at most every 8 ms) and every 33 ms regardless, while visiting |
 | `point` | `yaw`, `pitch`, `wheel`? (8.3) | the visitor clicked at the middle of its view, looking there, or turned the wheel there (`wheel`: whole notches, positive down, at most 10 either way): at most one every 200 ms, while visiting |
@@ -499,12 +496,12 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `banned` | `key`, `name`, `voice`, `chat` | a room that keeps this office's user out of its voice or chat (8.9), or no longer (both false). `ready` has `banned_by` |
 | `enter` / `exit` | `channel`, `pose`? {`x`, `y`, `z`, `yaw`, `air`} (for `enter`) | a watcher stepped into this room, there (host side: spawn it, as a visitor), or out of it; no `pose`: a link going there, spawned where newcomers go |
 | `enter_refused` | `channel`, `reason` (`"full"`, or `"moved"`: a visit to a room began, and this office stepped out) | stepping into a watched room was refused, or undone: outside it |
-| `online` / `offline` | `office`, `knocking`, `lobby_info` {`title`, `motd`, `admin`}, `lobby_voice` (3.5: the lobby carries voice knocks and huddles) / `away`? | the lobby session came up (after a drop: the same office if it resumed), with this office's own knocks still waiting ([{`id`, `to`, `link`?}]) and what the lobby's welcome said of itself (`ready` has `lobby_info` too) / went down: `away: true` when the page took it out (`leave_lobby`), `false` when it is on its way back (`join_lobby`), absent when the lobby is out of reach |
+| `online` / `offline` | `office`, `knocking`, `lobby_info` {`title`, `motd`, `admin`}, `lobby_voice` (4.0: the lobby carries voice knocks and huddles) / `away`? | the lobby session came up (after a drop: the same office if it resumed), with this office's own knocks still waiting ([{`id`, `to`, `link`?}]) and what the lobby's welcome said of itself (`ready` has `lobby_info` too) / went down: `away: true` when the page took it out (`leave_lobby`), `false` when it is on its way back (`join_lobby`), absent when the lobby is out of reach |
 | `lobby` | `offices`: [{`id`, `name`, `status`, `sim`, `max_visitors`, `visitors`, `visiting`, `ready`, `key`, `watchers`, `world`, `links`, `whisper`, `voice`?, `about`}] | every change (6.3) |
-| `knock` | `id`, `from` {`id`, `name`, `sim`, `key`}, `message`, `expires_in`, `link`?, `voice`? | someone wants to visit you, or (`link`) to link with you (never a guest at your open door: let in without asking), or (`voice`, 3.5) to talk with you: never let in without the page, never from someone your user ignores or keeps out of their room's voice (declined, unseen) |
-| `huddle` | `group`, `from` {`id`, `name`, `key`}, `on`, `since` (seconds), `mine` | 3.5: a huddle in one of this office's worlds, started (`on`; `since`: how long ago, when told again) or over; `mine`: this office's own. `ready` has those going on (`huddles`) |
+| `knock` | `id`, `from` {`id`, `name`, `sim`, `key`}, `message`, `expires_in`, `voice`: true | someone wants to talk with you (4.0): never let in without the page, never from someone your user ignores or keeps out of their room's voice (declined, unseen). 4.0: no other knock reaches a page (one to walk in or to link, from an older lobby, is declined) |
+| `huddle` | `group`, `from` {`id`, `name`, `key`}, `on`, `since` (seconds), `mine` | 4.0: a huddle in one of this office's worlds, started (`on`; `since`: how long ago, when told again) or over; `mine`: this office's own. `ready` has those going on (`huddles`) |
 | `knock_sent` / `knock_cancelled` / `answered` | as in section 6 (`voice`? on a knock to talk) | your knock's fate; a knock on you withdrawn |
-| `visit_started` | `id`, `channel`, `role` (`"host"` \| `"visitor"`), `peer` {`id`, `name`, `sim`, `key`}, `guest`?, `watch`?, `inside`?, `link`?, `where`?, `shared_adds`?, `state`? | a visit began (its link is up). `peer.key` is the other office's key, as the link proved it; `guest: true`, a guest let in through the open door, without asking the page; `watch: true` (and `inside`), a watch (8.4); `link: true` too, a link (8.5), with `where: "world"` if the page put it in its world; `phone: true`, the other office's room has a phone (8.8); in `ready`, a host's visit carries the last `state` its page sent. 3.5: `voice: true` (and `huddle`, a world), a voice visit (8.7): nothing of a room, only its `id`, `channel`, `role` and `peer`; the person's page only |
+| `visit_started` | `id`, `channel`, `role` (`"host"` \| `"visitor"`), `peer` {`id`, `name`, `sim`, `key`}, `guest`?, `watch`?, `inside`?, `shared_adds`?, `state`? | a visit began (its link is up). `peer.key` is the other office's key, as the link proved it; `guest: true`, a guest let in through the open door, without asking the page; `watch: true` (and `inside`), a watch (8.4: since 4.0, every visit to a room is one); `phone: true`, the other office's room has a phone (8.8); in `ready`, a host's visit carries the last `state` its page sent. 4.0: `voice: true` (and `huddle`, a world), a voice visit (8.7): nothing of a room, only its `id`, `channel`, `role` and `peer`; the person's page only |
 | `visit_ended` | `id`, `channel`, `reason` (6.5), `voice`? | a visit ended |
 | `host_paused` / `host_resumed` | `channel` | the host's page went away / came back (visitor side) |
 | `input` | `channel`, `seq`, `forward`, `strafe`, `run`, `yaw`, `pitch`, `t` | a visitor's latest input (host side) |
@@ -598,14 +595,14 @@ nobody has taken it meanwhile. Who someone is, is their key.
 
 | type | fields | effect |
 |---|---|---|
-| `hello` | `proto`: `"basedverse-lobby/4"`, `name`, `key`, `sim`?, `status`?, `max_visitors`? (default 3), `resume`?, `about`? (6.6), `voice`? (3.5, true: it takes knocks to talk and huddles) | join, or resume a dropped session (6.1) |
+| `hello` | `proto`: `"basedverse-lobby/4"`, `name`, `key`, `sim`?, `status`?, `max_visitors`? (default 3), `resume`?, `about`? (6.6), `voice`? (4.0, true: it takes knocks to talk and huddles) | join, or resume a dropped session (6.1) |
 | `hello` (a browser, 3.1) | `proto`, `browser` (its own key: Ed25519, 64 hex), `pass`? {`key`, `expires`, `nonce`, `signature`} (a web pass), `switch`? (true: the page's person agreed that the pass moves this browser from the office it is linked to), `verify`? (3.2: a room's confirmation, 6 digits: a tab its QR code opened), `forget`? (3.2.3, true: unlink this browser, its office in the lobby or not; closed 1000, `unlinked`) | a browser, to speak for the office it is linked to (6.11); `challenge` back, as for an office |
 | `prove` | `signature` | the challenge signed (6.1) |
 | `link` | `endpoint` (its key), `addr` (an object, ≤ 2 KiB as JSON, passed through untouched: how to reach it); or both null | publish or update how to reach this office; both null: withdraw it (not ready, until published again) |
 | `status` | `status`: `"available"` \| `"busy"` | busy: no knocks to visit or link (watches go on) |
 | `max_visitors` | `n` (0–8) | change it |
-| `knock` | `to`, `message`?, `watch`? (true: to watch, 6.4), `link`? (true: a link, 6.4), `voice`? (3.5, true: to talk, 6.4), `huddle`? (with `voice`: a world whose huddle `to` started) | ask to visit, to watch, to link, or to talk |
-| `knock_cancel` | `knock` | 3.5: withdraw a knock of yours still waiting (`not_found` if none): its door hears `knock_cancelled`, `"withdrawn"` |
+| `knock` | `to`, `message`?, `watch`? (true: to watch, 6.4), `link`? (true: a link, 6.4), `voice`? (4.0, true: to talk, 6.4), `huddle`? (with `voice`: a world whose huddle `to` started) | ask to visit, to watch, to link, or to talk |
+| `knock_cancel` | `knock` | 4.0: withdraw a knock of yours still waiting (`not_found` if none): its door hears `knock_cancelled`, `"withdrawn"` |
 | `answer` | `knock`, `accept`, `message`? | answer a knock on your door |
 | `end` | `visit`, `reason`? (`"left"`, `"kicked"`, `"link_failed"`) | end a visit you are in, either side |
 | `rename` | `name` | a new name, if it is free (`name_taken`, `name_invalid` otherwise; the office keeps its own) |
@@ -622,7 +619,7 @@ nobody has taken it meanwhile. Who someone is, is their key.
 | `group_owner` | `group`, `key` | its owner hands it to another member |
 | `group_delete` | `group` | its owner ends it |
 | `group_say` | `group`, `text` | a line for everyone in one of this office's worlds, online, the sayer too (`not_found`: in no world of that name). Checked and counted as `chat` is. Nothing is kept |
-| `group_huddle` | `group`, `on` | 3.5: a huddle in one of this office's worlds, started or over (6.4). One a world at a time (`huddle_on`, by its starter's name); only its starter ends it (`not_yours`); `not_supported` from an office whose hello did not say `voice` |
+| `group_huddle` | `group`, `on` | 4.0: a huddle in one of this office's worlds, started or over (6.4). One a world at a time (`huddle_on`, by its starter's name); only its starter ends it (`not_yours`); `not_supported` from an office whose hello did not say `voice` |
 | `groups` | — | the lobby's worlds, please (`groups` back) |
 | `browser_code` | `code` (8 letters and digits, any case, a dash or not) | 3.1, the office's own: the browser waiting with this code (`browser_pending` back; `not_found`) |
 | `browser_allow` | `code` | 3.2: a confirmation for that browser to show (`browser_confirm` back; the browser hears `browser_confirming`); once it does, it is linked to this office, and in (`browsers` back) |
@@ -642,20 +639,20 @@ nobody has taken it meanwhile. Who someone is, is their key.
 | `browser_code` | `code` (8), `pictures` (3 emoji), `expires_in` (s) | to a browser not linked: the code its office types in its room (6.11) |
 | `browser_confirming` | `office` (its name), `expires_in` (s) | 3.2, to a waiting browser: that office would link it, once it shows its room's confirmation |
 | `browser_confirmed` | `office`, `agent`, `pictures` | 3.2.2, to a device that scanned a room's QR code for another browser: that browser is linked now; this one is not (closed 1000) |
-| `welcome` | `proto`, `id`, `name`, `key`, `relays`: [url], `resume` (32 hex), `resumed` (bool), `visits`: [id], `knocking`: [{`id`, `to`}], `limits` (6.10), `chat`: true, `admin`? (true: this key is one of the lobby's operators), `title`?, `motd`?, `voice`? (3.5, true: this lobby carries knocks to talk and huddles; an older one would pass a knock to talk on as a knock to visit, so a visit-client sends none to it) | after a good `hello` and `prove` |
-| `lobby` | `offices`: [{`id`, `name`, `status`, `sim`, `max_visitors`, `visitors` (count), `visiting` (version 4: always `null`, nobody's whereabouts being everyone's; version 3: the host's office id, or `null`), `ready`, `key`, `watchers` (count), `world`, `links`, `whisper` (true), `voice`? (3.5: its hello said `voice`), `about` ({`text`, `tags`} or null)}], you included | on any change (3.4.3: at most every 250 ms, what changed meanwhile together; a `status`, `max_visitors` or `about` that changes nothing, to the office that sent it alone) |
+| `welcome` | `proto`, `id`, `name`, `key`, `relays`: [url], `resume` (32 hex), `resumed` (bool), `visits`: [id], `knocking`: [{`id`, `to`}], `limits` (6.10), `chat`: true, `admin`? (true: this key is one of the lobby's operators), `title`?, `motd`?, `voice`? (4.0, true: this lobby carries knocks to talk and huddles; an older one would pass a knock to talk on as a knock to visit, so a visit-client sends none to it) | after a good `hello` and `prove` |
+| `lobby` | `offices`: [{`id`, `name`, `status`, `sim`, `max_visitors`, `visitors` (count), `visiting` (version 4: always `null`, nobody's whereabouts being everyone's; version 3: the host's office id, or `null`), `ready`, `key`, `watchers` (count), `world`, `links`, `whisper` (true), `voice`? (4.0: its hello said `voice`), `about` ({`text`, `tags`} or null)}], you included | on any change (3.4.3: at most every 250 ms, what changed meanwhile together; a `status`, `max_visitors` or `about` that changes nothing, to the office that sent it alone) |
 | `knock` | `id`, `from` {`id`, `name`, `sim`, `key`}, `message`, `expires_in`, `watch`?, `link`?, `voice`?, `huddle`? | someone knocked (to watch, with `watch`; to link, with `link`; to talk, with `voice`, and to join your huddle in a world, with `huddle`) |
 | `knock_sent` | `id`, `to`, `watch`?, `link`?, `voice`? | your knock reached the door (a knock to link with a door that does not take links is an ordinary knock: no `link`) |
-| `knock_cancelled` | `id`, `reason`: `"timeout"` \| `"gone"` \| `"withdrawn"` (3.5) | a knock on you was withdrawn |
+| `knock_cancelled` | `id`, `reason`: `"timeout"` \| `"gone"` \| `"withdrawn"` (4.0) | a knock on you was withdrawn |
 | `answered` | `knock`, `accept`, `reason`? (`"declined"`, `"timeout"`, `"gone"`, `"full"`, `"not_ready"`), `message`, `watch`?, `link`?, `voice`? | your knock's answer |
-| `visit` | `id`, `role`, `peer` {`id`, `name`, `sim`}, `ticket` (32 hex), `peer_link` {`endpoint`, `addr`}, `watch`?, `link`?, `voice`?, `huddle`? | a visit (or a watch, or a link: a watch with `link`; or, 3.5, a voice visit, with `voice`, and the world whose huddle it joins) was agreed: the visitor dials, the host waits for it (section 7) |
+| `visit` | `id`, `role`, `peer` {`id`, `name`, `sim`}, `ticket` (32 hex), `peer_link` {`endpoint`, `addr`}, `watch`?, `link`?, `voice`?, `huddle`? | a visit (or a watch, or a link: a watch with `link`; or, 4.0, a voice visit, with `voice`, and the world whose huddle it joins) was agreed: the visitor dials, the host waits for it (section 7) |
 | `visit_ended` | `id`, `reason` (6.5) | a visit ended |
 | `lobby_chat` | `from` {`id`, `name`, `key`}, `text` | a line said in the lobby (8.9) |
 | `whisper` | `from` {`id`, `name`, `key`}, `text` | a line whispered to this office's user (8.9) |
 | `group` | `name`, `about`, `open` (public), `locked` (a password), `owner`, `ops` (always `[]`: 3.0's), `members` [{`key`, `name`, `since`}], `bans`? [keys] | one of this office's worlds, whole (6.6): after its welcome, and whenever it changes (its bans to its owner alone) |
 | `group_left` | `group`, `reason` (`"left"`, `"removed"`, `"banned"`, `"deleted"`) | no longer in a world |
 | `group_chat` | `group`, `from` {`id`, `name`, `key`}, `text` | a line said in one of this office's worlds |
-| `huddle` | `group`, `from` {`id`, `name`, `key`}, `on`, `since` (seconds) | 3.5: a huddle in one of this office's worlds started (`on`) or over (its starter ended it, left the world, or left the lobby), to its members online whose hello said `voice`; one going on is told again after the worlds, on `welcome` (`since`: how long ago it started) |
+| `huddle` | `group`, `from` {`id`, `name`, `key`}, `on`, `since` (seconds) | 4.0: a huddle in one of this office's worlds started (`on`) or over (its starter ended it, left the world, or left the lobby), to its members online whose hello said `voice`; one going on is told again after the worlds, on `welcome` (`since`: how long ago it started) |
 | `groups` | `groups` [{`name`, `about`, `open`, `locked`, `members`, `online`, `owner` (3.2: its owner's name)}] | the lobby's worlds, after `groups` (neither `open` nor `locked`: closed, 6.6) |
 | `browser_pending` | `code`, `key` (the browser's), `agent` ("Firefox on Mac"), `pictures` | the browser waiting with the code typed (3.1, 6.11) |
 | `browser_confirm` | `code`, `key`, `confirm` (6 digits), `expires_in` | 3.2, after `browser_allow`: what that browser must show to be linked |
@@ -692,21 +689,22 @@ visit-client's built-in defaults.
   `watch_knocks_per_minute` (30: visit-clients make them by themselves). A watch agreed does not move the
   knocker out of the room it is in, and does not count toward `max_visitors` or `visiting`. The door's
   visit-client answers it itself: yes for a guest through its open door, no for anyone else.
-- **Links** (8.5): a knock with `link: true`, to a door whose hello said `links`. Its `knock`, `knock_sent`,
+- **Knocks to walk in, and links** (8.5): from a version-4 office, refused (`not_supported`, 4.0); a `--v3` lobby's
+  3.x offices keep them, as below. A knock with `link: true`, to a door whose hello said `links`. Its `knock`, `knock_sent`,
   `answered` and `visit` say `link`; its errors are a knock's (`ref: "knock"`). Refused as a knock is (`busy`
   stops it, and 6 a minute), except: `full` is the door's `max_watchers`, `too_many` the knocker's
   `max_watching`, and `already_watching` when the knocker watches the door's plot already. The door answers it as
   any knock: its page, or its visit-client for a guest through its open door. Let in, it is a watch (`watch` and
   `link` on its `visit`), counted as one. To a door that does not take links (an older Visit), it is an ordinary
   knock, and nothing says `link`.
-- **Knocks to talk** (3.5, 8.7): a knock with `voice`, between offices whose hellos said `voice` (else
-  `not_supported`: an office before 3.5 would take it for a knock to visit). It rings however `busy` or full the door
+- **Knocks to talk** (4.0, 8.7): a knock with `voice`, between offices whose hellos said `voice` (else
+  `not_supported`: an office before 4.0 would take it for a knock to visit). It rings however `busy` or full the door
   is; refused `already_talking` when the two have a voice visit already (either way), `knock_pending` while one
   waits either way, `full` past 50 voice visits an office, `not_ready` as a knock is; counted with knocks (6 a
   minute). Its knocker may withdraw it (`knock_cancel`). Let in, a **voice visit**: `visit` with `voice`, which moves
   nobody and counts toward neither visitors nor watchers. With `huddle` (a world), to join the huddle its door
   started there: refused `not_found` unless that huddle is on and the knocker is in that world.
-- **Huddles** (3.5): `group_huddle` starts one in a world (one a world at a time), or ends it. The lobby tells the
+- **Huddles** (4.0): `group_huddle` starts one in a world (one a world at a time), or ends it. The lobby tells the
   world's members online whose hellos said `voice` (`huddle`), and again on `welcome` while it goes on; it ends when
   its starter ends it, leaves the world, or leaves the lobby. Nothing of it is kept.
 
@@ -734,7 +732,7 @@ groups).
 - **What a world is for** (3.3). Its members are each other's guests: through each one's open door, the others walk
   in without asking and may put that room in their worlds (8.4) (section 3, point 14). A world makes a community
   possible; it puts nobody's room on anyone's map by itself: each member picks whose rooms sit round theirs (at most
-  8, from any of their worlds), and two members of one world may see different maps. A link (8.5) still reaches
+  8, from any of their worlds), and two members of one world may see different maps. (Before 4.0, a link (8.5) reached
   anyone outside one's worlds, and a knock walks anyone into a room whose user lets them in.
 - **Its chat.** Each world has one (`group_say`, `group_chat`): to its members in the lobby, the sayer too, in one
   order. Nothing of it is kept by the lobby.
@@ -1106,7 +1104,7 @@ An office's world is its own room with its friends' plots round it, drawn by its
   in the order picked): of those online whose lobby entry says `world`, those whose own visit-clients let it (it is
   their guest, in a world with them, their door open). Nobody's plot is in it by itself: being in a world with
   someone makes their room one to pick. (Before 3.3, a guest's plot and every world member's were watched by
-  themselves.) A link put in the world (8.5) is a plot there too, picked or not. A watch is a visit with
+  themselves.) A watch is a visit with
   nothing from the watcher: the host sends it the scene and its deltas (version 2) and does not spawn it.
 - **Plots.** A host says its plot (`plot`, `unit`: 8.1); one that does not is taken to be what its scene covers
   (at most 200 units a side). An office's own plot sits at home, in its own room's coordinates.
@@ -1137,31 +1135,14 @@ An office's world is its own room with its friends' plots round it, drawn by its
   tells it over any link with them, and again over each new one. A friend's page has where it is in each world
   that has told it (`v.seen`), until their last link goes. A plot whose door shuts on the world leaves it.
 
-### 8.5 Links
+### 8.5 Links (gone in 4.0)
 
-Linking (Visit 0.8) is how two offices meet: instead of walking straight into a room once let in, the knocker
-sees it in a corner first, and chooses.
-
-- **Asking.** `knock` with `link: true` (`v.link`), to an office whose lobby entry says `links`; the door's page
-  is asked as for any knock (`knock` with `link`). A guest (in a world with the door) through the open door is
-  let in without asking. To an office on an older Visit, a link is a knock: let in, the
-  knocker walks into its room, as before.
-- **A link** is a watch (8.4) that the door let in itself: the host sends it the scene and deltas (version 2) and
-  does not spawn it; the host's page lists it in `watchers` with `link: true`, and may end it (`end`, as a kick).
-  Unlike a guest's watch, it is not ended by the door shutting, by the two no longer sharing a world, or by the
-  knocker's world going off: it lasts until either side ends it, or one leaves the lobby.
-- **The corner.** The knocker's page draws a link's room in its stage's small corner, with the host's own
-  three.js (as a visit is drawn), from outside: from where the host's `preview` says ({x, y, z, yaw, pitch}, in
-  its terms), or from above its plot, going round once a minute. Its input goes nowhere.
-- **Going there** (`stepIn`): `enter` with no pose, so the host spawns it where newcomers go; from then it is in the
-  room as a visitor is (its input and points count, it counts toward `max_visitors`), facing the way the corner
-  looked, until **back to its own room** (`stepOut`, `exit`): the corner again. Going there ends a visit the
-  knocker is on (in one room at a time).
-- **Into the world** (`toWorld`, with `v.world`): the link's room becomes a plot round the knocker's own, read
-  again with its own three.js, walked onto as any (8.4), for as long as the link lasts.
-- **One corner.** A newer link, or a visit, takes the corner; a link it moves waits (`where: "aside"`, its scene
-  not kept), and takes the corner again when it is free.
-- **Kept.** A link put in the world (`link_where`) is put back there when the page reloads.
+Visit 0.8 to 3.x let an office knock on anyone in the lobby, and link: let in, the knocker saw the room in its
+stage's corner, and went into it, put it in its world, or not. 4.0 (#57) has neither: worlds are the way to meet.
+Two people in a world are each other's guests: each picks the other's room for their world (`pick`), walks onto its
+plot (`enter`, 8.4) and back, through the other's open door; a closed door lets nobody in. Talking needs no room in
+common (8.7, `v.talk`). A version-4 office's knock to walk in, or to link, is refused (`not_supported`), and one an
+older lobby passes on is declined without asking the page.
 
 ### 8.6 Avatars
 
@@ -1216,7 +1197,7 @@ chat, everyone in it hears everyone else, wherever they are.
   sends its voice there (0xA2), and it passes each on to everyone else in it (0xA3), as its owner's own. In it,
   everyone hears everyone else, not by distance, while their microphones are on. Its owner may take one out
   (`v.voiceKick`), or keep them out (8.9). The page hears who is in it (`room_voice`, `voice_members`).
-- **Talking** (3.5, `v.talk`; the chat window's 🎧 with its box on a whisper). Two users, voice alone, wherever each
+- **Talking** (4.0, `v.talk`; the chat window's 🎧 with its box on a whisper). Two users, voice alone, wherever each
   is, with no link between their rooms needed: a knock to talk through the lobby (6.4) rings on the other's page,
   which answers or not (never its visit-client by itself, never for someone its user ignores or keeps out of their
   room's voice). Let in, a voice visit: a link with no scene, no corner, no plot, for the person's page only, a call
@@ -1224,7 +1205,7 @@ chat, everyone in it hears everyone else, wherever they are.
   side's visit-client takes one only if it asked for it (its page's knock) or let it in (its page's answer, with the
   key it answered), and ends any other before a sound goes: a lobby cannot make one up. Either side ends it (`end`,
   or `call` `hangup`). Over it go only who is talking (`user`, `banned`) and a room's voice.
-- **A huddle** (3.5, `v.huddle`; the chat window's 🎧 with its box on a world). Its starter's room's voice carries it:
+- **A huddle** (4.0, `v.huddle`; the chat window's 🎧 with its box on a world). Its starter's room's voice carries it:
   started, they are in it, and the world's members online hear it start (it rings for them). Joining (`v.joinHuddle`)
   is a knock to talk on its starter with `huddle`, let in by their visit-client itself (a member of that world, not
   ignored, not kept out of its voice), whose voice visit puts the joiner in that room's voice. Leaving that voice
@@ -1265,7 +1246,7 @@ A phone joins two rooms' users wherever they stand: voice to voice, not by dista
 carries calls, and the room shows the phone (where it stands, its ringing, picking it up).
 
 - **A phone** (`v.phone(true, { at })`): the room says so on every link (control `phone`), and keeps an empty object
-  named `visit:phone` in its scene where it stands. A user calls only those linked to them (any visit either way)
+  named `visit:phone` in its scene where it stands. A user calls only those with a visit between them, either way (their plot in the other's world, or in their room: 4.0; anyone else, talk, 8.7)
   whose rooms have phones (`v.phones`). Visit puts a phone there in the room's scene (Visit 0.13: `visit:phone-model`,
   a stand, its handset at `at`, a lamp), so everyone sees it: shaking with RING RING over it while it rings, its
   handset off its cradle while its user has it to their ear, its lamp lit on speaker. `model: false`: the room draws
@@ -1566,27 +1547,21 @@ v.browsers     // browsers linked to you (6.11, 3.1): [{ key, agent, pictures, c
 v.layout       // [{ key, x, z, turn }]: where you have put friends' plots (8.4)
 v.seen         // [{ key, name, at: { dx, dz, turn, size } }]: where friends' worlds have your room (8.4): metres from
                //   their plot's middle (north -z), quarter turns left, and their plot's size
-v.watchers     // [{ id, visitor, inside, link }]: who sees your room from outside it (worlds that picked it; links, 8.5)
-v.knocks       // knocks on your door: [{ id, from: { id, name, sim, key }, message, until (ms epoch), link }]
-v.knocking     // your knocks still waiting: [{ id, to, link }]
+v.watchers     // [{ id, visitor, inside }]: who sees your room from outside it (worlds that picked it)
 v.visiting     // the room in your stage: { id, host: { id, name, sim }, paused, link, inside } or null (a link's: in
                //   the corner until you go there, inside: true)
 v.visitors     // your visitors as a host: [{ id, visitor: { id, name, sim, key }, guest, pose, link, look, eyes, problem,
                //   riding }]: pose, their feet (8.1); look, "theirs" (Visit draws their own model) or "mine" (draw yours);
                //   eyes over their feet (your units); problem, why not their own, if you would show it; riding, the mount
                //   they ride here (8.11), { id, name, fly }, or null
-v.links        // your links (8.5): [{ id, host, where ("corner" | "aside" | "world"), inside }]
 v.avatars      // whose look your visitors have in your room (8.6): { default: "mine" | "theirs", by: [{ key, use }] }
 
 v.on(event, fn); v.off(event, fn)   // "change" | "knock" | "answered" | "visit_started" | "visit_ended" | "stats" | "error" | "point"
                    //   (knock, answered and visit_started say link: true for a link's)
 v.close()          // disconnect for good
 v.setStatus(status); v.setMaxVisitors(n); v.rename(name)
-v.knock(officeId, message); v.answer(knockId, accept, message)
-v.link(officeId, message)   // ask to link (8.5): let in, their room in your stage's corner (to an older office: a knock)
-v.stepIn(id); v.stepOut(id) // a link (by visit id; the corner's by default): go into its room, and back to your own
-v.toWorld(id)      // a link's room as a plot in your world (v.world first), while the link lasts
-v.unlink(id)       // end a link
+// (4.0, #57: no v.knock, v.link, v.answer, v.stepIn, v.stepOut, v.toWorld, v.unlink, v.leave, v.knocks, v.knocking,
+// v.links: into a room through your world, 8.4; talk with anyone, v.talk)
 v.watching(officeId)        // whether a plot of theirs is in your world (picked, or a link put there)
 v.avatar(object, { unit })  // your own body, for rooms that show their visitors' own looks (8.6, MODELS.md); null: none
                             //   "model" event: { what, problems, notes }, as it is checked; "body": how the room you are in
@@ -1647,15 +1622,14 @@ v.phone(on, { at, model })  // a phone in your room (8.8), at that spot (your un
 v.phones; v.calls           // those linked to you whose rooms have phones: [{ key, name }]; your calls: [{ key, name,
                             //   state ("calling" | "ringing" | "on"), speaker, speaking }]
 v.call(key); v.pickUp(key); v.hangUp(key); v.speaker(key, on)   // and the "call" event: { key, name, state, speaker, why }
-v.talk(key); v.canTalk(key) // 3.5: talk with them, voice alone (8.7): a call in v.calls with voice: true, "calling" here and
+v.talk(key); v.canTalk(key) // 4.0: talk with them, voice alone (8.7): a call in v.calls with voice: true, "calling" here and
                             //   "ringing" there, then "answering" and "on" (pickUp answers, hangUp declines or ends it)
-v.huddle(group, on); v.joinHuddle(group); v.huddles; v.inHuddle   // 3.5: a world's huddle, started or ended; joined;
+v.huddle(group, on); v.joinHuddle(group); v.huddles; v.inHuddle   // 4.0: a world's huddle, started or ended; joined;
                             //   those going on: [{ group, from, mine }]; the one you are in: { group, key, mine }; "huddle" event
 v.useAvatars(use); v.useAvatar(key, use); v.avatarUse(key)   // "theirs" | "mine": whose look visitors have in
                    //   your room, by default and for one office (null: back to the default)
-v.leave()          // end your visit (the stage's link: unlink it)
 v.kick(visitId)    // end someone's visit to you
-v.leaveLobby()     // away: out of the lobby, nobody sees you or can knock, your visits end (kept across restarts
+v.leaveLobby()     // away: out of the lobby, nobody sees you or can reach you, your visits end (kept across restarts
 v.joinLobby()      //   with VISIT_STATE_FILE); and back
 v.setDoor(open)    // open or close your door (kept, with VISIT_STATE_FILE); shut, nobody watches your plot
 v.setAbout(text, tags)   // your line in the lobby's list of who is here (and its public page); null: none (3.0.0)
@@ -1719,7 +1693,7 @@ v.host({
                                                     //   your own model, in metres (8.1): where its camera goes
   plot: { center: [x, z], size: [w, d] }, unit: 1,  // this room's land in a world (8.4), in its units (without it: what its scene
                                                     //   covers); unit: metres in one
-  preview: { x, y, z, yaw, pitch },                 // optional: where a link sees this room from, before going in (8.5); without
+  preview: { x, y, z, yaw, pitch },                 // optional (unused since 4.0: no links): where a link saw this room from (8.5); without
                                                     //   it, from above its plot, going round
 });
 
@@ -1840,7 +1814,7 @@ slowly while its tab is hidden.
 | link grace period | 15 s |
 | lobby session kept after a drop (resume) | 30 s |
 | knock wait | 60 s |
-| talking (3.5) | 50 voice visits an office at once, either way (a huddle's starter carries one for each who joined); a voice visit agreed has 20 s to come up on the page that answered |
+| talking (4.0) | 50 voice visits an office at once, either way (a huddle's starter carries one for each who joined); a voice visit agreed has 20 s to come up on the page that answered |
 | watches | 8 watchers of a plot, 8 plots watched; 30 knocks to watch a minute; one declined tried again after 20 s |
 | worlds | 20 a key, 50 members each (the lobby's `--world-size`), a password 4 to 64 characters, 5 passwords tried a minute (6.10) |
 | linked browsers | 10 an office, 4 in the lobby at once; a pass or a code good 10 minutes, once; a room's confirmation 5 minutes, 5 wrong tries (6.11) |
@@ -1861,7 +1835,7 @@ codes 4400 bad `hello`, 4401 bad or missing token, 4409 replaced by a newer page
 section 6.4 (`not_found`, `self_knock`, `not_available`, `full`, `not_ready`, `already_visiting`,
 `knock_pending`, `rate_limited`), `message_too_long`, `name_invalid`, `name_taken` (on `rename`; the
 office keeps its name), `no_phone` (ringing a room with no phone), `no_call`
-(`speaker` with no call on; 3.4.3, `call` answering no ring), `already_talking` (3.5: a knock to talk with someone you talk with already), `huddle_on` (3.5: a huddle going on in that world already), `not_supported`, `too_many`, `already_watching` (knocks to watch, which a page never sees), `not_yours` (answering a knock that is not yours), `not_hosting` (knocking before
+(`speaker` with no call on; 3.4.3, `call` answering no ring), `already_talking` (4.0: a knock to talk with someone you talk with already), `huddle_on` (4.0: a huddle going on in that world already), `not_supported`, `too_many`, `already_watching` (knocks to watch, which a page never sees), `not_yours` (answering a knock that is not yours), `not_hosting` (knocking before
 the page hosts its scene, 4.2), `no_such_visit` (`end`, `keyframe` or `scene_resync` for a visit you are not
 in), `offline` (an action while the lobby is down), `away` (an action
 while the office is out of the lobby on purpose: `join_lobby` first), `signed_out` (an action while nobody is signed
