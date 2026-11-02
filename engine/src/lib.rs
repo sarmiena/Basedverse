@@ -53,6 +53,8 @@ pub struct Config {
     pub listen: IpAddr,
     pub port: u16,
     pub tick_idle: u32,
+    /// 4.0 (#42 D): frames a second while someone is there (Visit samples the scene 30 a second; 60: the browser's own).
+    pub tick_busy: u32,
     pub memory_max_mib: u64,
     pub window: (u32, u32),
     pub debug: bool,
@@ -346,6 +348,7 @@ impl Engine {
         SHIM.replace("\"__URL__\"", &json!(self.cfg.visit_url).to_string())
             .replace("\"__TOKEN__\"", &json!(self.cfg.token).to_string())
             .replace("__TICK_IDLE__", &self.cfg.tick_idle.to_string())
+            .replace("__TICK_BUSY__", &self.cfg.tick_busy.to_string())
     }
 
     /// One question to the page: sets VISIT_ENGINE.idle; {frames, people, ready}, or None if unanswered.

@@ -216,8 +216,9 @@ in Python), beside visit-client.
    an `http://` origin, which has no `mediaDevices` of its own); there is no pointer and no keyboard; the window
    is `ENGINE_WINDOW` exactly, as the page measures it.
 5. **Keeps the room ticking.** The script runs the page's `requestAnimationFrame` callbacks from a loop of its
-   own: at the browser's 60 a second while anyone is in the room, watching it, or connected as the user; at
-   `ENGINE_TICK_IDLE` (10) a second otherwise, from a timer. The driver asks the page once a second
+   own: at `ENGINE_TICK_BUSY` (30, the rate Visit samples the scene at; 60: the browser's own) a second while anyone
+   is in the room, watching it, or connected as the user; at `ENGINE_TICK_IDLE` (10) a second otherwise, from a timer.
+   (4.0, #42: the room's own `renderer.render` does nothing in the engine: Visit reads its scene itself.) The driver asks the page once a second
    (`window.visit`: `visitors.length + watchers.length`, and `owner`) and sets `window.VISIT_ENGINE.idle`;
    every frame delivered counts in `VISIT_ENGINE.frames`. A room's own `setInterval` logic is not slowed.
 6. **Keeps it alive.** The page's console and uncaught errors go to the engine's log (`ENGINE_LOG`). A page that
@@ -246,6 +247,7 @@ in Python), beside visit-client.
 | `ENGINE_ROOM_URL` | `--engine-room-url` | none: no engine | the room's server page, on the workroom's server: `http://127.0.0.1:3001/room/server` on one machine; in containers, by the server's name on their network (`http://board:3001/room/server`) |
 | `ENGINE_PORT` | `--engine-port` | 7405 | `/health`, at `visit`'s `--listen` address |
 | `ENGINE_TICK_IDLE` | `--engine-tick-idle` | 10 | frames a second with nobody there (1 to 60) |
+| `ENGINE_TICK_BUSY` | `--engine-tick-busy` | 30 | frames a second while someone is there (1 to 60; 4.0, #42: was the browser's 60) |
 | `ENGINE_MEMORY_MAX` | `--engine-memory-max` | 1024 | MiB, the browser's, past which it is restarted |
 | `ENGINE_WINDOW` | `--engine-window` | `1280x720` | the page's window size: what the room's camera and canvas are told, nothing drawn |
 | `ENGINE_LOG` | `--engine-log` | `info` | `error`, `warn`, `info`, `debug`: the engine's part of `visit`'s log (stderr) |
@@ -479,7 +481,7 @@ The MUSTs of visit/SPEC.md 3 hold. These are added.
 |---|---|
 | page slots | one host, one user; a newer one of a role replaces it (4409); a page without a role takes both |
 | the owner's visit | counts in nothing (`max_visitors`, watchers); its inputs and points rate-limited as a visitor's (visit/SPEC.md 3, point 7) |
-| engine | frames 60 a second busy, `ENGINE_TICK_IDLE` (1 to 60) idle; a page loaded again after 1, 2, 4, … 30 s; the server page 60 s to reach `ready`; 10 s without a frame is a stall; `ENGINE_MEMORY_MAX` 1024 MiB |
+| engine | frames `ENGINE_TICK_BUSY` (30) a second busy, `ENGINE_TICK_IDLE` (1 to 60) idle; a page loaded again after 1, 2, 4, … 30 s; the server page 60 s to reach `ready`; 10 s without a frame is a stall; `ENGINE_MEMORY_MAX` 1024 MiB |
 | relay | one connection per session (a second replaces); 1 MiB buffered toward the browser, then 4408 `slow`; frames as the local protocol allows (visit/SPEC.md 10): a 16 MiB frame limit either way is safe (the largest a user sends is a picture, 8 MiB) |
 | tokens | at least 32 hex characters each, new each run, constant-time compared |
 

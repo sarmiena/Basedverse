@@ -7,7 +7,7 @@
 window.visit = { visitors: [{}], watchers: [], owner: null, office: {} };
 const results = window.results = { loaded: Date.now(), window: { w: innerWidth, h: innerHeight } };
 const E = window.VISIT_ENGINE;
-results.engine = E ? { url: E.url, token: E.token, role: E.role, tickIdle: E.tickIdle, idle: E.idle } : null;
+results.engine = E ? { url: E.url, token: E.token, role: E.role, tickIdle: E.tickIdle, tickBusy: E.tickBusy, idle: E.idle } : null;
 console.log("test page: up, VISIT_ENGINE " + (E ? "present" : "absent"));
 
 // WebGL: a program compiled and linked, a triangle drawn over a cleared canvas, the pixels read back. In the

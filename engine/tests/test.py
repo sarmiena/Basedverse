@@ -65,7 +65,7 @@ check("/health: ok, a version, no reload yet", (h.get("ok"), isinstance(h.get("v
 r = until(lambda: (lambda r: r if "mic" in r and "subresource" in r and "other" in r and len(r["raf"]["history"]) >= 3 else None)(results()), 15)
 check("the page's results are complete", bool(r), True)
 r = r or {"webgl": {}, "visibility": {}, "engine": {}, "raf": {"history": []}, "window": {}}
-check("VISIT_ENGINE: visit-client's url, the host token, role host, ENGINE_TICK_IDLE", r["engine"], {"url": "ws://127.0.0.1:%d/ws" % VISIT_PORT, "token": TOKEN, "role": "host", "tickIdle": 10, "idle": False})
+check("VISIT_ENGINE: visit-client's url, the host token, role host, ENGINE_TICK_IDLE and _BUSY", r["engine"], {"url": "ws://127.0.0.1:%d/ws" % VISIT_PORT, "token": TOKEN, "role": "host", "tickIdle": 10, "tickBusy": 30, "idle": False})
 check("a WebGL context, its program linked, no GL error", (r["webgl"].get("context") in ("webgl", "webgl2"), r["webgl"].get("linked"), r["webgl"].get("error")), (True, True, 0))
 print("      (%s)" % r["webgl"].get("renderer"))
 check("nothing drawn: a cleared canvas with a triangle reads back all zero", r["webgl"].get("drawn"), False)
@@ -77,9 +77,9 @@ check("the key went with the page's own fetch", r.get("subresource"), 200)
 seen = get(ROOM + ":3002/seen")
 check("and not to another origin", (r.get("other"), seen["hits"] >= 1, seen["authorization"]), (200, True, 0))
 
-# 3. Frames: 60 a second with a visitor, ENGINE_TICK_IDLE with nobody, 60 again.
+# 3. Frames: ENGINE_TICK_BUSY (30) a second with a visitor (4.0, #42 D), ENGINE_TICK_IDLE with nobody, 30 again.
 busy = r["raf"]["history"][-2:]
-check("about 60 frames a second with a visitor (%s)" % busy, all(50 <= n <= 70 for n in busy), True)
+check("about 30 frames a second with a visitor (%s)" % busy, all(25 <= n <= 35 for n in busy), True)
 ev("window.visit.visitors = []; 1")
 time.sleep(3.5)
 r = results()
@@ -89,7 +89,7 @@ ev("window.visit.visitors = [{}]; 1")
 time.sleep(3.5)
 r = results()
 busy = r["raf"]["history"][-2:]
-check("60 again with a visitor back (%s), idle false" % busy, (all(50 <= n <= 70 for n in busy), r["raf"]["idle"]), (True, False))
+check("30 again with a visitor back (%s), idle false" % busy, (all(25 <= n <= 35 for n in busy), r["raf"]["idle"]), (True, False))
 
 # 4. A crash: failed, then loaded again and hosting.
 before = r["loaded"]

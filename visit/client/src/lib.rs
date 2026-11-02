@@ -113,6 +113,9 @@ pub struct Args {
     /// Frames a second the room gets with nobody there (1 to 60).
     #[arg(long, env = "ENGINE_TICK_IDLE", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=60))]
     pub engine_tick_idle: u32,
+    /// Frames a second the room gets while someone is there (1 to 60): Visit samples its scene 30 a second (4.0, #42 D).
+    #[arg(long, env = "ENGINE_TICK_BUSY", default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=60))]
+    pub engine_tick_busy: u32,
     /// MiB the engine's browser may hold before it is started again.
     #[arg(long, env = "ENGINE_MEMORY_MAX", default_value_t = 1024)]
     pub engine_memory_max: u64,
@@ -495,7 +498,7 @@ pub async fn run_with(a: Args, stop: impl std::future::Future<Output = ()> + Sen
             let key = auth::engine_key(&pg.auth_url()).await?;
             let cfg = engine::Config {
                 room_url, chrome, profile: data.join("engine").join("profile"), visit_url: format!("ws://127.0.0.1:{}/ws", a.port),
-                token: token.clone(), key, listen: a.listen, port: a.engine_port, tick_idle: a.engine_tick_idle,
+                token: token.clone(), key, listen: a.listen, port: a.engine_port, tick_idle: a.engine_tick_idle, tick_busy: a.engine_tick_busy,
                 memory_max_mib: a.engine_memory_max, window: a.engine_window, debug: a.engine_debug, version: VERSION,
             };
             engine::start(cfg, engine_stopped).await

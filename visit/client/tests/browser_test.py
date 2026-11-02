@@ -405,6 +405,9 @@ async def run(a, b, url):
         check("a friend's plot in view drawn, out of view left out (A, r128)", await a.js(aside), [False, True])
         check("and in B's world (r160)", await b.js(aside), [False, True])
         check("world.drawn: A's frame drew its room and B's plot", await a.until("room.world.drawn.plots + room.world.drawn.out === 2"), True)
+        merged = "(s => !!s && s.root.children.filter(c => c.name === 'visit:merged').map(c => c.userData.visitMerged).sort())(([...v._watches.values()].find(w => w.host.name === 'B') || {}).scene)"
+        check("4.0 (#42 B): B's landscape on its scene's root, drawn merged in A's world: its 8 wall halves (one material) one mesh, the floor and desk as they are",
+              await a.until(merged), [8])
         await a.shot("a_world.png")
 
         async def walk(tab, x, z, yaw, secs, until=None):
@@ -513,7 +516,9 @@ async def run(a, b, url):
         check("A walks into B's kept plot by its doorway (at home all the while: nobody to have A there)", await a.js("room.me.x > 11 && room.where === null"), True)
         await walk(a, await a.js("room.me.x"), 4, 0, 2.5)   # north (-z), at B's north wall
         z = await a.js("room.me.z")
-        check("and walks north into B's north wall: stopped at it, not through", (0.1 < z < 2.5, z), (True, z))
+        check("and walks north into B's north wall: stopped at it, not through (its walls merged, 4.0: walked against all the same)", (0.1 < z < 2.5, z), (True, z))
+        check("B's kept plot, drawn merged (it never moves): its wall halves one mesh", await a.js(
+            "(k => !!k && !!k.built && k.built.merged.merged.map(m => m.userData.visitMerged))([...v._kept.values()].find(k => k.name === 'B'))"), [8])
         await a.shot("a_kept.png")
         await a.js("Object.assign(room.me, { x: 5, z: 4 })")   # home
         await b.js("v.joinLobby()")
@@ -1254,6 +1259,7 @@ async def run(a, b, url):
                 await asyncio.sleep(0.2)
             reloads0 = h.get("reloads")   # (its loads before the room's visit-client was up: tried again, with backoff)
             check("the engine says so: /health hosting, ok", (h.get("room"), h.get("ok")), ("hosting", True))
+            check("4.0 (#42 C): there, the room's own render does nothing (Visit reads its scene itself)", await hc.until("!!(v._hooks && v._hooks.scene.renderer && v._hooks.scene.renderer.visitQuiet)", 10), True)
         check("C is in the lobby, ready: its room's page hosts it", await a.until("v.offices.some(o => o.name === 'C' && o.ready)", 30), True)
         check("the owner's visit: the room has its person as a visitor of its own (who.owner), spawned by the desk", await hc.until(
             "v.owner && v.visitors.length === 1 && v.visitors[0].owner && v.visitors[0].visitor.owner && window.spawns && spawns.some(s => s.owner) && v.visitors[0].pose && Math.round(v.visitors[0].pose.z * 10) / 10", 20), 6.5)
