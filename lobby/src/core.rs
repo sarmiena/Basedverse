@@ -1026,8 +1026,8 @@ impl Core {
             }
             return c.send(&FromLobby::error("not_linked", "this browser is not linked yet: type its code in your room (Visit panel: Link a browser)", Some(&t)));
         };
-        const WEB: [&str; 17] = ["chat", "whisper", "group_say", "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set",
-                                 "group_owner", "group_delete", "groups", "about", "admin", "knock", "bye", "browser_forget"];
+        const WEB: [&str; 16] = ["chat", "whisper", "group_say", "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set",
+                                 "group_owner", "group_delete", "groups", "about", "admin", "bye", "browser_forget"];
         if !WEB.contains(&t.as_str()) {
             return c.send(&FromLobby::error("not_from_web", format!("{t} is your workroom's to do, from its room"), Some(&t)));
         }
@@ -1235,6 +1235,11 @@ impl Core {
                 None => self.error(oid, "bad_message", format!("n must be 0 to {}", self.limits(p).max_visitors), Some("max_visitors")),
             },
             ToLobby::Knock { to, message, voice: true, huddle, .. } => self.on_voice_knock(oid, to, message, huddle),
+            // 4.0 (#57): worlds are the way to meet. A version-4 office knocks only to watch a plot (its world's) and
+            // to talk; a knock to walk in, or to link, is refused (a 3.x office in a --v3 lobby keeps them).
+            ToLobby::Knock { watch: false, .. } if p == Proto::V4 => {
+                self.error(oid, "not_supported", "Visit 4 has no knocks nor links: meet in a world (its members walk into each other's rooms)", Some("knock"))
+            }
             ToLobby::Knock { to, message, watch, link, .. } => self.on_knock(oid, to, message, watch, link),
             ToLobby::GroupHuddle { group, on } => self.on_huddle(oid, group, on),
             ToLobby::Answer { knock, accept, message } => self.on_answer(oid, knock, accept, message),

@@ -11,7 +11,7 @@
     confirmation shown here: its QR code scanned by this device's camera (a tab of this page, #verify=…), or its
     6 digits typed. Linked, it comes back by its key
     alone, and is that workroom's in the lobby while the workroom is in it: its chat (the lobby's, its worlds',
-    whispers), who is here, its worlds, knocking (the visit itself happens in its room). Never its door, nor letting
+    whispers), who is here, its worlds (4.0: no knocking: the rooms meet in worlds). Never its door, nor letting
     anyone in: those stay in its room. Unlinked by its room, or by itself (the footer), it is read only again.
   Laid out as a game's server browser (3.2): the worlds, the screen's focus, a list to filter, sort and pick from
   (Worlds, Your worlds, Users), the row picked shown below it with what can be done; chat in a column beside it.
@@ -213,7 +213,7 @@ footer button { font: inherit; color: var(--blue); background: none; border: 0; 
       <div class="join" id="join">
         <div id="link">
           <h2>Link your room</h2>
-          <p id="linkwhy">Chat, worlds and knocking take a workroom: this browser speaks for yours once your room links it.</p>
+          <p id="linkwhy">Chat and worlds take a workroom: this browser speaks for yours once your room links it.</p>
           <div id="pairing" hidden>
             <p>In your room's Visit panel: <b>Link a browser</b>, and type</p>
             <div class="code" id="code">····-····</div>
@@ -554,7 +554,7 @@ footer button { font: inherit; color: var(--blue); background: none; border: 0; 
   }
   function userDetail() {
     const o = users().find(x => x.id === S.sel.users);
-    if (!o) return [el("p", "hint", S.me ? "Pick someone: knock to walk into their room, link to see it in your room's corner, or whisper." : "Who is here, with a line about them. Linked, you see everyone.")];
+    if (!o) return [el("p", "hint", S.me ? "Pick someone: whisper to them, or see which of your worlds you share. To walk into each other's rooms, be in a world together." : "Who is here, with a line about them. Linked, you see everyone.")];
     const h = el("h2", "", o.name); h.style.color = colorOf(o.key || o.name);
     if (S.me && o.id === S.me.id) h.append(el("span", "badge you", "you"));
     const out = [h];
@@ -562,12 +562,10 @@ footer button { font: inherit; color: var(--blue); background: none; border: 0; 
     const shared = o.key ? [...S.groups.values()].filter(g => g.members.some(m => m.key === o.key)).map(g => g.name) : [];
     out.push(el("div", "meta", `${o.status || "available"} · ${o.visitors}/${o.max_visitors} in their room${(o.sim && o.sim.name) ? ` · ${o.sim.name}` : ""}${shared.length && !(S.me && o.id === S.me.id) ? ` · in ${shared.join(", ")} with you` : ""}`));
     if (!S.me || o.id === S.me.id) return out;
-    const acts = el("div", "acts"), why = !o.ready ? "not ready" : o.status !== "available" ? o.status : "";
-    const go = (link, label, cls, title) => { const b = btn(label, cls, () => send({ type: "knock", to: o.id, link }), title); if (why) { b.disabled = true; b.title = why; } return b; };
-    acts.append(go(false, "Knock", "", "they are asked; let in, you walk into their room, in your room's page"));
-    if (o.links) acts.append(go(true, "Link", "blue", "see their room in your room's corner, once they say yes"));
+    const acts = el("div", "acts");
     acts.append(btn("Whisper", "dim", () => { S.lastWhisper = { id: o.id, name: o.name, key: o.key }; chatTo("whispers"); }));
-    out.push(acts, el("p", "hint", "The visit opens in your room's page, not here."));
+    out.push(acts, el("p", "hint", shared.length ? "In a world together: you walk into each other's rooms from your rooms' pages (your world's 🗺 +). Talk with them by 🎧 in your room's chat (/w and 🎧)."
+      : "To walk into each other's rooms, be in a world together (Worlds: Find a public one, or make one). To talk, 🎧 in your room's chat with /w " + o.name + "."));
     return out;
   }
   function drawSide() { drawList(); drawDetail(); }
@@ -702,9 +700,8 @@ footer button { font: inherit; color: var(--blue); background: none; border: 0; 
         note(m.reason === "removed" ? `Taken out of ${m.group}` : m.reason === "banned" ? `Taken out of ${m.group}, and kept out` : m.reason === "deleted" ? `${m.group} has ended` : `You left ${m.group}`);
         drawTabs(); drawLog(); drawSide(); send({ type: "groups" }); break;
       case "groups": S.list = m.groups || []; S.listed = true; drawSide(); break;
-      case "knock": note(`${m.from.name} ${m.link ? "wants to link" : m.watch ? "" : "is knocking"}${m.message ? `: “${m.message}”` : ""}: answer in your room`); break;
-      case "knock_sent": if (!m.watch) note(`Knocking on ${nameOf(m.to) || "them"}…`); break;
-      case "answered": if (!m.watch) note(m.accept ? `${m.link ? "Linked" : "In"}: your room's page has it` : `Not let in${m.reason && m.reason !== "declined" ? ` (${m.reason})` : ""}`, !m.accept); break;
+      case "knock": if (m.voice && !m.huddle) note(`${m.from.name} wants to talk: answer in your room`); break;   // (4.0: no knocks to walk in, nor links)
+      case "knock_sent": case "answered": break;
       case "error":
         if (S.me) note(m.message || m.code, true);
         else if (m.code === "linked_elsewhere") S.elsewhere = m.message;
