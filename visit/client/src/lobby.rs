@@ -116,7 +116,7 @@ pub async fn run(url: String, key: SecretKey, mut hello: Hello, mut rx: mpsc::Un
                 let (mut tx, mut rx_ws) = ws.split();
                 let first = ToLobby::Hello {
                     proto: PROTO.into(), name: hello.name.clone(), key: Some(public.clone()), sim: hello.sim.clone(), status: hello.status.clone(),
-                    max_visitors: hello.max_visitors, resume: resume.clone(), world: false, links: false, chat: false, whisper: false,
+                    max_visitors: hello.max_visitors, resume: resume.clone(), world: false, links: false, chat: false, whisper: false, voice: true,
                     about: hello.about.clone(),
                 };
                 let mut left = false;

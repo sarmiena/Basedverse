@@ -1131,8 +1131,11 @@ async def run(a, b, url):
             "(l => l && l.scope === 'sim' && l.name === 'A' && l.to.name === 'A' && l.to.key !== v.key && l.text)(v.chatLog.at(-1))"), "for everyone here")
         check("B's window: [A's room] [A]; A's: [Your room] [A]", (await b.until(f"(t => t.includes('everyone') && t)({cw}.querySelector('.log').lastChild.textContent)"),
               await a.js(f"{cw}.querySelector('.log').lastChild.textContent")), ("[A's room] [A]: for everyone here", "[Your room] [A]: for everyone here"))
+        await b.js("v._emit('chat_box', { scope: 'say' })")
+        check("3.5: B's box on Say: no 🎧 there (who is near hears you; 🎧 follows the box: a person, a world, a room)", await b.until(f"{cw}.querySelector('button.headset').hidden"), True)
+        await b.js("v._emit('chat_box', { scope: 'sim', key: v.key, name: v.office.name })")   # /room: B's own
         await b.js(f"{cw}.querySelector('button.headset').click()")
-        check("B's 🎧 (its box not on a room): into its own room's voice, a line over the box saying so", await b.until(
+        check("B's box on its own room, its 🎧: into its own room's voice, a line over the box saying so", await b.until(
             f"!!v.roomVoice && v.roomVoice.key === v.key && {cw}.querySelector('.voice').textContent.startsWith('🎧 Your room: you')"), True)
         await a.js("v.joinVoice(v.visiting.host.key)")
         voice = f"{cw}.querySelector('.voice').textContent.replace(/🔊 /g, '')"   # who is in it, not who is speaking (the fake tones)
@@ -1387,6 +1390,62 @@ async def run(a, b, url):
         check("A hangs up: over for both, microphones off again", (await a.until("v.calls.length === 0 && !v._mic"), await b.until("v.calls.length === 0 && !v._mic")), (True, True))
         await a.js("v.unlink()")
         await b.until("v.watchers.length === 0")
+
+        print("\ntalking (3.5, #58): the chat window's 🎧 with its box on a whisper rings the other, as a phone; answered, each hears the other")
+        cw = "document.querySelector('.visit-chat')"
+        await a.js("v._emit('chat_box', (o => ({ scope: 'whisper', id: o.id, key: o.key, name: o.name }))(v.offices.find(o => o.name === 'B')))")
+        check("A's box on a whisper to B: its 🎧 talks with B", await a.until(f"(h => !h.hidden && h.title.startsWith('talk with B'))({cw}.querySelector('button.headset'))"), True)
+        await a.js(f"{cw}.querySelector('button.headset').click()")
+        check("A clicks 🎧: calling B, its window says so", await a.until(f"v.calls.length === 1 && v.calls[0].voice && v.calls[0].state === 'calling' && {cw}.querySelector('.voice').textContent.includes('Calling B')"), True)
+        check("B's chat window rings: a line above its box asking, pulsing, shown though the window is idle; its 🎧 shaking", await b.until(
+            f"(c => c.querySelector('.ring').textContent.includes('A wants to talk') && getComputedStyle(c.querySelector('.ring .ask')).animationName === 'visit-ring'"
+            f" && getComputedStyle(c.querySelector('.ring')).opacity === '1' && c.querySelector('button.headset').classList.contains('ring'))({cw})"), True)
+        check("and B's panel: A wants to talk, Answer", await b.until("document.querySelector('.visit-panel').textContent.includes('A wants to talk')"), True)
+        check("its room's phone (none here) not rung by it: talk is not the phone's", await b.js("v.calls[0].voice === true && v.calls[0].state === 'ringing'"), True)
+        await b.shot("b_talk_ringing.png")
+        await b.js(f"{cw}.querySelector('.ring button[data-v=answer]').click()")
+        check("B answers from the ring: on, both ways; the ring gone", (await a.until("v.calls.length === 1 && v.calls[0].state === 'on'"),
+              await b.until(f"v.calls.length === 1 && v.calls[0].state === 'on' && {cw}.querySelector('.ring').children.length === 0")), (True, True))
+        check("A hears B, and B A (the fake microphones' tones), each in their own room", (await a.until("(s => !!s && s.frames > 50 && s.level > 0.005)(v._voices.get('call:' + v.calls[0].key))"),
+              await b.until("(s => !!s && s.frames > 50 && s.level > 0.005)(v._voices.get('call:' + v.calls[0].key))")), (True, True))
+        check("A's window: Talking with B, and Hang up", await a.until(f"{cw}.querySelector('.voice').textContent.includes('Talking with B') && !!{cw}.querySelector('.voice button[data-v=hangup]')"), True)
+        await a.shot("a_talk_on.png")
+        await b.js(f"{cw}.querySelector('.voice button[data-v=hangup]').click()")
+        check("B hangs up from its window: over for both, microphones off again", (await a.until("v.calls.length === 0 && !v._mic"), await b.until("v.calls.length === 0 && !v._mic")), (True, True))
+        await a.js(f"{cw}.querySelector('button.headset').click()")
+        await b.until("v.calls.length === 1 && v.calls[0].state === 'ringing'")
+        await b.js(f"{cw}.querySelector('.ring button[data-v=decline]').click()")
+        check("A rings again, B: Not now. A's window says so", await a.until(f"v.calls.length === 0 && {cw}.querySelector('.log').textContent.includes('B: not now, they said')"), True)
+
+        print("\na huddle (3.5, #58): 🎧 with the box on a world starts one; it rings for the world's members; joined from the ring")
+        await b.js("v.joinGroup('Yard')")
+        await b.until("v.groups.some(g => g.name === 'Yard')")
+        await a.js("v._emit('chat_box', { scope: 'group', key: 'yard', name: 'Yard' })")
+        check("A's box on Yard: its 🎧 starts a huddle there", await a.until(f"{cw}.querySelector('button.headset').title.startsWith('start a huddle in Yard')"), True)
+        await a.js(f"{cw}.querySelector('button.headset').click()")
+        check("A clicks 🎧: in its huddle (its room's voice), its window says so", await a.until(f"!!v.inHuddle && v.inHuddle.mine && {cw}.querySelector('.voice').textContent.includes('Huddle in Yard')"), True)
+        check("B's window rings: A started a huddle in Yard, Join", await b.until(f"{cw}.querySelector('.ring').textContent.includes('A started a huddle in Yard')"), True)
+        await b.shot("b_huddle_ringing.png")
+        await b.js(f"{cw}.querySelector('.ring button[data-v=join]').click()")
+        check("B joins from the ring: in A's huddle, with A; the ring gone", await b.until(
+            f"!!v.inHuddle && v.inHuddle.group === 'Yard' && v.roomVoice.members.length === 2 && {cw}.querySelector('.ring').children.length === 0"), True)
+        check("A's huddle has B", await a.until("v.roomVoice && v.roomVoice.members.length === 2"), True)
+        ka, kb = await a.js("v.key"), await b.js("v.key")
+        check("each hears the other in it, microphones off (a huddle runs them, as a call does)", (await a.js("v.mic"), await b.js("v.mic"),
+              await a.until("(s => !!s && s.frames > 50 && s.level > 0.005)(v._voices.get(%s))" % json.dumps("room:" + kb)),
+              await b.until("(s => !!s && s.frames > 50 && s.level > 0.005)(v._voices.get(%s))" % json.dumps("room:" + ka))), (False, False, True, True))
+        await a.shot("a_huddle_on.png")
+        await a.js(f"{cw}.querySelector('.voice button[data-v=leave]').click()")
+        check("A ends it from its window: both out, the huddle gone, microphones off", (await a.until("!v.roomVoice && !v.inHuddle && v.huddles.length === 0 && !v._mic"),
+              await b.until(f"!v.roomVoice && !v.inHuddle && v.huddles.length === 0 && !v._mic && {cw}.querySelector('.log').textContent.includes('The huddle in Yard is over')")), (True, True))
+        await b.js("v.leaveGroup('Yard')")   # (as it was: B joins Yard again below)
+        await b.until("!v.groups.some(g => g.name === 'Yard')")
+        await a.js("v._emit('chat_box', { scope: 'say' })")
+        await b.js("v._emit('chat_box', { scope: 'say' })")
+        await a.call("Input.dispatchKeyEvent", type="keyDown", code="Escape", key="Escape", windowsVirtualKeyCode=27)
+        await a.call("Input.dispatchKeyEvent", type="keyUp", code="Escape", key="Escape", windowsVirtualKeyCode=27)
+        await b.call("Input.dispatchKeyEvent", type="keyDown", code="Escape", key="Escape", windowsVirtualKeyCode=27)
+        await b.call("Input.dispatchKeyEvent", type="keyUp", code="Escape", key="Escape", windowsVirtualKeyCode=27)
 
         engine_port = free_ports(1)[0] if os.environ.get("ENGINE", "1") != "0" else 0
         print("\nthe room and the person apart (engine/SPEC.md 3, 4, 7): C's room %s, C's person on a page of its own" % ("in the engine" if engine_port else "on a page of its own"))

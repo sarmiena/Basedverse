@@ -13,7 +13,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "3.4.3", PROTO = "basedverse-visit-local/2";
+  const VERSION = "3.5.0", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -82,6 +82,10 @@
   const ROUTE_CALL = 1, ROUTE_VOICE = 2;   // how a voice came (to the page: the frame's first timestamp byte): in person (0), a call, a room voice
   // A phone (SPEC 8.8) rings this long, unanswered, then stops.
   const CALL_RING_MS = 30000;
+  const TALK_RING_MS = 60000;     // 3.5: a knock to talk rings this long (the lobby's knocks wait 60 s)
+  const TALK_CONNECT_MS = 20000;  // and, answered, its voice visit has this long to come up
+  const HUDDLE_FRESH_S = 60;      // a huddle started this lately rings for those it reaches (older: listed, quietly)
+  const HUDDLE_ASK_MS = 60000;    // and asks them in (the chat window's ring) this long
   // Chat (SPEC 8.9): a line is at most CHAT_LEN characters, at most CHATS of them every CHAT_WINDOW ms (as visit-client
   // takes them), and shows over its speaker's head a while, the longer the longer it is.
   const CHAT_LEN = 200, CHATS = 5, CHAT_WINDOW = 10000, chatShows = text => Math.min(12000, 4000 + 70 * text.length);
@@ -808,7 +812,11 @@
       this._nearBy = new Map();   // and in another's room, as its owner's says: channel -> [{ key, name, distance, id, phone }]
       this._whereTold = { sig: "", at: 0 };   // where everyone in your room is, as last told to your visit-client
       this._voiceRoom = null;     // the room your user is in, as voice last saw it
-      this._calls = new Map();    // their key -> a call: { key, name, channel, state, timer }
+      this._calls = new Map();    // their key -> a call: { key, name, channel, state, timer } (3.5, a voice one: voice, to, knock, visit)
+      this._talks = new Map();    // 3.5: voice visits up, by channel: { id, channel, peer, huddle }
+      this._talkCancel = new Set();   // 3.5: knocks to talk given up before the lobby named them (the office knocked on)
+      this.huddles = [];          // 3.5: huddles going on in your worlds: [{ group, from: { id, name, key }, mine, at }]
+      this.lobbyVoice = false;    // 3.5: the lobby carries voice (talk, huddles)
       this._phoneOn = new Set();  // channels whose other office's room has a phone
       this._phone = false;        // this room has one
       this._mic = null;
@@ -902,6 +910,10 @@
       this.status = m.status; this.maxVisitors = m.max_visitors;
       this.key = typeof m.key === "string" ? m.key : null;
       this.lobbyChat = m.lobby_chat === true;
+      this.lobbyVoice = m.lobby_voice === true;
+      this.huddles = (Array.isArray(m.huddles) ? m.huddles : []).map(h => this._huddleFrom(h)).filter(Boolean);
+      this._talks.clear();
+      for (const c of [...this._calls.values()]) if (c.voice) { clearTimeout(c.timer); this._calls.delete(c.key); }   // (said again: its visit, or its knock)
       this.signedIn = m.signed_in === true;
       this.lobbyInfo = lobbyInfoFrom(m.lobby_info);
       this.groups = (Array.isArray(m.groups) ? m.groups : []).map(groupFrom).filter(Boolean);
@@ -930,7 +942,7 @@
       this.knocks = []; this.knocking = [];
       this._avatarsFrom(m.avatars);
       this._phoneOn.clear();
-      for (const v of m.visits || []) this._started(v);
+      for (const v of m.visits || []) if (v.voice) this._talkStarted(v); else this._started(v);
       if (this._phone) this._send({ type: "phone", on: true });   // a visit-client that came back: this room's phone again
       if (!this._mic && !this._micAsked) {   // the microphone on last time, its permission given: on again
         this._micAsked = true;
@@ -950,14 +962,14 @@
     _message(m) {
       switch (m.type) {
         case "online":   // (again, after a drop): its own knocks still waiting are these
-          this.state = "online"; this.office = m.office; this.lobbyChat = m.lobby_chat === true;
+          this.state = "online"; this.office = m.office; this.lobbyChat = m.lobby_chat === true; this.lobbyVoice = m.lobby_voice === true;
           if (m.lobby_info) this.lobbyInfo = lobbyInfoFrom(m.lobby_info);
           if (Array.isArray(m.knocking)) this.knocking = m.knocking.map(k => ({ id: k.id, to: k.to, link: k.link === true }));
           this._emit("online", this.lobbyInfo);
           break;
         case "offline":   // away: this office left the lobby on purpose, and sees nobody until it joins again
           this.state = m.away ? "away" : "offline";
-          if (m.away) { this.offices = []; this.knocks = []; this.knocking = []; this.groups = []; }
+          if (m.away) { this.offices = []; this.knocks = []; this.knocking = []; this.groups = []; this.huddles = []; }
           break;
         case "signed_in":   // someone signed in on this workroom, or nobody any more: out of the lobby until someone is
           this.signedIn = m.signed_in === true;
@@ -991,16 +1003,24 @@
         case "lobby":
           this.offices = (m.offices || []).map(o => ({ id: String(o.id), name: String(o.name), status: String(o.status), sim: o.sim || {},
             maxVisitors: Number(o.max_visitors) || 0, visitors: Number(o.visitors) || 0, visiting: o.visiting || null, ready: o.ready === true,
-            key: typeof o.key === "string" ? o.key : null, links: o.links === true, whisper: o.whisper === true, about: aboutFrom(o.about) }));
+            key: typeof o.key === "string" ? o.key : null, links: o.links === true, whisper: o.whisper === true, voice: o.voice === true, about: aboutFrom(o.about) }));
           { const me = this.offices.find(o => this.office && o.id === this.office.id); if (me) { this.status = me.status; this.maxVisitors = me.maxVisitors; } }
           break;
         case "knock":
+          if (m.voice) { this._talkRing(m); break; }   // 3.5: someone wants to talk: it rings
           this.knocks = this.knocks.filter(k => k.id !== m.id).concat([{ id: m.id, from: m.from, message: m.message || "", until: Date.now() + 1000 * (m.expires_in || 60), link: m.link === true }]);
           this._emit("knock", this.knocks[this.knocks.length - 1]);
           break;
-        case "knock_cancelled": this.knocks = this.knocks.filter(k => k.id !== m.id); break;
-        case "knock_sent": this.knocking = this.knocking.concat([{ id: m.id, to: m.to, link: m.link === true }]); break;
+        case "knock_cancelled":
+          this.knocks = this.knocks.filter(k => k.id !== m.id);
+          for (const c of [...this._calls.values()]) if (c.voice && c.knock === m.id && c.state === "ringing") this._callEnd(c.key, "gave up", false);
+          break;
+        case "knock_sent":
+          if (m.voice) { this._talkSent(m); break; }
+          this.knocking = this.knocking.concat([{ id: m.id, to: m.to, link: m.link === true }]); break;
+        case "huddle": this._huddleIn(m); break;
         case "answered": {
+          if (m.voice) { this._talkAnswered(m); break; }
           const k = this.knocking.find(x => x.id === m.knock);
           this.knocking = this.knocking.filter(x => x.id !== m.knock);
           this._emit("answered", { to: k && k.to, accept: m.accept, reason: m.reason, message: m.message || "", link: m.link === true });
@@ -1074,8 +1094,8 @@
         case "enter": this._hostEnter(m); break;
         case "exit": this._hostExit(m); break;
         case "enter_refused": this._enterRefused(m); break;
-        case "visit_started": this._started(m); break;
-        case "visit_ended": this._ended(m); break;
+        case "visit_started": if (m.voice) this._talkStarted(m); else this._started(m); break;
+        case "visit_ended": if (m.voice) this._talkEnded(m); else this._ended(m); break;
         case "host_paused": case "host_resumed":
           if (this.home && this.home.channel === m.channel) this.home.paused = m.type === "host_paused";
           if (this.visiting && this._viewer && this._viewer.channel === m.channel) this.visiting.paused = m.type === "host_paused";
@@ -1104,6 +1124,10 @@
           const put = m.ref === "media_put" && this._puts.get(m.slot), a = typeof m.ref === "number" && this._asks.get(m.ref);
           if (put) { this._puts.delete(m.slot); clearTimeout(put.t); put.reject(new Error(m.message || m.code)); }
           if (a) { this._asks.delete(m.ref); a.reject(new Error(m.message || m.code)); }
+          if (m.ref === "knock") {   // 3.5: a knock to talk refused before the lobby named it (not their Visit, already talking...)
+            const c = [...this._calls.values()].find(x => x.voice && x.state === "calling" && !x.knock);
+            if (c) this._callEnd(c.key, String(m.message || m.code), false);
+          }
           this._emit("error", { code: m.code, message: m.message, ref: m.ref });
           break;
         }
@@ -1905,7 +1929,7 @@
       })().finally(() => { this._micStarting = null; });
       return this._micStarting;
     }
-    _micMaybeStop() { if (!this.mic && ![...this._calls.values()].some(c => c.state === "on")) this._micStop(); }
+    _micMaybeStop() { if (!this.mic && ![...this._calls.values()].some(c => c.state === "on") && !this.inHuddle) this._micStop(); }
     _micStop() {
       const m = this._mic;
       if (!m) return;
@@ -2005,7 +2029,7 @@
             return { key, name: n.name, distance: n.distance, speaking: n.phone ? [...this._voices.keys()].some(k => k.startsWith("relay:phone") && speaking(k)) : speaking(key) }; })
         : [...near.values()].filter(p => p.distance <= range).map(p => ({ key: p.key, name: p.name, distance: Math.round(p.distance * 10) / 10, speaking: speaking(p.key) }));
       const room = this.mic && !!r.ears && (this.voices.length > 0 || (r.kind !== "home" && !told)), calls = [...this._calls.values()].some(c => c.state === "on");
-      const rv = this.roomVoice, chan = this.mic && !!rv && !rv.joining && rv.members.some(x => x.key !== this.key);
+      const rv = this.roomVoice, chan = (this.mic || !!this.inHuddle) && !!rv && !rv.joining && rv.members.some(x => x.key !== this.key);   // (3.5: a huddle runs the microphone, as a call does)
       this._voiceTo = (room ? VOICE_ROOM : 0) | (calls ? VOICE_CALLS : 0) | (chan ? VOICE_CHANNEL : 0);
       for (const c of this._calls.values()) c.speaking = speaking("call:" + c.key);
       const heard = x => { const was = x.speaking; x.speaking = x.key !== this.key && (speaking("room:" + x.key) || speaking(x.key) || speaking("call:" + x.key)); return was !== x.speaking; };   // however you hear them
@@ -2110,7 +2134,7 @@
       d.close();
       s.level = rms(pcm); s.frames++;
       if (s.level > 0.01) s.heardAt = performance.now();
-      const c = s.callKey && this._calls.get(s.callKey), out = s.room ? s.flat : c && c.state === "on" ? (c.speaker ? (s.near ? s.gain : null) : s.phone) : s.near ? s.gain : null;
+      const c = s.callKey && this._calls.get(s.callKey), out = s.room ? s.flat : c && c.state === "on" ? (c.voice ? s.flat : c.speaker ? (s.near ? s.gain : null) : s.phone) : s.near ? s.gain : null;
       if (!out) return;
       const src = ctx.createBufferSource(), now = ctx.currentTime;
       src.buffer = buf; src.connect(out);
@@ -2126,6 +2150,8 @@
       for (const n of [s.gain, s.panner, s.phone, s.flat]) n.disconnect();
     }
     _peerOf(ch) {
+      const t = this._talks.get(ch);
+      if (t) return t.peer;
       const h = this._hosted.get(ch);
       if (h) return h.visitor;
       const w = this._viewing(ch) || this._links.get(ch);
@@ -2679,7 +2705,7 @@
     _phoneTick(now) {
       const p = this._phoneObj;
       if (!p || !p.g.parent) return;
-      const calls = [...this._calls.values()], ringing = calls.some(c => c.state === "ringing"), on = calls.find(c => c.state === "on");
+      const calls = [...this._calls.values()].filter(c => !c.voice), ringing = calls.some(c => c.state === "ringing"), on = calls.find(c => c.state === "on");   // (3.5: talk is not the phone's)
       p.handset.visible = !(on && !on.speaker);
       p.lamp.visible = !!(on && on.speaker);
       p.handset.rotation.z = ringing ? Math.sin(now / 25) * 0.12 : 0;
@@ -2688,13 +2714,13 @@
     // A call on speaker (your side): their voice from your phone, heard by everyone near it in your room (your
     // visitors too: your room passes it on), and everyone near it heard by them; you only while you are near it.
     // Off (the handset, as a call starts): only you, to your ear. The caller sees only their own links (phones).
-    speaker(key, on) { const c = this._calls.get(key); if (!c) return; c.speaker = !!on; this._send({ type: "speaker", channel: c.channel, on: c.speaker }); this._callSaid(c); }
+    speaker(key, on) { const c = this._calls.get(key); if (!c || c.voice) return; c.speaker = !!on; this._send({ type: "speaker", channel: c.channel, on: c.speaker }); this._callSaid(c); }
     get phones() {
       const seen = new Map();
       for (const ch of this._phoneOn) { const p = this._peerOf(ch); if (p && p.key && !seen.has(p.key)) seen.set(p.key, { key: p.key, name: p.name || "" }); }
       return [...seen.values()];
     }
-    get calls() { return [...this._calls.values()].map(c => ({ key: c.key, name: c.name, state: c.state, speaker: !!c.speaker, speaking: !!c.speaking })); }
+    get calls() { return [...this._calls.values()].map(c => ({ key: c.key, name: c.name, state: c.state, speaker: !!c.speaker, speaking: !!c.speaking, ...(c.voice ? { voice: true } : {}) })); }
 
     // ---------- room voice (8.7) and keeping people out (8.9) ----------
     // Into a room's voice, as a game's voice chat is: everyone in it hears everyone else in it, wherever they are, not
@@ -2730,7 +2756,7 @@
       this.roomVoice = isObj(m) && typeof m.key === "string"
         ? { key: m.key, name: String(m.name || (same ? was.name : "")), members: Array.isArray(m.members) ? membersFrom(m.members) : same ? was.members : [], joining: !Array.isArray(m.members) && (!same || was.joining) }
         : null;
-      if (!this.roomVoice) for (const k of [...this._voices.keys()]) if (k.startsWith("room:")) this._voiceDrop(k);
+      if (!this.roomVoice) { for (const k of [...this._voices.keys()]) if (k.startsWith("room:")) this._voiceDrop(k); this._micMaybeStop(); }
       this._emit("room_voice", out ? { key: null, out: { key: String(out.key || ""), name: String(out.name || ""), why: String(out.why || "") } } : this.roomVoice);
       this._changed();
     }
@@ -2748,6 +2774,14 @@
     async pickUp(key) {
       const c = this._calls.get(key);
       if (!c || c.state !== "ringing") return;
+      if (c.voice) {   // 3.5: someone who wants to talk, let in: on once the lobby has made the voice visit
+        clearTimeout(c.timer);
+        c.state = "answering";
+        c.timer = setTimeout(() => { if (this._calls.get(key) === c && c.state === "answering") this._callEnd(key, "the line did not come", false); }, TALK_CONNECT_MS);
+        this._send({ type: "answer", knock: c.knock, accept: true });
+        this._callSaid(c);
+        return this._micStart();
+      }
       c.state = "on"; clearTimeout(c.timer);
       this._send({ type: "call", channel: c.channel, act: "answer" });
       this._callSaid(c);
@@ -2759,7 +2793,12 @@
       if (!c) return;
       this._calls.delete(key); clearTimeout(c.timer);
       for (const [k, s] of [...this._voices]) if (s.callKey === key) this._voiceDrop(k);
-      if (tell) this._send({ type: "call", channel: c.channel, act: "hangup" });
+      if (tell && c.voice) {   // 3.5: declined, given up, or hung up
+        if (c.state === "ringing") this._send({ type: "answer", knock: c.knock, accept: false });
+        else if (c.state === "calling" && c.knock) this._send({ type: "knock_cancel", knock: c.knock });
+        else if (c.state === "calling") this._talkCancel.add(c.to);   // (when the lobby names it)
+        else if (c.visit) this._send({ type: "end", visit: c.visit });
+      } else if (tell) this._send({ type: "call", channel: c.channel, act: "hangup" });
       this._micMaybeStop();
       this._emit("call", { key, name: c.name, state: "ended", why });
       this._changed();
@@ -2782,6 +2821,112 @@
         this._callSaid(c);
         this._micStart().catch(e => this._emit("error", { code: "mic", message: String(e.message || e) }));
       } else if (m.act === "hangup" && c) this._callEnd(key, c.state === "calling" ? "not taken" : "hung up", false);
+    }
+
+    // ---------- talking and huddles (3.5) ----------
+    // Talk with someone, voice alone, wherever each of you is: no phone, no room, no link needed (the lobby carries the
+    // request; once answered, your visit-clients make a voice visit between you). It rings on their page, as a call
+    // does: v.calls has it, `state` "calling" here, "ringing" there (voice: true), then "on" (pickUp(key) answers;
+    // hangUp(key) declines, gives up, or ends it). `key`: theirs (an office in the lobby whose Visit takes voice).
+    // False: not possible (not online, this lobby or their Visit carries no voice, or a call with them already).
+    talk(key) {
+      this._as("user", "talk");
+      const o = this.offices.find(x => x.key === key && !(this.office && x.id === this.office.id));
+      if (!o || !o.voice || !this.lobbyVoice || this.state !== "online" || this._calls.has(key)) return false;
+      const c = { key, name: o.name, channel: null, state: "calling", timer: 0, voice: true, to: o.id, knock: null, visit: null };
+      c.timer = setTimeout(() => { if (this._calls.get(key) === c && c.state === "calling") this._callEnd(key, "no answer", true); }, TALK_RING_MS);
+      this._calls.set(key, c);
+      this._talkCancel.delete(o.id);
+      this._send({ type: "knock", to: o.id, voice: true });
+      this._callSaid(c);
+      this._micStart().catch(e => this._emit("error", { code: "mic", message: String(e.message || e) }));
+      return true;
+    }
+    // Whether you could talk with them now (talk(key) would ring): online here and there, both Visits taking voice.
+    canTalk(key) {
+      const o = this.offices.find(x => x.key === key && !(this.office && x.id === this.office.id));
+      return !!o && o.voice && this.lobbyVoice && this.state === "online";
+    }
+    // A huddle in one of your worlds: on, everyone in it who is online hears it start (it rings for them), and whoever
+    // joins (joinHuddle) is in your room's voice with you, wherever they are. Off: it ends, and they are out. One a
+    // world at a time. v.huddles: those going on in your worlds ({ group, from, mine }).
+    huddle(group, on = true) {
+      this._as("user", "huddle");
+      const g = this.groups.find(x => x.name.toLowerCase() === String(group).toLowerCase());
+      if (!g || (on && (!this.lobbyVoice || this.state !== "online"))) return false;
+      this._send({ type: "huddle", group: g.name, on: !!on });
+      if (on) this._micStart().catch(e => this._emit("error", { code: "mic", message: String(e.message || e) }));   // (it runs for the huddle, as for a call)
+      return true;
+    }
+    // Into the huddle going on in that world (someone else's): a knock to talk on its starter, let in by their
+    // visit-client; then you are in their room's voice (v.roomVoice, its key theirs). Out: joinVoice(null).
+    joinHuddle(group) {
+      this._as("user", "joinHuddle");
+      const h = this.huddles.find(x => x.group.toLowerCase() === String(group).toLowerCase() && !x.mine);
+      if (!h || !h.from.id || this.state !== "online") return false;
+      this._send({ type: "knock", to: h.from.id, voice: true, huddle: h.group });
+      this._micStart().catch(e => this._emit("error", { code: "mic", message: String(e.message || e) }));
+      return true;
+    }
+    // The huddle you are in, if any: yours, or one you joined ({ group, key, mine }).
+    get inHuddle() {
+      const rv = this.roomVoice;
+      if (!rv) return null;
+      if (rv.key === this.key) { const h = this.huddles.find(x => x.mine); return h ? { group: h.group, key: this.key, mine: true } : null; }
+      const t = [...this._talks.values()].find(x => x.huddle && x.peer && x.peer.key === rv.key);
+      return t ? { group: t.huddle, key: rv.key, mine: false } : null;
+    }
+    _huddleFrom(m) {
+      if (!isObj(m) || typeof m.group !== "string" || !isObj(m.from)) return null;
+      return { group: m.group, from: { id: String(m.from.id || ""), name: String(m.from.name || ""), key: typeof m.from.key === "string" ? m.from.key : null },
+        mine: m.mine === true, at: Date.now() - 1000 * (Number(m.since) || 0) };
+    }
+    _huddleIn(m) {
+      const h = this._huddleFrom(m);
+      if (!h) return;
+      this.huddles = this.huddles.filter(x => x.group.toLowerCase() !== h.group.toLowerCase());
+      if (m.on) this.huddles.push(h);
+      this._emit("huddle", { ...h, on: m.on === true, fresh: m.on === true && !h.mine && !(Number(m.since) > HUDDLE_FRESH_S) });
+      this._changed();
+    }
+    // Someone knocks to talk: it rings, until answered, declined, given up, or the lobby's knock times out.
+    _talkRing(m) {
+      const key = m.from && typeof m.from.key === "string" ? m.from.key : null;
+      if (!key) return;
+      const was = this._calls.get(key);
+      if (was && was.state !== "ringing") return this._send({ type: "answer", knock: m.id, accept: false });   // talking with them already
+      if (was) clearTimeout(was.timer);
+      const c = { key, name: String(m.from.name || ""), channel: null, state: "ringing", timer: 0, voice: true, knock: m.id, visit: null, message: String(m.message || "") };
+      c.timer = setTimeout(() => { if (this._calls.get(key) === c && c.state === "ringing") this._callEnd(key, "missed", false); }, 1000 * (Number(m.expires_in) || 60));
+      this._calls.set(key, c);
+      this._callSaid(c);
+    }
+    _talkSent(m) {
+      if (this._talkCancel.delete(m.to)) return this._send({ type: "knock_cancel", knock: m.id });
+      const c = [...this._calls.values()].find(x => x.voice && x.state === "calling" && x.to === m.to);
+      if (c) c.knock = m.id;
+    }
+    _talkAnswered(m) {
+      const c = [...this._calls.values()].find(x => x.voice && x.knock === m.knock);
+      if (!c || m.accept) return;   // let in: on, with the voice visit
+      this._callEnd(c.key, m.reason === "declined" ? "declined" : m.reason === "timeout" ? "no answer" : m.reason === "gone" ? "they left the lobby" : "not taken", false);
+    }
+    _talkStarted(m) {
+      const peer = isObj(m.peer) ? m.peer : {}, key = typeof peer.key === "string" ? peer.key : "";
+      this._talks.set(m.channel, { id: m.id, channel: m.channel, peer, huddle: typeof m.huddle === "string" ? m.huddle : null });
+      if (m.huddle) { this._emit("huddle", { group: m.huddle, from: { id: String(peer.id || ""), name: String(peer.name || ""), key }, joined: true }); return this._changed(); }
+      let c = this._calls.get(key);
+      if (!c) { c = { key, name: String(peer.name || ""), voice: true }; this._calls.set(key, c); }
+      clearTimeout(c.timer);
+      Object.assign(c, { channel: m.channel, state: "on", voice: true, visit: m.id, timer: 0 });
+      this._callSaid(c);
+      this._micStart().catch(e => this._emit("error", { code: "mic", message: String(e.message || e) }));
+    }
+    _talkEnded(m) {
+      const t = this._talks.get(m.channel);
+      this._talks.delete(m.channel);
+      for (const c of [...this._calls.values()]) if (c.voice && c.channel === m.channel) this._callEnd(c.key, m.reason === "gone" ? "they left the lobby" : m.reason === "link_failed" ? "the line went" : "hung up", false);
+      if (t && t.huddle) { this._emit("huddle", { group: t.huddle, from: { id: String(t.peer.id || ""), name: String(t.peer.name || ""), key: t.peer.key || null }, left: true }); this._changed(); }
     }
 
     // ---------- links (8.5) ----------
@@ -4840,7 +4985,8 @@
         note(seenText(v, name || "A friend", at));
       }, 1500));
     };
-    const onCall = e => { if (e.state === "ended" && e.why && e.why !== "hung up") note(`📞 ${e.name}: ${e.why}`); };
+    const onCall = e => { if (e.state === "ended" && e.why && e.why !== "hung up") note(`${talks.has(e.key) ? "🎧" : "📞"} ${e.name}: ${e.why}`); if (e.state === "ended") talks.delete(e.key); else if (v.calls.some(c => c.key === e.key && c.voice)) talks.add(e.key); };
+    const talks = new Set();   // (3.5: calls that were someone wanting to talk, said with 🎧)
     // Models (8.6): yours, as other rooms will read it, and how you look in the room you are in, once each.
     const modelSaid = new Set();
     const onModel = e => { if (e.problems.length && !modelSaid.has(e.what + e.problems[0])) { modelSaid.add(e.what + e.problems[0]); note(`${e.what}: ${e.problems[0]}${e.problems.length > 1 ? ` (and ${e.problems.length - 1} more: see the console)` : ""}`); } };
@@ -4863,7 +5009,7 @@
         for (const k of v.knocks) rows.push(`<div class="row knock"><b>${esc(k.from.name)}</b> ${k.link ? "wants to link" : "is knocking"}${k.message ? `: “${esc(k.message)}”` : ""}
           <div class="btns"><button class="go" data-v="in" data-k="${esc(k.id)}">${k.link ? "Link" : "Let in"}</button><button data-v="out" data-k="${esc(k.id)}">Not now</button>
           <span class="muted">${Math.max(0, Math.round((k.until - Date.now()) / 1000))}s</span></div></div>`);
-        for (const c of v.calls) if (c.state === "ringing") rows.push(`<div class="row lnk"><div>📞 <b>${esc(c.name)}</b> is calling</div><div class="btns"><button class="go" data-v="pick_up" data-key="${esc(c.key)}">Pick up</button><button data-v="hang_up" data-key="${esc(c.key)}">Not now</button></div></div>`);
+        for (const c of v.calls) if (c.state === "ringing") rows.push(`<div class="row lnk ring"><div>${c.voice ? "🎧" : "📞"} <b>${esc(c.name)}</b> ${c.voice ? "wants to talk" : "is calling"}</div><div class="btns"><button class="go" data-v="pick_up" data-key="${esc(c.key)}">${c.voice ? "Answer" : "Pick up"}</button><button data-v="hang_up" data-key="${esc(c.key)}">Not now</button></div></div>`);
         return paint(rows);
       }
       if (v.state === "away") rows.push(`<div class="row"><span class="grow muted">out of the lobby: nobody sees you or can link</span><button class="go" data-v="back">Go online</button></div>`);
@@ -4919,14 +5065,14 @@
       // Your phone (8.8): a call to make, to those linked to you whose rooms have phones.
       if (v._phone && !v.calls.length && v.phones.length) rows.push(`<div class="row lnk"><div>📞 call</div><div class="btns">${v.phones.map(p => `<button data-v="call" data-key="${esc(p.key)}" title="ring their phone">${esc(p.name)}</button>`).join("")}</div></div>`);
       // Calls (8.8): ringing, calling, on.
-      for (const c of v.calls) rows.push(`<div class="row lnk"><div>📞 ${c.state === "ringing" ? `<b>${esc(c.name)}</b> is calling` : c.state === "calling" ? `calling <b>${esc(c.name)}</b>…`
-        : `on a call with <b class="${c.speaking ? "speaking" : ""}">${esc(c.name)}</b>`}</div><div class="btns">${c.state === "ringing" ? `<button class="go" data-v="pick_up" data-key="${esc(c.key)}">Pick up</button>` : ""}${c.state === "on"
+      for (const c of v.calls) rows.push(`<div class="row lnk${c.state === "ringing" ? " ring" : ""}"><div>${c.voice ? "🎧" : "📞"} ${c.state === "ringing" ? `<b>${esc(c.name)}</b> ${c.voice ? "wants to talk" : "is calling"}` : c.state === "calling" ? `calling <b>${esc(c.name)}</b>…`
+        : c.state === "answering" ? `<b>${esc(c.name)}</b>: connecting…` : `${c.voice ? "talking with" : "on a call with"} <b class="${c.speaking ? "speaking" : ""}">${esc(c.name)}</b>`}</div><div class="btns">${c.state === "ringing" ? `<button class="go" data-v="pick_up" data-key="${esc(c.key)}">${c.voice ? "Answer" : "Pick up"}</button>` : ""}${c.state === "on" && !c.voice
           ? `<button data-v="speaker" data-key="${esc(c.key)}" class="${c.speaker ? "go" : ""}" title="${c.speaker ? "on speaker: everyone near your phone hears and is heard (click: to your ear)" : "to your ear: only you (click: on speaker, for everyone near your phone)"}">${c.speaker ? "🔊 speaker" : "📞 handset"}</button>` : ""}<button data-v="hang_up" data-key="${esc(c.key)}">${c.state === "ringing" ? "Not now" : "Hang up"}</button></div></div>`);
       // Voice (8.7): those near you in the room you are in; your microphone on or off.
       if (v.state === "online") rows.push(`<div class="row"><span class="grow">${v.voices.length ? "near you: " + v.voices.map(x => `<b class="${x.speaking ? "speaking" : ""}">${x.speaking ? "🔊 " : ""}${esc(x.name)}</b>`).join(", ") : `voice <span class="muted">· nobody near you</span>`}</span>
         <button data-v="mic" class="${v.mic ? "go" : ""}" title="${v.mic ? "those near you hear you (click: microphone off)" : "your microphone: those near you hear you, the nearer the louder (headphones are best)"}">${v.mic ? "🎙 on" : "🎙 off"}</button><button data-v="sounds" class="${v.roomSounds ? "go" : ""}" title="${v.roomSounds ? "the room's own sounds, from where they are (click: off, in this browser)" : "the room's own sounds: off (click: on)"}">${v.roomSounds ? "🔈" : "🔇"}</button></div>`);
       // The room voice you are in (8.7): whose, who is in it; Leave.
-      if (v.roomVoice) { const rv = v.roomVoice; rows.push(`<div class="row"><span class="grow">🎧 ${esc(rv.key === v.key ? "your room's" : `${rv.name}'s room's`)} voice${rv.joining ? " <span class=\"muted\">· joining…</span>"
+      if (v.roomVoice) { const rv = v.roomVoice, inH = v.inHuddle; rows.push(`<div class="row"><span class="grow">🎧 ${inH ? `${inH.mine ? "your" : esc(`${rv.name}'s`)} huddle in ${esc(inH.group)}` : esc(rv.key === v.key ? "your room's voice" : `${rv.name}'s room's voice`)}${rv.joining ? " <span class=\"muted\">· joining…</span>"
         : `: ${rv.members.map(x => `<b class="${x.speaking ? "speaking" : ""}">${x.speaking ? "🔊 " : ""}${esc(x.key === v.key ? "you" : x.name)}</b>`).join(", ")}`}</span><button data-v="voice_leave" title="out of this voice">Leave</button></div>`); }
       // Your mount (8.11), once your room gives one: which one M gets you on, and on or off.
       if (v.mounts.length) rows.push(`<div class="row"><span class="grow">${v.riding ? "riding" : "your mount"}</span><select data-v="mount" title="the one M gets you on" style="max-width: 9em">${v.mounts.map(m =>
@@ -5211,7 +5357,17 @@
 .visit-chat { position: fixed; left: var(--visit-chat-left, 16px); bottom: var(--visit-chat-bottom, 16px); z-index: 19; width: min(660px, calc(100vw - 32px)); font: 19.5px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; color: #fff; transition: opacity .8s; }
 .visit-chat.idle { pointer-events: none; }
 .visit-chat > * { transition: opacity .8s; }
-.visit-chat.idle > :not(.voice):not(.mail) { opacity: 0; }
+.visit-chat.idle > :not(.voice):not(.mail):not(.ring) { opacity: 0; }
+.visit-chat .ring { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; pointer-events: auto; }
+.visit-chat .ring:empty { display: none; }
+.visit-chat .ring .ask { width: fit-content; max-width: 100%; padding: 5px 10px; font-size: 92%; color: #fff; background: rgba(13,17,23,.94); border: 2px solid #7ee787; border-radius: 8px; animation: visit-ring 1s ease-in-out infinite; }
+.visit-chat .ring button { font: inherit; color: #c9d1d9; background: none; border: 1px solid #6e7681; border-radius: 4px; padding: 0 8px; margin-left: 8px; cursor: pointer; }
+.visit-chat .ring button.go { color: #0d1117; background: #7ee787; border-color: #7ee787; font-weight: 600; }
+@keyframes visit-ring { 0%, 100% { box-shadow: 0 0 0 0 rgba(126,231,135,.7); } 50% { box-shadow: 0 0 0 7px rgba(126,231,135,0); } }
+.visit-chat button.headset.ring { opacity: 1; animation: visit-shake .5s ease-in-out infinite; }
+@keyframes visit-shake { 0%, 100% { transform: rotate(0); } 25% { transform: rotate(-14deg); } 75% { transform: rotate(14deg); } }
+@media (prefers-reduced-motion: reduce) { .visit-chat .ring .ask, .visit-chat button.headset.ring { animation: none; } }
+.visit-chat .voice > div + div { margin-top: 2px; }
 .visit-chat .voice { margin-top: 4px; padding: 2px 8px; width: fit-content; max-width: 100%; font-size: 85%; color: #7ee787; background: rgba(0,0,0,.45); border-radius: 6px; pointer-events: auto; }
 .visit-chat .voice:empty { display: none; }
 .visit-chat .voice .muted { color: #c9d1d9; opacity: .8; }
@@ -5320,6 +5476,23 @@
     } catch (e) { /* no sound here */ }
   }
 
+  // 3.5 (#58): a phone's ring for someone who wants to talk (two bursts of a two-tone trill), a huddle's rising chime.
+  // Not silenced by 🔕: it asks for an answer, as a phone does.
+  function ringSound(kind) {
+    try {
+      const ctx = chatAudio || (chatAudio = new (window.AudioContext || window.webkitAudioContext)());
+      if (ctx.state === "suspended") ctx.resume();
+      const tones = kind === "talk" ? [0, 0.4].flatMap(b => Array.from({ length: 8 }, (_, i) => [b + i * 0.045, i % 2 ? 480 : 620, 0.045]))
+        : [[0, 523, 0.16], [0.14, 659, 0.16], [0.28, 784, 0.3]];
+      for (const [t, f, d] of tones) {
+        const o = ctx.createOscillator(), g = ctx.createGain(), at = ctx.currentTime + t;
+        o.type = kind === "talk" ? "square" : "sine"; o.frequency.value = f;
+        g.gain.setValueAtTime(0.0001, at); g.gain.exponentialRampToValueAtTime(kind === "talk" ? 0.035 : 0.09, at + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, at + d);
+        o.connect(g).connect(ctx.destination); o.start(at); o.stop(at + d + 0.02);
+      }
+    } catch (e) { /* no sound here */ }
+  }
+
   // 3.3 (#48): Visit's own card for your user's target (Visit.panel's; card: false, none: your world draws its own), top
   // middle: its name; a figure's title, line and actions (the room's interaction types: each runs by the room's own
   // rules); Say (a line aloud, meant for it) and Whisper (a figure: to it alone; a person: through the lobby); a person's
@@ -5379,11 +5552,11 @@
     const root = document.createElement("div");
     root.className = "visit-chat";
     root.dataset.scope = "say";
-    root.innerHTML = `<div class="shared"></div><div class="mailbox"></div><div class="log" aria-live="polite"></div><div class="names"></div><div class="voice"></div><button type="button" class="mail"></button><div class="attach"></div><form><select title="where your line goes"></select><input maxlength="${CHAT_LEN}" autocomplete="off" spellcheck="false"><button type="button" class="rec" title="a voice message (click again: done; at most a minute)">🎙</button><button type="button" class="gallery" title="pictures, voice messages and links shared here">🖼</button><button type="button" class="headset">🎧</button><button type="button" class="sound"></button></form>`;
+    root.innerHTML = `<div class="shared"></div><div class="mailbox"></div><div class="log" aria-live="polite"></div><div class="names"></div><div class="ring"></div><div class="voice"></div><button type="button" class="mail"></button><div class="attach"></div><form><select title="where your line goes"></select><input maxlength="${CHAT_LEN}" autocomplete="off" spellcheck="false"><button type="button" class="rec" title="a voice message (click again: done; at most a minute)">🎙</button><button type="button" class="gallery" title="pictures, voice messages and links shared here">🖼</button><button type="button" class="headset">🎧</button><button type="button" class="sound"></button></form>`;
     element.appendChild(root);
     const shared = root.querySelector(".shared"), attach = root.querySelector(".attach"), gallery = root.querySelector("button.gallery");
     const mailbox = root.querySelector(".mailbox"), mail = root.querySelector("button.mail");
-    const log = root.querySelector(".log"), names = root.querySelector(".names"), voice = root.querySelector(".voice"), headset = root.querySelector("button.headset"), form = root.querySelector("form"), pick = form.querySelector("select"), input = form.querySelector("input"), bell = form.querySelector("button.sound"), recBtn = form.querySelector("button.rec");
+    const log = root.querySelector(".log"), names = root.querySelector(".names"), voice = root.querySelector(".voice"), ring = root.querySelector(".ring"), headset = root.querySelector("button.headset"), form = root.querySelector("form"), pick = form.querySelector("select"), input = form.querySelector("input"), bell = form.querySelector("button.sound"), recBtn = form.querySelector("button.rec");
     // A sound with each line that comes, unless this browser was told not to (the 🔔 by the box).
     let quiet = !sound;
     try { if (localStorage.getItem("visit:chat-quiet") === "1") quiet = true; } catch (e) { /* not kept */ }
@@ -5674,7 +5847,7 @@
       drawPicker();
     };
     names.addEventListener("mousedown", e => { const b = e.target.closest("button[data-i]"); if (b) { e.preventDefault(); take(Number(b.dataset.i)); input.focus(); } });
-    const help = "/s say (everyone who can see you) · /w name (a whisper) · /r reply · /room (your room's chat) · /room name (a linked room's) · /1 the lobby · /g world (a world's chat; /2, /3… yours in order) · /voice (🎧) · /ignore name, /unignore name (or click a name) · @ a name: mention them";
+    const help = "/s say (everyone who can see you) · /w name (a whisper) · /r reply · /room (your room's chat) · /room name (a linked room's) · /1 the lobby · /g world (a world's chat; /2, /3… yours in order) · /voice (🎧: with whom the box talks to: a person, a world's huddle, a room) · /ignore name, /unignore name (or click a name) · @ a name: mention them";
     // Pictures for the next line (pasted, or dropped on the window: each kept by the visit-client at once, `media`
     // once kept), and a link's preview (made as the link is typed; ✕: none for it).
     let pending = [], linkCard = null, linkTimer = null;
@@ -5764,28 +5937,128 @@
       else if (b.dataset.k === "more") sharedDraw(true);
       else { sharedKind = b.dataset.k; sharedDraw(false); }
     });
-    // The room voice 🎧 joins: of the room the box talks to, else your own room's.
-    const voiceRoom = () => to.scope === "sim" && to.key ? { key: to.key, name: room(to) } : { key: v.key, name: "your room" };
+    // 🎧 follows the box (3.5, #58): a whisper's person, a voice with them alone (it rings for them); a world, its huddle
+    // (start one: it rings for everyone in it; or join the one going on); a room, its voice (as before). Say and the
+    // lobby have none: who is near you hears you (🎙).
+    const voiceAim = () => {
+      if (to.scope === "whisper") { const p = whom(to); return { kind: "talk", key: (p && p.key) || to.key || "", name: (p && p.name) || to.name || "them" }; }
+      if (to.scope === "group") { const g = v.groups.find(x => x.name.toLowerCase() === String(to.key || to.name).toLowerCase()); return g ? { kind: "huddle", group: g.name } : null; }
+      if (to.scope === "sim" && to.key) return { kind: "room", key: to.key, name: room(to) };
+      return null;
+    };
+    const huddleOf = g => v.huddles.find(h => h.group.toLowerCase() === String(g).toLowerCase());
+    const asks = new Map(), talked = new Set();   // huddles asking you in (a ring above the box); talks seen (their end said)
+    let starting = null;   // the world whose huddle this page just started (said as a huddle, not as your room's voice)
     const headsetSay = () => {
-      const r = voiceRoom(), on = !!v.roomVoice && v.roomVoice.key === r.key;
+      const a = voiceAim(), ringing = v.calls.some(c => c.voice && c.state === "ringing") || asks.size > 0;
+      headset.hidden = !a && !ringing;
+      headset.classList.toggle("ring", ringing);
+      let on = false, title = "";
+      if (!a) title = "someone wants to talk: 🎧 Answer above";
+      else if (a.kind === "talk") {
+        const c = v.calls.find(x => x.key === a.key);
+        on = !!c && c.state !== "ringing";
+        title = !c ? (v.canTalk(a.key) ? `talk with ${a.name}, voice alone, wherever you both are: it rings for them` : `${a.name} cannot talk now (offline, or an older Visit)`)
+          : c.state === "ringing" ? `${a.name} wants to talk (click: answer)` : c.state === "on" ? `talking with ${a.name} (click: hang up)` : `calling ${a.name}… (click: give up)`;
+      } else if (a.kind === "huddle") {
+        const h = huddleOf(a.group), inH = v.inHuddle, here = !!inH && inH.group.toLowerCase() === a.group.toLowerCase();
+        on = here;
+        title = here ? (inH.mine ? `your huddle in ${a.group} (click: end it)` : `in the huddle in ${a.group} (click: leave it)`)
+          : h && !h.mine ? `${h.from.name}'s huddle in ${a.group}: click to join` : `start a huddle in ${a.group}: it rings for everyone in it who is online`;
+      } else {
+        on = !!v.roomVoice && v.roomVoice.key === a.key;
+        title = on ? `in ${a.name}'s voice (click: leave it)` : `join ${a.name}'s voice: everyone in it hears everyone else, wherever they are`;
+      }
       headset.classList.toggle("on", on);
-      headset.title = on ? `in ${r.name}'s voice (click: leave it)` : `join ${r.name}'s voice: everyone in it hears everyone else, wherever they are`;
+      headset.title = title;
     };
     const voiceToggle = () => {
-      const r = voiceRoom();
-      if (v.roomVoice && v.roomVoice.key === r.key) return void v.joinVoice(null);
-      if (!v.joinVoice(r.key)) note(v.bannedBy.some(b => b.key === r.key && b.voice) ? `${r.name[0].toUpperCase() + r.name.slice(1)} keeps you out of its voice` : `${r.name}: you are not linked with them now`);
+      const a = voiceAim();
+      if (!a) { const c = v.calls.find(x => x.voice && x.state === "ringing"); if (c) answer(c.key); else { const h = [...asks.values()].pop(); if (h) joinAsk(h.group); } return; }
+      if (a.kind === "talk") {
+        const c = v.calls.find(x => x.key === a.key);
+        if (c && c.state === "ringing") return answer(c.key);
+        if (c) return v.hangUp(c.key);
+        if (!v.talk(a.key)) note(!v.lobbyVoice ? "This lobby carries no voice yet (an older lobby)" : `${a.name} cannot talk now: offline, or on a Visit before 3.5`);
+        return;
+      }
+      if (a.kind === "huddle") {
+        const h = huddleOf(a.group), inH = v.inHuddle;
+        if (inH && inH.group.toLowerCase() === a.group.toLowerCase()) { if (inH.mine) v.huddle(a.group, false); else v.joinVoice(null); return; }
+        if (h && !h.mine) return joinAsk(h.group);
+        starting = a.group;
+        if (!v.huddle(a.group, true)) { starting = null; note(!v.lobbyVoice ? "This lobby carries no voice yet (an older lobby)" : `No huddle in ${a.group} now`); }
+        return;
+      }
+      if (v.roomVoice && v.roomVoice.key === a.key) return void v.joinVoice(null);
+      if (!v.joinVoice(a.key)) note(v.bannedBy.some(b => b.key === a.key && b.voice) ? `${a.name[0].toUpperCase() + a.name.slice(1)} keeps you out of its voice` : `${a.name}: you are not linked with them now`);
     };
+    const answer = key => v.pickUp(key).catch(e => note(`The microphone: ${e.message || e}`));
+    // Huddles started in your worlds lately ask you in (the ring above the box) until joined, dismissed or over.
+    const joinAsk = group => { asks.delete(group.toLowerCase()); if (!v.joinHuddle(group)) note(`The huddle in ${group} is over`); voiceLine(); };
+    // What rings above the box: someone who wants to talk, a huddle asking you in. It stays until you answer.
+    const ringLine = () => {
+      for (const [k, h] of asks) if (Date.now() - h.at > HUDDLE_ASK_MS) asks.delete(k);
+      const calls = v.calls.filter(c => c.voice && c.state === "ringing");
+      const html = calls.map(c => `<div class="ask">🎧 <b>${esc(c.name)}</b> wants to talk<button type="button" class="go" data-v="answer" data-key="${esc(c.key)}">🎧 Answer</button><button type="button" data-v="decline" data-key="${esc(c.key)}">Not now</button></div>`)
+        .concat([...asks.values()].map(h => `<div class="ask">🎧 <b>${esc(h.from.name)}</b> started a huddle in <b>${esc(h.group)}</b><button type="button" class="go" data-v="join" data-g="${esc(h.group)}">🎧 Join</button><button type="button" data-v="dismiss" data-g="${esc(h.group)}">✕</button></div>`)).join("");
+      if (html !== ringDrawn) { ringDrawn = html; ring.innerHTML = html; }
+      if (html) wake();
+      ringTone(calls.length > 0 ? "talk" : asks.size > 0 ? "huddle" : null);
+    };
+    let ringDrawn = "", toneTimer = 0, toneKind = null, toneAt = 0;
+    const ringTone = kind => {   // a phone's ring while someone wants to talk (every 2 s); a huddle's, twice
+      if (kind === toneKind) return;
+      toneKind = kind; clearInterval(toneTimer); toneTimer = 0;
+      if (!kind) return;
+      const once = () => { if (kind === "huddle" && Date.now() - toneAt > 4500) { clearInterval(toneTimer); return; } ringSound(kind); };
+      toneAt = Date.now(); once();
+      toneTimer = setInterval(once, kind === "talk" ? 2000 : 2200);
+    };
+    ring.addEventListener("click", e => {
+      const b = e.target.closest("button[data-v]");
+      if (!b) return;
+      if (b.dataset.v === "answer") answer(b.dataset.key);
+      else if (b.dataset.v === "decline") v.hangUp(b.dataset.key);
+      else if (b.dataset.v === "join") joinAsk(b.dataset.g);
+      else if (b.dataset.v === "dismiss") { asks.delete(b.dataset.g.toLowerCase()); voiceLine(); }
+    });
     let voiceDrawn = "", voiceIn = null;
-    const voiceLine = () => {   // the room voice you are in: whose, who is in it (🔊: speaking), Leave
-      const rv = v.roomVoice;
-      const html = !rv ? "" : `🎧 ${esc(rv.key === v.key ? "Your room" : `${rv.name}'s room`)}: ${rv.joining ? `<span class="muted">joining…</span>`
-        : rv.members.map(x => `${x.speaking ? "🔊 " : ""}${esc(x.key === v.key ? "you" : x.name)}`).join(" · ")}${v.mic ? "" : ` <span class="muted">(your microphone is off)</span>`}<button type="button" data-v="leave" title="out of this voice">Leave</button>`;
+    const voiceLine = () => {   // what you are in: talking with someone (or calling them), a huddle, a room's voice
+      const rv = v.roomVoice, inH = v.inHuddle;
+      const who = rv && !rv.joining ? rv.members.map(x => `${x.speaking ? "🔊 " : ""}${esc(x.key === v.key ? "you" : x.name)}`).join(" · ") : `<span class="muted">joining…</span>`;
+      const mic = v.mic ? "" : ` <span class="muted">(your microphone is off)</span>`;
+      const talks = v.calls.filter(c => c.voice && c.state !== "ringing").map(c => `<div>🎧 ${c.state === "on" ? `Talking with <b>${c.speaking ? "🔊 " : ""}${esc(c.name)}</b>` : c.state === "answering" ? `<b>${esc(c.name)}</b>: connecting…` : `Calling <b>${esc(c.name)}</b>…`}<button type="button" data-v="hangup" data-key="${esc(c.key)}">${c.state === "calling" ? "Give up" : "Hang up"}</button></div>`);
+      const room = !rv ? "" : inH ? `<div>🎧 Huddle in <b>${esc(inH.group)}</b>: ${who}<button type="button" data-v="leave" title="${inH.mine ? "end it: everyone out" : "out of it"}">${inH.mine ? "End" : "Leave"}</button></div>`
+        : `<div>🎧 ${esc(rv.key === v.key ? "Your room" : `${rv.name}'s room`)}: ${who}${mic}<button type="button" data-v="leave" title="out of this voice">Leave</button></div>`;
+      const html = talks.join("") + room;
       if (html !== voiceDrawn) { voiceDrawn = html; voice.innerHTML = html; }
+      ringLine();
       headsetSay();
     };
-    voice.addEventListener("click", e => { if (e.target.closest("button[data-v=leave]")) v.joinVoice(null); });
+    voice.addEventListener("click", e => {
+      const b = e.target.closest("button[data-v]");
+      if (!b) return;
+      if (b.dataset.v === "hangup") v.hangUp(b.dataset.key);
+      else if (b.dataset.v === "leave") { const inH = v.inHuddle; if (inH && inH.mine) v.huddle(inH.group, false); else v.joinVoice(null); }
+    });
     headset.addEventListener("click", () => { voiceToggle(); input.focus(); });
+    const onCall = c => {   // a talk that ended: said why, once (a phone's calls are the room's)
+      if (c.state === "ended" && !["hung up"].includes(c.why) && v.calls.every(x => x.key !== c.key)) {
+        const why = { declined: "not now, they said", "no answer": "no answer", missed: "you missed it", "gave up": "they gave up" }[c.why] || c.why;
+        if (talked.has(c.key)) note(`🎧 ${c.name}: ${why}`);
+      }
+      if (c.state === "ended") talked.delete(c.key); else if (isObj(c) && v.calls.some(x => x.key === c.key && x.voice)) talked.add(c.key);
+      voiceLine();
+    };
+    const onHuddle = h => {
+      const k = String(h.group || "").toLowerCase();
+      if (h.joined || h.left) return voiceLine();
+      if (h.on && h.mine) { if (starting && starting.toLowerCase() === k) note(`🎧 Your huddle in ${h.group}: it rang for everyone in it who is online; whoever joins hears you, and you them`); starting = null; }
+      else if (h.on && h.fresh) { asks.set(k, h); toneKind = null; note(`🎧 ${h.from.name} started a huddle in ${h.group}: 🎧 Join, by the box (or /g ${h.group} and 🎧)`); }
+      else if (!h.on) { if (asks.delete(k) || (v.inHuddle && v.inHuddle.group.toLowerCase() === k)) note(`🎧 The huddle in ${h.group} is over`); }
+      voiceLine();
+    };
     // A command at the start of the box, once a space follows it (or on Enter): where lines go from now. True: it was
     // one, and what follows it is the line.
     const command = done => {
@@ -6016,13 +6289,16 @@
     const onVoice = rv => {   // into a room voice (said once), or out of one (and why)
       const o = rv && rv.out;
       if (o) note(o.why === "kicked" ? `${o.name} took you out of their room's voice` : o.why === "banned" ? `${o.name}'s room keeps you out of its voice` : `Out of ${o.name}'s room's voice: you are no longer linked`);
-      else if (rv && !rv.joining && voiceIn !== rv.key) note(`In ${rv.key === v.key ? "your room's" : `${rv.name}'s room's`} voice: everyone in it hears everyone else${v.mic ? "" : ", and you once your microphone is on (🎙)"}`);
+      else if (rv && !rv.joining && voiceIn !== rv.key && !starting) { const inH = v.inHuddle;
+        note(inH ? `🎧 In ${inH.mine ? "your" : `${rv.name}'s`} huddle in ${inH.group}: everyone in it hears everyone else`
+          : `In ${rv.key === v.key ? "your room's" : `${rv.name}'s room's`} voice: everyone in it hears everyone else${v.mic ? "" : ", and you once your microphone is on (🎙)"}`); }
       voiceIn = rv && !rv.joining ? rv.key : rv ? voiceIn : null;
       voiceLine();
     };
     const onBanned = b => note(b.voice || b.chat ? `${b.name}'s room keeps you out of its ${b.voice && b.chat ? "voice and chat" : b.voice ? "voice" : "chat"}` : `${b.name}'s room lets you back into its voice and chat`);
     addEventListener("keydown", key);
     v.on("chat", onChat); v.on("error", onError); v.on("room_voice", onVoice); v.on("banned", onBanned); v.on("change", voiceLine); v.on("voice", voiceLine);
+    v.on("call", onCall); v.on("huddle", onHuddle);
     v.on("unseen", mailSay); v.on("held", mailSay); v.on("held_sent", onHeldSent);
     v.on("online", onOnline); v.on("signed_in", onSigned); v.on("group", onGroup); v.on("group_left", onLeft); v.on("ignored", onIgnored);
     // 3.3 (#48): the target card's Say and Whisper: the box talks there.
@@ -6031,12 +6307,13 @@
     voiceIn = v.roomVoice && !v.roomVoice.joining ? v.roomVoice.key : null;
     voiceLine();
     for (const l of v.chatLog) { add(l); heard(l); }
-    intro = note("Enter to chat · Tab where it goes · @ mention · paste a picture · 🎙 voice message · 🖼 shared · 🎧 voice · /s say · /w whisper · /r reply · /room yours, /room name · /1 lobby · /g world · click a name: whisper, ignore");
+    intro = note("Enter to chat · Tab where it goes · @ mention · paste a picture · 🎙 voice message · 🖼 shared · 🎧 talk (a person, a world's huddle, a room) · /s say · /w whisper · /r reply · /room yours, /room name · /1 lobby · /g world · click a name: whisper, ignore");
     return {
       element: root, open, close,
       release() {
         removeEventListener("keydown", key);
         v.off("chat", onChat); v.off("error", onError); v.off("room_voice", onVoice); v.off("banned", onBanned); v.off("change", voiceLine); v.off("voice", voiceLine);
+        v.off("call", onCall); v.off("huddle", onHuddle); ringTone(null);
         v.off("unseen", mailSay); v.off("held", mailSay); v.off("held_sent", onHeldSent);
         v.off("online", onOnline); v.off("signed_in", onSigned); v.off("group", onGroup); v.off("group_left", onLeft);
         recStop(false); clearInterval(lookTimer); v.attention(false);

@@ -10,6 +10,38 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v3.5.0 — 2026-11-01 — 🎧 follows the chat box: talk with someone, or a world's huddle, ringing like a phone (#58)
+
+**The lobby is deployed again** for any of it (an older lobby carries no voice knocks: Visit then offers none).
+Nothing in the protocols changes name; an office before 3.5 is never rung.
+
+- **🎧 follows the box** ([visit/SPEC.md](visit/SPEC.md) 8.7; [#58](https://github.com/sarmiena/Basedverse/issues/58)).
+  The chat window's 🎧 talks with whoever its box talks to. On a whisper (`/w name`): **talk with that person**,
+  voice alone, wherever each of you is, with no link between your rooms needed. On a world (`/g world`): **its huddle**,
+  started (it rings for everyone in that world who is online) or joined. On a room (`/room`, `/room name`): its voice,
+  as before. On Say and the lobby, none: who is near you hears you (🎙). `/voice` does what 🎧 does.
+- **It rings, and cannot be missed.** Someone who wants to talk, or a huddle just started, rings above the box (a
+  line that pulses, a phone's ring, the 🎧 shaking) until you answer, say not now, or it stops (60 s); the panel shows
+  it too. Nobody hears you until you answer. Someone you ignore, or keep out of your room's voice, never rings.
+- **Talking is a call with no phone** (8.7, 8.8): `v.talk(key)` knocks to talk through the lobby; answered, the two
+  visit-clients make a **voice visit**: a link with no scene, a call from its first moment, heard clear (not as a
+  telephone), one way a person (in person first). Either side ends it (`v.hangUp`). It is in `v.calls`, with
+  `voice: true`, so a page that lists calls lists it. A visit-client takes a voice visit only if its page asked for it
+  or let it in (with the key it let in): a lobby cannot make one up.
+- **A huddle is its starter's room's voice** (8.7): `v.huddle(group, true)` starts one in a world (one a world at a
+  time), and the lobby tells its members (`huddle`). `v.joinHuddle(group)` knocks to talk on its starter with the
+  world, let in by their visit-client itself, and puts you in that voice. It ends when its starter ends it, leaves the
+  world, or leaves the lobby. A huddle runs your microphone, as a call does.
+- New on the page: `v.talk`, `v.canTalk`, `v.huddle`, `v.joinHuddle`, `v.huddles`, `v.inHuddle`, the `huddle` event; the
+  `call` event and `v.calls` say `voice`. On the wire: page `knock` `voice`/`huddle`, `knock_cancel`, `huddle`; lobby
+  `hello`/`welcome`/`knock`/`answered`/`visit` `voice`, `knock_cancel`, `group_huddle`, `huddle` (5.2, 5.3, 6.2, 6.3, 6.4).
+
+**What an integration does:** upgrade (`VISIT_VERSION=v3.5.0`); the lobby's operator deploys it. With Visit.panel
+and its chat window, nothing more. A room that draws its own chat: point its own 🎧 at `v.talk(key)` for a person and
+`v.huddle(group)` / `v.joinHuddle(group)` for a world, and show a call in `v.calls` with `voice` and `state:
+"ringing"` as someone who wants to talk (`v.pickUp(key)` answers). A room that played every call through its phone:
+a voice call is not the phone's (`voice: true`).
+
 ## v3.4.3 — 2026-11-01 — security fixes: calls, the panel, pictures, the lobby's broadcasts
 
 **Every workroom upgrades**, and the lobby is deployed again. Nothing in the protocols changes name.

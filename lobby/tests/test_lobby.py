@@ -627,6 +627,124 @@ async def t_whisper(L):
         await c_.send(type="bye")
 
 
+async def t_voice(L):
+    """3.5: a knock to talk (voice alone): rung on a door that takes voice, however busy or full; answered, a voice
+    visit, counted toward neither visitors nor watchers; to an office before 3.5, refused (it would take it for a
+    knock to visit)."""
+    a, b = await join(L, "V A", proto=P4, voice=True), await join(L, "V B", proto=P4, voice=True)
+    old = await join(L, "V Old", proto=P4)
+    check("the welcome says the lobby carries voice", a.welcome.get("voice"), True)
+    lob = await a.last_lobby()
+    check("the lobby says who takes voice", (office(lob, "V B").get("voice"), office(lob, "V Old").get("voice")), (True, None))
+    await a.send(type="knock", to=old.id, voice=True)
+    e = await a.expect("error")
+    check("to an office before 3.5: not_supported, by name", (e["code"], e.get("ref"), "V Old" in e["message"]), ("not_supported", "knock", True))
+    check("and it heard nothing", [m["type"] for m in await old.quiet() if m["type"] != "lobby"], [])
+    await old.send(type="knock", to=a.id, voice=True)
+    check("from one that did not say voice: refused too", (await old.expect("error"))["code"], "not_supported")
+    await b.send(type="status", status="busy")
+    await b.send(type="max_visitors", n=0)
+    await b.quiet()
+    await a.send(type="knock", to=b.id, voice=True, message="got a sec?")
+    sent = await a.expect("knock_sent")
+    k = await b.expect("knock")
+    check("busy and full: rung all the same, saying voice both ways, with the knocker's key",
+          (sent.get("voice"), k.get("voice"), k.get("watch"), k.get("link"), k["from"]["key"], k["message"]), (True, True, None, None, a.key, "got a sec?"))
+    await b.send(type="knock", to=a.id, voice=True)
+    check("the other way while it rings: knock_pending", (await b.expect("error"))["code"], "knock_pending")
+    await b.send(type="answer", knock=k["id"], accept=True)
+    ans = await a.expect("answered")
+    va, vb = await a.expect("visit"), await b.expect("visit")
+    check("answered: a voice visit, both told, the door its host",
+          (ans["accept"], ans.get("voice"), va.get("voice"), vb.get("voice"), va.get("watch"), va["role"], vb["role"], va["peer_link"]["endpoint"]),
+          (True, True, True, True, None, "visitor", "host", b.key))
+    st = {o["id"]: o for o in (await L.state())["offices"]}
+    check("counted as neither a visitor nor a watcher, and moving nobody",
+          (st[b.id]["hosting"], st[b.id]["watched"], st[a.id]["visiting"], st[a.id]["talking"], st[b.id]["talking"]), (0, 0, None, 1, 1))
+    await b.send(type="knock", to=a.id, voice=True)
+    check("talking already, either way: already_talking", (await b.expect("error"))["code"], "already_talking")
+    await a.send(type="end", visit=va["id"])
+    e1, e2 = await a.expect("visit_ended"), await b.expect("visit_ended")
+    check("hung up: ended for both", (e1["reason"], e2["reason"]), ("left", "left"))
+    await b.send(type="knock", to=a.id, voice=True)
+    await b.expect("knock_sent")
+    k = await a.expect("knock")
+    await a.send(type="answer", knock=k["id"], accept=False)
+    ans = await b.expect("answered")
+    check("declined: the caller told, saying voice", (ans["accept"], ans.get("reason"), ans.get("voice")), (False, "declined", True))
+    st = {o["id"]: o for o in (await L.state())["offices"]}
+    check("and nothing left", (st[a.id]["talking"], st[b.id]["talking"]), (0, 0))
+    for c_ in (a, b, old):
+        await c_.send(type="bye")
+
+
+async def t_huddle(L):
+    """3.5: a huddle in a world: its members online who take voice hear it start and end; one at a time in a world;
+    joining is a voice knock to its starter, saying the world."""
+    a, b, c = await join(L, "H A", proto=P4, voice=True), await join(L, "H B", proto=P4, voice=True), await join(L, "H C", proto=P4, voice=True)
+    old = await join(L, "H Old", proto=P4)
+    await a.send(type="group_create", group="Camp", open=True)
+    await group_of(a, "Camp")
+    for x in (b, old):
+        await x.send(type="group_join", group="Camp")
+        await group_of(x, "Camp")
+    for x in (a, b, c, old):
+        await x.quiet()
+    await c.send(type="group_huddle", group="Camp", on=True)
+    check("not a member: not_found", ((await c.expect("error"))["code"]), "not_found")
+    await a.send(type="group_huddle", group="camp", on=True)
+    ha, hb = await a.expect("huddle", skip=("lobby", "group")), await b.expect("huddle", skip=("lobby", "group"))
+    check("started: its members hear it, the starter too, by the world's own spelling",
+          (ha["group"], ha["on"], ha["from"]["key"], hb["group"], hb["on"], hb["from"]["id"], hb["since"]), ("Camp", True, a.key, "Camp", True, a.id, 0))
+    check("not a non-member, nor a member that takes no voice", ([m["type"] for m in await c.quiet() if m["type"] != "lobby"], [m["type"] for m in await old.quiet() if m["type"] not in ("lobby", "group")]), ([], []))
+    await b.send(type="group_huddle", group="Camp", on=True)
+    e = await b.expect("error", skip=("lobby", "group"))
+    check("one at a time in a world", (e["code"], "H A" in e["message"]), ("huddle_on", True))
+    await b.send(type="group_huddle", group="Camp", on=False)
+    check("and not another's to end", (await b.expect("error", skip=("lobby", "group")))["code"], "not_yours")
+    await c.send(type="knock", to=a.id, voice=True, huddle="Camp")
+    check("joining a huddle of a world one is not in: refused", (await c.expect("error"))["code"], "not_found")
+    await b.send(type="knock", to=c.id, voice=True, huddle="Camp")
+    check("a huddle its door did not start: not_found", (await b.expect("error"))["code"], "not_found")
+    await b.send(type="knock", to=a.id, voice=True, huddle="camp")
+    await b.expect("knock_sent")
+    k = await a.expect("knock", skip=("lobby", "group"))
+    check("joining: a voice knock on its starter, saying the world", (k.get("voice"), k.get("huddle"), k["from"]["key"]), (True, "Camp", b.key))
+    await a.send(type="answer", knock=k["id"], accept=True)
+    await b.expect("answered")
+    vb = await b.expect("visit")
+    check("let in: a voice visit saying the huddle", (vb.get("voice"), vb.get("huddle")), (True, "Camp"))
+    late = await join(L, "H Late", proto=P4, voice=True)
+    await late.send(type="group_join", group="Camp")
+    await group_of(late, "Camp")
+    await late.send(type="bye")
+    await late.quiet()
+    b2 = await join(L, "H B2", proto=P4, voice=True)
+    await b2.send(type="group_join", group="Camp")
+    await group_of(b2, "Camp")
+    await b2.send(type="bye")
+    for x in (a, b):
+        await x.quiet()
+    # One back in the lobby later hears the huddle going on, after its worlds.
+    sk = b.sk
+    await b.send(type="bye")
+    await a.quiet()
+    b, w = await hello4(L, "H B", sk=sk, voice=True)
+    got = [m for m in await b.quiet() if m["type"] in ("group", "huddle")]
+    check("back later: the huddle going on, after its world", [(m["type"], m.get("on")) for m in got], [("group", None), ("huddle", True)])
+    await a.send(type="group_leave", group="Camp")
+    hb = await b.expect("huddle", skip=("lobby", "group"))
+    check("its starter out of the world: over, for those still in it", (hb["group"], hb["on"], hb["from"]["key"]), ("Camp", False, a.key))
+    await b.send(type="group_huddle", group="Camp", on=True)
+    await b.expect("huddle", skip=("lobby", "group"))
+    await b.send(type="bye")
+    await a.quiet()
+    st = await L.state()
+    check("its starter gone from the lobby: nothing left of it", st["knocks"], 0)
+    for c_ in (a, c, old):
+        await c_.send(type="bye")
+
+
 # ---------- version 4 ----------
 async def t_v4_hello(L):
     c = Client(await connect(L.url))
@@ -1194,7 +1312,7 @@ async def main():
     T = await Lobby("--v3", "--knock-ttl", "1").start()
     tests = [(t, L) for t in (t_hello, t_hello_rules, t_knock_refusals, t_visit, t_end_and_full, t_announce, t_resume, t_resume_replays_visits, t_rename,
                                t_link_withdrawn, t_keys, t_watch, t_link, t_chat, t_whisper, t_v4_hello, t_v4_takeover_and_resume, t_browsers, t_browsers_guarded, t_browsers_confirmed, t_flood, t_v4_directory,
-                               t_v4_groups)]
+                               t_v4_groups, t_voice, t_huddle)]
     tests += [(t_resume_window_and_bye, S), (t_world_size, S), (t_knock_timeout_and_health, T)]
     try:
         for t, lob in tests:

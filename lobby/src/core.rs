@@ -215,6 +215,8 @@ const STATUSES: [&str; 2] = ["available", "busy"];
 /// Groups one office may make in an hour.
 const GROUPS_AN_HOUR: usize = 3;
 const END_REASONS: [&str; 3] = ["left", "kicked", "link_failed"];
+/// 3.5: the voice visits an office may have at once, either way (a huddle's starter carries one for each who joined).
+const MAX_TALKING: usize = 50;
 
 struct Session {
     id: String,
@@ -233,6 +235,8 @@ struct Session {
     links: bool,
     chat: bool,
     whisper: bool,
+    /// 3.5: it said it takes voice knocks and huddles.
+    voice: bool,
     about: Option<About>,
     admin: bool,
     said: VecDeque<Instant>,
@@ -240,6 +244,8 @@ struct Session {
     hosting: HashSet<String>,
     watching: HashSet<String>,
     watched: HashSet<String>,
+    /// 3.5: its voice visits, either way.
+    talking: HashSet<String>,
     knocked: VecDeque<Instant>,
     knocked_watch: VecDeque<Instant>,
     /// When it last made worlds (a few an hour at most), tried or set a password, typed a pairing code.
@@ -261,6 +267,8 @@ struct Knock {
     until: Instant,
     watch: bool,
     link: bool,
+    voice: bool,
+    huddle: Option<String>,
 }
 
 struct Visit {
@@ -270,6 +278,15 @@ struct Visit {
     ticket: String,
     watch: bool,
     link: bool,
+    /// 3.5: voice alone (no scene), and the huddle it joins, if one.
+    voice: bool,
+    huddle: Option<String>,
+}
+
+/// 3.5: a world's huddle going on: who started it (an office), and when.
+struct Huddle {
+    by: String,
+    since: Instant,
 }
 
 pub struct Core {
@@ -282,6 +299,8 @@ pub struct Core {
     by_key: HashMap<String, String>,
     resumes: HashMap<String, String>,
     knocks: HashMap<String, Knock>,
+    /// 3.5: the huddles going on, by their world's name as it is spelled.
+    huddles: HashMap<String, Huddle>,
     /// The order knocks were made in, for a resumed office's replay.
     knock_order: Vec<String>,
     visits: HashMap<String, Visit>,
@@ -362,7 +381,7 @@ impl Core {
         limits4.group_members = Some(cfg.world_size);
         Core {
             cfg, limits3, limits4, me, offices: HashMap::new(), by_name: HashMap::new(), by_key: HashMap::new(), resumes: HashMap::new(),
-            knocks: HashMap::new(), knock_order: Vec::new(), visits: HashMap::new(), visit_order: Vec::new(), bans, groups, lie: None, replying: None,
+            knocks: HashMap::new(), huddles: HashMap::new(), knock_order: Vec::new(), visits: HashMap::new(), visit_order: Vec::new(), bans, groups, lie: None, replying: None,
             passes: HashMap::new(), links, browsers: HashMap::new(), pending: HashMap::new(), pending_from: HashMap::new(), awaiting: HashMap::new(), scan_misses: HashMap::new(), hashing: 0,
             wrong: HashMap::new(), announced: None, announce_held: false,
         }
@@ -420,7 +439,7 @@ impl Core {
                 Ev::DebugState(r) => {
                     let offices: Vec<Value> = self.offices.values().map(|o| json!({ "id": o.id, "name": o.name, "key": o.key,
                         "proto": o.proto.name(), "connected": o.conn.is_some(), "visiting": o.visiting, "hosting": o.hosting.len(),
-                        "watching": o.watching.len(), "watched": o.watched.len() })).collect();
+                        "watching": o.watching.len(), "watched": o.watched.len(), "talking": o.talking.len() })).collect();
                     let by_name: serde_json::Map<String, Value> = self.offices.values().map(|o| (o.name.clone(), json!(o.id))).collect();
                     let _ = r.send(json!({ "offices": offices, "by_name": by_name, "visits": self.visits.len(), "knocks": self.knocks.len(),
                         "groups": self.groups.names(), "browsers": self.browsers.len(), "pending": self.pending.len() }));
@@ -510,7 +529,7 @@ impl Core {
             visitors: o.hosting.len(),
             // Version 4 says nobody's whereabouts to everyone (LOBBY.md 3): those they visit know.
             visiting: if p == Proto::V4 { None } else { o.visiting.as_ref().and_then(|v| self.visits.get(v)).map(|v| v.host.clone()) },
-            ready: o.link.is_some(), key: o.key.clone(), watchers: o.watched.len(), world: o.world, links: o.links, whisper: o.whisper,
+            ready: o.link.is_some(), key: o.key.clone(), watchers: o.watched.len(), world: o.world, links: o.links, whisper: o.whisper, voice: o.voice,
             about: if p == Proto::V4 { o.about.clone() } else { None },
         }).collect();
         FromLobby::Lobby { offices }
@@ -649,8 +668,8 @@ impl Core {
         let s = Session {
             id: id.clone(), proto: p, conn: Some(conn), name: name.to_string(), status: status.to_string(), sim: sim_of(m.get("sim")),
             max_visitors, resume: String::new(), link: None, key: key.clone(), world: flag("world"), links: flag("links"), chat: flag("chat"),
-            whisper: flag("whisper"), about, admin,
-            said: VecDeque::new(), visiting: None, hosting: HashSet::new(), watching: HashSet::new(), watched: HashSet::new(),
+            whisper: flag("whisper"), voice: m.get("voice") == Some(&Value::Bool(true)), about, admin,
+            said: VecDeque::new(), visiting: None, hosting: HashSet::new(), watching: HashSet::new(), watched: HashSet::new(), talking: HashSet::new(),
             knocked: VecDeque::new(), knocked_watch: VecDeque::new(), made: VecDeque::new(), passwords: VecDeque::new(), codes: VecDeque::new(),
             held: 0, holding: false, web: Vec::new(),
         };
@@ -683,7 +702,7 @@ impl Core {
         let w = FromLobby::Welcome {
             proto: o.proto.name().into(), id: o.id.clone(), name: o.name.clone(), key: if v4 { o.key.clone() } else { None },
             relays: self.cfg.relays.clone(), resume: fresh, resumed, visits, knocking, limits: self.limits(o.proto).clone(), chat: true,
-            admin: o.admin, title: if v4 { self.cfg.title.clone() } else { None }, motd: if v4 { self.cfg.motd.clone() } else { None },
+            admin: o.admin, title: if v4 { self.cfg.title.clone() } else { None }, motd: if v4 { self.cfg.motd.clone() } else { None }, voice: true,
         };
         self.tell(oid, &w);
     }
@@ -720,6 +739,7 @@ impl Core {
                 self.end_visit(&vid, "gone");
             }
         }
+        self.huddles_kept();
         self.announce();
         info!("- {} ({} online)", me.name, self.offices.len());
     }
@@ -1214,8 +1234,17 @@ impl Core {
                 }
                 None => self.error(oid, "bad_message", format!("n must be 0 to {}", self.limits(p).max_visitors), Some("max_visitors")),
             },
-            ToLobby::Knock { to, message, watch, link } => self.on_knock(oid, to, message, watch, link),
+            ToLobby::Knock { to, message, voice: true, huddle, .. } => self.on_voice_knock(oid, to, message, huddle),
+            ToLobby::Knock { to, message, watch, link, .. } => self.on_knock(oid, to, message, watch, link),
+            ToLobby::GroupHuddle { group, on } => self.on_huddle(oid, group, on),
             ToLobby::Answer { knock, accept, message } => self.on_answer(oid, knock, accept, message),
+            ToLobby::KnockCancel { knock } => {
+                let Some(kid) = knock.filter(|k| self.knocks.get(k).is_some_and(|k| k.from == oid)) else {
+                    return self.error(oid, "not_found", "no knock of yours with that id (answered, expired, or withdrawn)", Some("knock_cancel"));
+                };
+                let k = self.remove_knock(&kid).expect("there");
+                self.tell(&k.to, &FromLobby::KnockCancelled { id: kid, reason: "withdrawn".into() });
+            }
             ToLobby::End { visit, reason } => self.on_end(oid, visit, reason),
             ToLobby::Rename { name } => self.on_rename(oid, name),
             ToLobby::Chat { text } => self.on_chat(oid, text),
@@ -1359,7 +1388,7 @@ impl Core {
         knocked.push_back(now);
         let kid = format!("k{}", hex(6));
         let ttl = Duration::from_secs(l.knock_ttl);
-        self.knocks.insert(kid.clone(), Knock { id: kid.clone(), from: oid.into(), to: tid.clone(), message: msg, until: now + ttl, watch, link });
+        self.knocks.insert(kid.clone(), Knock { id: kid.clone(), from: oid.into(), to: tid.clone(), message: msg, until: now + ttl, watch, link, voice: false, huddle: None });
         self.knock_order.push(kid.clone());
         let (me, k) = (self.me.clone(), kid.clone());
         tokio::spawn(async move {
@@ -1367,7 +1396,131 @@ impl Core {
             let _ = me.send(Ev::KnockExpired(k));
         });
         self.tell(&tid, &self.knock_msg(&kid));
-        self.tell(oid, &FromLobby::KnockSent { id: kid, to: tid, watch, link });
+        self.tell(oid, &FromLobby::KnockSent { id: kid, to: tid, watch, link, voice: false });
+    }
+
+    /// 3.5: a knock to talk, voice alone: to an office that takes voice (its hello said so), however busy, full or
+    /// linked it is. Answered yes, a voice visit (counted toward neither visitors nor watchers: at most MAX_TALKING
+    /// each). `huddle`: to join the huddle the door started in that world (its visit-client lets a co-member in itself).
+    fn on_voice_knock(&mut self, oid: &str, to: Option<String>, message: Option<String>, huddle: Option<String>) {
+        let r = "knock";
+        let p = self.offices[oid].proto;
+        let msg = message.unwrap_or_default();
+        let l = self.limits(p).clone();
+        if msg.chars().count() > l.message {
+            return self.error(oid, "message_too_long", format!("message is over {} characters", l.message), Some(r));
+        }
+        let Some(tid) = to.filter(|t| self.offices.get(t).is_some_and(|o| o.proto == p)) else {
+            return self.error(oid, "not_found", "no office with that id", Some(r));
+        };
+        let huddle = match huddle {
+            None => None,
+            Some(g) => match self.groups.find(&g).filter(|g| self.huddles.get(g).is_some_and(|h| h.by == tid)) {
+                Some(g) => Some(g),
+                None => return self.error(oid, "not_found", "no huddle of theirs in that world", Some(r)),
+            },
+        };
+        let (me, t) = (&self.offices[oid], &self.offices[&tid]);
+        let refusal: Option<(&str, String)> = if tid == oid {
+            Some(("self_knock", "an office cannot knock on itself".into()))
+        } else if !t.voice || !me.voice {
+            Some(("not_supported", format!("{} takes no voice (an older Visit)", if t.voice { "yours" } else { t.name.as_str() })))
+        } else if t.link.is_none() || me.link.is_none() {
+            Some(("not_ready", format!("{} cannot be reached yet", if t.link.is_none() { t.name.as_str() } else { "you" })))
+        } else if t.talking.len() >= MAX_TALKING || me.talking.len() >= MAX_TALKING {
+            Some(("full", format!("{} talks with all it may at once", if me.talking.len() >= MAX_TALKING { "your office" } else { t.name.as_str() })))
+        } else if me.talking.iter().filter_map(|v| self.visits.get(v)).any(|v| v.host == tid || v.visitor == tid) {
+            Some(("already_talking", format!("you are talking with {} already", t.name)))
+        } else if self.knocks.values().any(|k| k.voice && ((k.from == oid && k.to == tid) || (k.from == tid && k.to == oid))) {
+            Some(("knock_pending", format!("a knock to talk with {} is still waiting", t.name)))
+        } else if huddle.as_ref().is_some_and(|g| !me.key.as_ref().is_some_and(|k| self.groups.is_member(g, k))) {
+            Some(("not_found", "you are not in that world".into()))
+        } else {
+            None
+        };
+        if let Some((code, text)) = refusal {
+            return self.error(oid, code, text, Some(r));
+        }
+        let now = Instant::now();
+        let knocked = &mut self.offices.get_mut(oid).expect("here").knocked;
+        while knocked.front().is_some_and(|t| now.duration_since(*t) > Duration::from_secs(60)) {
+            knocked.pop_front();
+        }
+        if knocked.len() >= l.knocks_per_minute {
+            return self.error(oid, "rate_limited", format!("at most {} knocks a minute", l.knocks_per_minute), Some(r));
+        }
+        knocked.push_back(now);
+        let kid = format!("k{}", hex(6));
+        let ttl = Duration::from_secs(l.knock_ttl);
+        self.knocks.insert(kid.clone(), Knock { id: kid.clone(), from: oid.into(), to: tid.clone(), message: msg, until: now + ttl, watch: false, link: false, voice: true, huddle });
+        self.knock_order.push(kid.clone());
+        let (me, k) = (self.me.clone(), kid.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(ttl).await;
+            let _ = me.send(Ev::KnockExpired(k));
+        });
+        self.tell(&tid, &self.knock_msg(&kid));
+        self.tell(oid, &FromLobby::KnockSent { id: kid, to: tid, watch: false, link: false, voice: true });
+    }
+
+    /// 3.5: a huddle in one of this office's worlds, started or over. One at a time in a world: its starter's (their
+    /// office carries it: those who join knock on it to talk). Every member online who takes voice hears.
+    fn on_huddle(&mut self, oid: &str, group: Option<String>, on: bool) {
+        let r = "group_huddle";
+        let me = self.offices[oid].key.clone().unwrap_or_default();
+        let Some(g) = group.and_then(|g| self.groups.find(&g)).filter(|g| self.offices[oid].proto == Proto::V4 && self.groups.is_member(g, &me)) else {
+            return self.error(oid, "not_found", "you are in no world of that name", Some(r));
+        };
+        if !self.offices[oid].voice {
+            return self.error(oid, "not_supported", "your office said it takes no voice", Some(r));
+        }
+        match self.huddles.get(&g) {
+            Some(h) if on && h.by != oid => {
+                let by = self.offices.get(&h.by).map(|o| o.name.clone()).unwrap_or_default();
+                return self.error(oid, "huddle_on", format!("{by}'s huddle is on in {g}: join it"), Some(r));
+            }
+            Some(h) if !on && h.by != oid => return self.error(oid, "not_yours", "that huddle is someone else's", Some(r)),
+            Some(_) if on => return,   // on already
+            None if !on => return,
+            _ => {}
+        }
+        if on {
+            self.huddles.insert(g.clone(), Huddle { by: oid.into(), since: Instant::now() });
+        } else {
+            self.huddles.remove(&g);
+        }
+        self.huddle_told(&g, oid, on, 0);
+    }
+
+    /// A world's members online who take voice hear its huddle started (`on`, `since` seconds ago) or over.
+    fn huddle_told(&self, group: &str, by: &str, on: bool, since: u64) {
+        let m = FromLobby::Huddle { group: group.into(), from: self.sayer(by), on, since };
+        for k in self.groups.member_keys(group) {
+            if let Some(id) = self.online(&k).filter(|id| self.offices[*id].voice) {
+                self.tell(id, &m);
+            }
+        }
+    }
+
+    /// 3.5: huddles whose starter is gone, or no longer in that world (or the world is gone): over.
+    fn huddles_kept(&mut self) {
+        let over: Vec<(String, String)> = self.huddles.iter().filter(|(g, h)| {
+            let key = self.offices.get(&h.by).and_then(|o| o.key.clone());
+            !key.is_some_and(|k| self.groups.find(g).is_some_and(|g| self.groups.is_member(&g, &k)))
+        }).map(|(g, h)| (g.clone(), h.by.clone())).collect();
+        for (g, by) in over {
+            self.huddles.remove(&g);
+            if self.offices.contains_key(&by) {
+                self.huddle_told(&g, &by, false, 0);
+            } else {   // its starter gone from the lobby: said by name alone
+                let m = FromLobby::Huddle { group: g.clone(), from: Sayer { id: by.clone(), name: String::new(), key: None }, on: false, since: 0 };
+                for k in self.groups.member_keys(&g) {
+                    if let Some(id) = self.online(&k).filter(|id| self.offices[*id].voice) {
+                        self.tell(id, &m);
+                    }
+                }
+            }
+        }
     }
 
     fn knock_msg(&self, kid: &str) -> FromLobby {
@@ -1380,6 +1533,7 @@ impl Core {
         FromLobby::Knock {
             id: kid.into(), from: Knocker { id: o.id.clone(), name: o.name.clone(), sim: o.sim.clone(), key }, message: k.message.clone(),
             expires_in: k.until.saturating_duration_since(Instant::now()).as_secs_f64().round() as u64, watch: k.watch, link: k.link,
+            voice: k.voice, huddle: k.huddle.clone(),
         }
     }
 
@@ -1400,6 +1554,18 @@ impl Core {
         let knocker = k.from.clone();   // a knocker that left took its knocks with it
         if !accept {
             return self.tell(&knocker, &answered(&k, false, Some("declined"), &msg));
+        }
+        if k.voice {   // 3.5: to talk
+            let (me, them) = (&self.offices[oid], &self.offices[&knocker]);
+            let talking = me.talking.iter().chain(them.talking.iter()).filter_map(|v| self.visits.get(v)).any(|v| (v.host == oid && v.visitor == knocker) || (v.host == knocker && v.visitor == oid));
+            if me.talking.len() >= MAX_TALKING || them.talking.len() >= MAX_TALKING || talking {
+                return self.tell(&knocker, &answered(&k, false, Some("full"), &msg));
+            }
+            if me.link.is_none() || them.link.is_none() {
+                return self.tell(&knocker, &answered(&k, false, Some("not_ready"), &msg));
+            }
+            self.tell(&knocker, &answered(&k, true, None, &msg));
+            return self.start_voice(oid, &knocker, k.huddle);
         }
         let seen = k.watch || k.link;
         let (me, them) = (&self.offices[oid], &self.offices[&knocker]);
@@ -1432,7 +1598,7 @@ impl Core {
             }
         }
         let vid = format!("v{}", hex(6));
-        self.visits.insert(vid.clone(), Visit { id: vid.clone(), host: host.into(), visitor: visitor.into(), ticket: hex(16), watch, link });
+        self.visits.insert(vid.clone(), Visit { id: vid.clone(), host: host.into(), visitor: visitor.into(), ticket: hex(16), watch, link, voice: false, huddle: None });
         self.visit_order.push(vid.clone());
         if watch {
             self.offices.get_mut(host).expect("host").watched.insert(vid.clone());
@@ -1447,13 +1613,27 @@ impl Core {
         self.announce();
     }
 
+    /// 3.5: a voice visit agreed (the door its host): both get `visit` with `voice`, and the other's link. It moves
+    /// nobody, and counts toward neither visitors nor watchers.
+    fn start_voice(&mut self, host: &str, visitor: &str, huddle: Option<String>) {
+        let vid = format!("v{}", hex(6));
+        self.visits.insert(vid.clone(), Visit { id: vid.clone(), host: host.into(), visitor: visitor.into(), ticket: hex(16), watch: false, link: false, voice: true, huddle });
+        self.visit_order.push(vid.clone());
+        for o in [host, visitor] {
+            self.offices.get_mut(o).expect("here").talking.insert(vid.clone());
+        }
+        for o in [host, visitor] {
+            self.tell(o, &self.visit_msg(&vid, o));
+        }
+    }
+
     fn visit_msg(&self, vid: &str, me: &str) -> FromLobby {
         let v = &self.visits[vid];
         let (role, peer) = if v.host == me { ("host", &v.visitor) } else { ("visitor", &v.host) };
         let p = &self.offices[peer];
         FromLobby::Visit {
             id: v.id.clone(), role: role.into(), peer: Peer { id: p.id.clone(), name: p.name.clone(), sim: p.sim.clone() }, ticket: v.ticket.clone(),
-            peer_link: p.link.clone(), watch: v.watch, link: v.link,
+            peer_link: p.link.clone(), watch: v.watch, link: v.link, voice: v.voice, huddle: v.huddle.clone(),
         }
     }
 
@@ -1463,9 +1643,11 @@ impl Core {
         if let Some(h) = self.offices.get_mut(&v.host) {
             h.hosting.remove(vid);
             h.watched.remove(vid);
+            h.talking.remove(vid);
         }
         if let Some(o) = self.offices.get_mut(&v.visitor) {
             o.watching.remove(vid);
+            o.talking.remove(vid);
             if o.visiting.as_deref() == Some(vid) {
                 o.visiting = None;
             }
@@ -1608,6 +1790,9 @@ impl Core {
         let Some(k) = o.key.as_ref().filter(|_| o.proto == Proto::V4) else { return };
         for g in self.groups.of(k) {
             self.tell(oid, &self.groups.view(&g, k));
+            if let Some(h) = self.huddles.get(&g).filter(|h| o.voice && h.by != oid && self.offices.contains_key(&h.by)) {
+                self.tell(oid, &FromLobby::Huddle { group: g.clone(), from: self.sayer(&h.by), on: true, since: h.since.elapsed().as_secs() });
+            }
         }
     }
 
@@ -1774,7 +1959,7 @@ impl Core {
     }
 
     /// What a change to a group means for whom: everyone in it hears it whole; whoever left it, why; an op, a request.
-    fn group_done(&self, done: crate::groups::Done) {
+    fn group_done(&mut self, done: crate::groups::Done) {
         for (key, msg) in &done.tell {
             if let Some(id) = self.online(key) {
                 self.tell(id, msg);
@@ -1783,6 +1968,7 @@ impl Core {
         if let Some(g) = &done.changed {
             self.group_changed(g);
         }
+        self.huddles_kept();   // (3.5: a starter out of its world, or a world gone, ends its huddle)
     }
 }
 
@@ -1796,15 +1982,15 @@ fn for_web(m: &FromLobby) -> bool {
 }
 
 fn is_type(t: &str) -> bool {
-    const TYPES: [&str; 31] = ["hello", "prove", "link", "status", "max_visitors", "knock", "answer", "end", "rename", "chat", "whisper", "bye",
+    const TYPES: [&str; 33] = ["hello", "prove", "link", "status", "max_visitors", "knock", "answer", "end", "rename", "chat", "whisper", "bye",
         "about", "door", "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set", "group_owner", "group_delete",
-        "group_say", "groups", "admin", "browser_code", "browser_allow", "browsers", "browser_revoke", "browser_forget", "browser_verify"];
+        "group_say", "groups", "admin", "browser_code", "browser_allow", "browsers", "browser_revoke", "browser_forget", "browser_verify", "group_huddle", "knock_cancel"];
     TYPES.contains(&t)
 }
 
 /// A knock's answer, for its knocker: a watch's says so, and a link's.
 fn answered(k: &Knock, accept: bool, reason: Option<&str>, msg: &str) -> FromLobby {
-    FromLobby::Answered { knock: k.id.clone(), accept, message: msg.into(), reason: reason.map(str::to_string), watch: k.watch, link: k.link }
+    FromLobby::Answered { knock: k.id.clone(), accept, message: msg.into(), reason: reason.map(str::to_string), watch: k.watch, link: k.link, voice: k.voice }
 }
 
 /// A handle to a running core.
