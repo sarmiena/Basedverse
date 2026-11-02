@@ -172,6 +172,10 @@ struct Visit {
     /// may answer it) or by the other (Some(false): only this office's page may). An answer for no such ring is
     /// nothing: no call is on.
     ring: Option<bool>,
+    /// 3.5: a voice visit (voice alone: no scene, no room; a call from the start, unless it joins a huddle), and the
+    /// world whose huddle it joins (a huddle's: in its starter's room's voice instead).
+    voice: bool,
+    huddle: Option<String>,
     /// 3.4.3: pictures the other side asked this office for in the current minute (MEDIA_WANTS at most).
     wants: (Instant, u32),
     /// Lines said by the visitor in the current window (host side): at most SAYS a SAY_WINDOW.
@@ -220,6 +224,10 @@ const INPUTS_PER_SECOND: u32 = 120;
 const VOICE_RANGE: f64 = 45.0;
 const VOICE_MARGIN: f64 = 15.0;
 const NEAR_EVERY: Duration = Duration::from_secs(1);
+/// 3.5: what a voice visit carries on its control stream (link_ctl): its user's name, a ban, a room's voice.
+const VOICE_CTL: [&str; 5] = ["user", "banned", "voice_join", "voice_members", "voice_out"];
+/// 3.5: how long a knock to talk this office made is waited for (the lobby's knocks wait 60 s).
+const VOICE_ASK: Duration = Duration::from_secs(90);
 /// Chat (8.9): a line said is at most SAY_LEN characters; each office says at most SAYS lines a SAY_WINDOW (its
 /// page, and each visitor in its room, apart).
 const SAY_LEN: usize = 200;
@@ -371,6 +379,16 @@ pub struct Core {
     seen_in: HashMap<String, (Value, Value)>,
     /// Knocks on this office's door still waiting, and when each came, for a page that connects later.
     knocks: BTreeMap<String, (Value, Instant)>,
+    /// 3.5: the lobby carries voice knocks and huddles (its welcome said so). An older one would pass a voice knock on
+    /// as a knock to visit: none is sent to it.
+    lobby_voice: bool,
+    /// 3.5: knocks to talk this office's page made (the office knocked on -> when), and those it (or this visit-client,
+    /// for its huddle) answered yes (the knocker's office id -> its key, when). A voice visit the lobby agrees is a
+    /// call at once: only one this office asked for, or let in, and with the key it let in; any other is ended.
+    voice_asked: HashMap<String, Instant>,
+    voice_let: HashMap<String, (String, Instant)>,
+    /// 3.5: the world whose huddle this office's user started (its room's voice carries it).
+    huddle: Option<String>,
     visits: HashMap<String, Visit>,
     next_channel: u16,
     /// The three.js revision of the scene this office's page hosts (`host`): only then is the office in the
@@ -445,6 +463,10 @@ impl Core {
             seen_out: HashMap::new(),
             seen_in: HashMap::new(),
             knocks: BTreeMap::new(),
+            lobby_voice: false,
+            voice_asked: HashMap::new(),
+            voice_let: HashMap::new(),
+            huddle: None,
             visits: HashMap::new(),
             next_channel: 1,
             hosting: None,
@@ -798,7 +820,7 @@ impl Core {
                 id: id.to_string(), channel, role, peer: peer.clone(), local: true, up: false, cmd,
                 last_seq: 0, inputs: (Instant::now(), 0), want_key: false, host_state: None, ctl: (Instant::now(), 0), key_asked: None, resync_asked: None, resync_due: false,
                 points: (Instant::now(), 0), guest: false, watch: true, inside: false, shared_adds: false, link: false, in_world: false, avatar_asked: false, possessions_asked: Vec::new(), peer_possessions: json!([]), peer_phone: false,
-                call_on: false, speaker: false, ring: None, wants: (Instant::now(), 0), says: (Instant::now(), 0),
+                call_on: false, speaker: false, ring: None, voice: false, huddle: None, wants: (Instant::now(), 0), says: (Instant::now(), 0),
                 landscapes: false, land_sent: None, land_hash: None, near_keys: Vec::new(), peer_user: None,
             });
         }
@@ -1030,16 +1052,53 @@ impl Core {
             "knock" | "answer" => {
                 let mut m = m;
                 if t == "answer" {   // answered: no longer waiting, so not shown again to a page that reconnects
-                    if let Some(k) = m.get("knock").and_then(Value::as_str) {
-                        self.knocks.remove(k);
+                    if let Some((k, _)) = m.get("knock").and_then(Value::as_str).and_then(|k| self.knocks.remove(k)) {
+                        // 3.5: a knock to talk let in: the voice visit the lobby agrees for it is a call (visit_agreed)
+                        if k.get("voice") == Some(&json!(true)) && m.get("accept") == Some(&json!(true)) {
+                            if let (Some(id), Some(key)) = (k["from"]["id"].as_str(), k["from"]["key"].as_str()) {
+                                self.voice_let.insert(id.to_string(), (key.to_string(), Instant::now()));
+                            }
+                        }
                     }
                 } else if let Some(o) = m.as_object_mut() {
                     o.remove("watch");   // a page knocks to visit; watching is this visit-client's own (world)
+                    if o.get("voice") == Some(&json!(true)) {   // 3.5: to talk
+                        if !self.lobby_voice {
+                            return self.page_error("not_supported", "this lobby carries no voice (an older lobby)", Some("knock"));
+                        }
+                        let to = o.get("to").and_then(Value::as_str).unwrap_or("").to_string();
+                        self.voice_asked.retain(|_, at| at.elapsed() < VOICE_ASK);
+                        self.voice_asked.insert(to, Instant::now());
+                    } else {
+                        o.remove("huddle");
+                    }
                 }
                 match serde_json::from_value::<ToLobby>(m) {
                     Ok(x) => self.to_lobby(x),
                     Err(_) => self.page_error("bad_message", &format!("{t} is not as it should be (../SPEC.md 5.2)"), Some(&t)),
                 }
+            }
+            // 3.5: a huddle in one of this office's worlds (on: its user starts one, in their room's voice, which carries
+            // it; off: it ends, and so does every voice visit that joined it).
+            "huddle" => {
+                let (Some(group), Some(on)) = (m.get("group").and_then(Value::as_str).map(str::to_string), m.get("on").and_then(Value::as_bool)) else {
+                    return self.page_error("bad_message", "huddle is { group, on }", Some("huddle"));
+                };
+                if on && !self.lobby_voice {
+                    return self.page_error("not_supported", "this lobby carries no voice (an older lobby)", Some("huddle"));
+                }
+                self.to_lobby(ToLobby::GroupHuddle { group: Some(group.clone()), on });
+                if on {
+                    self.huddle = Some(group);
+                    self.voice_join(Some(self.key.clone()));
+                } else {
+                    self.huddle_over(&group);
+                }
+            }
+            // 3.5: a knock of this office's withdrawn (a call it rang, given up).
+            "knock_cancel" => {
+                let knock = m.get("knock").and_then(Value::as_str).map(str::to_string);
+                self.to_lobby(ToLobby::KnockCancel { knock });
             }
             // The world (../WORLD.md): this office watches its picked plots for its page to draw, steps into one
             // (`enter`, where in its own terms) and out again.
@@ -1150,6 +1209,13 @@ impl Core {
                     return self.page_error("bad_message", "act is \"ring\", \"answer\" or \"hangup\"", Some("call"));
                 };
                 match self.visits.values_mut().find(|v| v.channel == ch && v.up) {
+                    Some(v) if v.voice => {   // 3.5: a voice visit is its call: hung up, it ends
+                        if act != "hangup" {
+                            return self.page_error("bad_message", "a voice visit is a call already: hang up, or end it", Some("call"));
+                        }
+                        let id = v.id.clone();
+                        return self.to_lobby(end(&id, None));
+                    }
                     Some(v) if act == "answer" && v.ring != Some(false) => {   // (3.4.3: only a call they rang)
                         return self.page_error("no_call", "no call ringing from them on that visit", Some("call"));
                     }
@@ -2324,6 +2390,25 @@ impl Core {
     /// Into a room voice (8.7), out of the one this office's user was in: a linked office's room's (it says who is in
     /// it), their own (everyone in it told), or none.
     fn voice_join(&mut self, key: Option<String>) {
+        let old = self.room_voice.clone();
+        self.voice_join_now(key.clone());
+        let Some(old) = old.filter(|o| key.as_deref() != Some(o.as_str())) else { return };
+        if old == self.key {   // 3.5: out of this office's own room's voice: its huddle, if one, is over
+            if let Some(g) = self.huddle.clone() {
+                self.to_lobby(ToLobby::GroupHuddle { group: Some(g.clone()), on: false });
+                self.huddle_over(&g);
+            }
+        } else {   // out of a huddle joined: its voice visit ends
+            let joined: Vec<String> = self.visits.values()
+                .filter(|v| v.voice && v.role == Role::Visitor && v.huddle.is_some() && v.peer.get("key").and_then(Value::as_str) == Some(old.as_str()))
+                .map(|v| v.id.clone()).collect();
+            for id in joined {
+                self.to_lobby(end(&id, None));
+            }
+        }
+    }
+
+    fn voice_join_now(&mut self, key: Option<String>) {
         if self.room_voice == key {
             return;
         }
@@ -2683,6 +2768,10 @@ impl Core {
                 self.office = json!({ "id": m.get("id"), "name": m.get("name") });
                 self.online = true;
                 self.lobby_chat = m.get("chat") == Some(&json!(true));
+                self.lobby_voice = m.get("voice") == Some(&json!(true));
+                if !resumed {   // a new session: no huddle of this office's goes on
+                    self.huddle = None;
+                }
                 self.lobby_info = json!({ "title": m.get("title"), "motd": m.get("motd"), "admin": m.get("admin") == Some(&json!(true)) });
                 // Each comes again, whole, after the welcome: the ones it had count meanwhile.
                 let had = std::mem::take(&mut self.groups);
@@ -2768,6 +2857,7 @@ impl Core {
                     }
                 }
             }
+            "knock" if m.get("voice") == Some(&json!(true)) => self.voice_knock(m),
             "knock" if m.get("watch").and_then(Value::as_bool) == Some(true) => {
                 // To watch: a guest through the open door is let in; anyone else declined. The page is never asked.
                 if !self.let_guest_in(&m) {
@@ -2805,6 +2895,20 @@ impl Core {
                     self.knocks.remove(id);
                 }
                 self.to_page(m);
+            }
+            // 3.5: a huddle in one of this office's worlds, started or over: to the page (which rings for it).
+            "huddle" => {
+                let s = |x: &Value, n: usize| x.as_str().map(|s| s.chars().filter(|c| !c.is_control()).take(n).collect::<String>());
+                let from = m.get("from").cloned().unwrap_or(Value::Null);
+                let (Some(group), Some(on)) = (s(&m["group"], 24), m.get("on").and_then(Value::as_bool)) else { return };
+                let key = s(&from["key"], 100).filter(|k| state::key_ok(k));
+                if key.as_deref() == Some(self.key.as_str()) && !on {   // this office's own, ended by the lobby (out of that world)
+                    self.huddle_over(&group);
+                }
+                let since = m.get("since").and_then(Value::as_u64).unwrap_or(0);
+                self.to_page(json!({ "type": "huddle", "group": group, "on": on, "since": since,
+                                     "from": { "id": s(&from["id"], 40), "name": s(&from["name"], 24), "key": key },
+                                     "mine": key.as_deref() == Some(self.key.as_str()) }));
             }
             "visit" => self.visit_agreed(&m),
             "visit_ended" => {
@@ -2854,6 +2958,54 @@ impl Core {
         true
     }
 
+    /// 3.5: a knock to talk on this office's door. To join this office's huddle: a member of that world let in here,
+    /// the page not asked; anyone else declined. Else the page rings (nobody is let in to talk without its user), unless
+    /// its user ignores them or keeps them out of their room's voice: declined, the page never told.
+    fn voice_knock(&mut self, m: Value) {
+        let (Some(kid), Some(fid), Some(fkey)) = (
+            m.get("id").and_then(Value::as_str).map(str::to_string),
+            m["from"]["id"].as_str().map(str::to_string),
+            m["from"]["key"].as_str().filter(|k| state::key_ok(k)).map(str::to_string),
+        ) else {
+            return;
+        };
+        let refused = self.voice_banned(&fkey) || self.saved.ignores(&json!({ "key": fkey }));
+        if let Some(g) = m.get("huddle").and_then(Value::as_str) {
+            let ours = self.huddle.as_deref().is_some_and(|h| h.eq_ignore_ascii_case(g));
+            let member = self.groups.get(&g.to_ascii_lowercase()).and_then(|x| x["members"].as_array())
+                .is_some_and(|ms| ms.iter().any(|x| x["key"].as_str() == Some(fkey.as_str())));
+            let accept = ours && member && !refused;
+            if accept {
+                info!(knock = kid, from = fid, "into this office's huddle in {g}: let in");
+                self.voice_let.insert(fid, (fkey, Instant::now()));
+            }
+            return self.to_lobby(ToLobby::Answer { knock: Some(kid), accept: Some(accept), message: None });
+        }
+        if refused {
+            return self.to_lobby(ToLobby::Answer { knock: Some(kid), accept: Some(false), message: None });
+        }
+        self.knocks.insert(kid, (m.clone(), Instant::now()));
+        self.to_page(m);
+    }
+
+    /// 3.5: this office's huddle in `group` over (its user ended it, left their room's voice, or left the world): every
+    /// voice visit that joined it ends, and its user is out of their room's voice.
+    fn huddle_over(&mut self, group: &str) {
+        if !self.huddle.as_deref().is_some_and(|h| h.eq_ignore_ascii_case(group)) {
+            return;
+        }
+        self.huddle = None;
+        let joined: Vec<String> = self.visits.values()
+            .filter(|v| v.voice && v.role == Role::Host && v.huddle.as_deref().is_some_and(|h| h.eq_ignore_ascii_case(group)))
+            .map(|v| v.id.clone()).collect();
+        for id in joined {
+            self.to_lobby(end(&id, Some("kicked")));
+        }
+        if self.room_voice.as_deref() == Some(self.key.as_str()) {
+            self.voice_join(None);
+        }
+    }
+
     // ---------- visits ----------
 
     fn visit_agreed(&mut self, m: &Value) {
@@ -2881,10 +3033,25 @@ impl Core {
         }
         let watch = m.get("watch").and_then(Value::as_bool) == Some(true);
         let link = watch && m.get("link").and_then(Value::as_bool) == Some(true);
+        let voice = !watch && m.get("voice").and_then(Value::as_bool) == Some(true);
+        let huddle = m.get("huddle").and_then(Value::as_str).filter(|_| voice).map(|g| g.chars().filter(|c| !c.is_control()).take(24).collect::<String>());
+        if voice {
+            // 3.5: a voice visit is a call at once: only one this office asked for (its knock to talk), or let in (with
+            // the key it let in). Any other (a lobby that makes visits up) is ended before any voice goes.
+            let pid = peer.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+            let ok = match role {
+                Role::Host => self.voice_let.remove(&pid).is_some_and(|(k, at)| at.elapsed() < VOICE_ASK && endpoint.as_deref() == Some(k.as_str())),
+                Role::Visitor => self.voice_asked.remove(&pid).is_some_and(|at| at.elapsed() < VOICE_ASK),
+            };
+            if !ok {
+                warn!(visit = id, "a voice visit this office did not ask for, nor let in: ended");
+                return self.to_lobby(end(id, Some(if role == Role::Host { "kicked" } else { "left" })));
+            }
+        }
         if watch && role == Role::Visitor {
             self.watch_pending.remove(peer.get("id").and_then(Value::as_str).unwrap_or(""));
         }
-        if !watch && role == Role::Visitor {
+        if !watch && !voice && role == Role::Visitor {
             // A visit to another room: out of any plot this office had stepped into (in one room at a time).
             let inside: Vec<(String, u16)> = self.visits.values().filter(|v| v.role == Role::Visitor && v.watch && v.inside).map(|v| (v.id.clone(), v.channel)).collect();
             for (other, ch) in inside {
@@ -2893,7 +3060,7 @@ impl Core {
             }
         }
         let mut guest = false;
-        if role == Role::Host {
+        if role == Role::Host && !voice {
             let pid = peer.get("id").and_then(Value::as_str).unwrap_or("");
             if let Some((key, _)) = self.admitted.remove(pid) {
                 if endpoint.as_deref() != Some(key.as_str()) {
@@ -2910,12 +3077,12 @@ impl Core {
         match cmd {
             Ok(cmd) => {
                 let channel = self.channel();
-                info!(visit = id, ?role, channel, "visit agreed");
+                info!(visit = id, ?role, channel, voice, "visit agreed");
                 self.visits.insert(id.to_string(), Visit {
                     id: id.to_string(), channel, role, peer, local: false, up: false, cmd,
                     last_seq: 0, inputs: (Instant::now(), 0), want_key: false, host_state: None, ctl: (Instant::now(), 0), key_asked: None, resync_asked: None, resync_due: false,
-                    points: (Instant::now(), 0), guest, watch, inside: !watch, shared_adds: false, link, in_world: false, avatar_asked: false, possessions_asked: Vec::new(), peer_possessions: json!([]), peer_phone: false,
-                    call_on: false, speaker: false, ring: None, wants: (Instant::now(), 0), says: (Instant::now(), 0),
+                    points: (Instant::now(), 0), guest, watch, inside: !watch && !voice, shared_adds: false, link, in_world: false, avatar_asked: false, possessions_asked: Vec::new(), peer_possessions: json!([]), peer_phone: false,
+                    call_on: voice && huddle.is_none(), speaker: false, ring: None, voice, huddle, wants: (Instant::now(), 0), says: (Instant::now(), 0),
                     landscapes: false, land_sent: None, land_hash: None, near_keys: Vec::new(), peer_user: None,
                 });
             }
@@ -2955,6 +3122,9 @@ impl Core {
         }
         if v.up {
             let mut ended = json!({ "type": "visit_ended", "id": if v.local { HOME_ID } else { id }, "channel": v.channel, "reason": reason });
+            if v.voice {
+                ended["voice"] = json!(true);
+            }
             if v.local {
                 ended[if v.role == Role::Host { "owner" } else { "home" }] = json!(true);
             }
@@ -2965,6 +3135,16 @@ impl Core {
         }
         if v.role == Role::Visitor && v.inside {   // out of another's room: home, if the owner's visit is on
             self.home_enter();
+        }
+        // 3.5: a huddle joined, over (its starter ended it, or this office's user left it): out of its room's voice. On
+        // the starter's side, whoever it carried is out of its voice (their own word may have gone on the link that closed).
+        if v.voice && v.huddle.is_some() {
+            let key = v.peer.get("key").and_then(Value::as_str).unwrap_or("").to_string();
+            if v.role == Role::Visitor && self.room_voice.as_deref() == Some(key.as_str()) {
+                self.voice_join(None);
+            } else if v.role == Role::Host && self.voice_members.remove(&key).is_some() {
+                self.tell_voice_members();
+            }
         }
         // Their last link gone: where they had put this office is no longer told, nor known; nor what is between them
         // by voice (8.7) and chat (8.9).
@@ -3083,7 +3263,7 @@ impl Core {
             debug!(to = id, "a knock to watch a picked plot");
             self.watch_pending.insert(id.to_string(), now);
             self.watch_order.push_back(id.to_string());
-            let _ = self.lobby.send(LobbyOut::Msg(ToLobby::Knock { to: Some(id.to_string()), message: None, watch: true, link: false }));
+            let _ = self.lobby.send(LobbyOut::Msg(ToLobby::Knock { to: Some(id.to_string()), message: None, watch: true, link: false, voice: false, huddle: None }));
             room -= 1;
         }
     }
@@ -3144,6 +3324,24 @@ impl Core {
         let first = !v.up;
         v.up = true;
         let (role, cmd, local) = (v.role, v.cmd.clone(), v.local);
+        if v.voice {   // 3.5: voice alone: who they are talking with, by name; into the huddle's room voice, if one
+            let (key, huddle) = (v.peer.get("key").and_then(Value::as_str).unwrap_or("").to_string(), v.huddle.is_some());
+            let started = started(v);
+            if let Some(b) = self.saved.bans.iter().find(|b| b.key == key) {
+                let _ = cmd.try_send(LinkCmd::Ctl(json!({ "banned": { "voice": b.voice, "chat": b.chat } })));
+            }
+            if let Some(name) = &self.user_name {
+                let _ = cmd.try_send(LinkCmd::Ctl(json!({ "user": { "name": name } })));
+            }
+            if first && !quiet {
+                info!(visit = id, "voice link up");
+                self.to_page(started);
+            }
+            if huddle && role == Role::Visitor && self.room_voice.as_deref() != Some(key.as_str()) {
+                self.voice_join(Some(key));
+            }
+            return;
+        }
         if phone && !local {   // this room has a phone: the other side hears of it, as every link does
             let _ = cmd.try_send(LinkCmd::Ctl(json!({ "phone": true })));
         }
@@ -3205,6 +3403,10 @@ impl Core {
             return;
         }
         let ch = v.channel;
+        // 3.5: a voice visit carries who is talking (their name, a ban) and a room's voice (a huddle's): nothing of a room.
+        if v.voice && !VOICE_CTL.iter().any(|k| m.get(*k).is_some()) {
+            return debug!(visit = id, "a control message a voice visit does not carry: dropped");
+        }
         if let Some(on) = m.get("phone").and_then(Value::as_bool) {   // the other room has a phone now, or no longer
             v.peer_phone = on;
             return self.to_page(json!({ "type": "phone", "channel": ch, "on": on }));
@@ -3584,6 +3786,13 @@ impl Core {
 
 fn started(v: &Visit) -> Value {
     let mut m = json!({ "type": "visit_started", "id": v.id, "channel": v.channel, "role": if v.role == Role::Host { "host" } else { "visitor" }, "peer": v.peer });
+    if v.voice {   // 3.5: voice alone (a call, or a huddle joined): nothing of a room
+        m["voice"] = json!(true);
+        if let Some(g) = &v.huddle {
+            m["huddle"] = json!(g);
+        }
+        return m;
+    }
     if let Some(state) = &v.host_state {
         m["state"] = state.clone();
     }
@@ -3622,6 +3831,9 @@ fn started(v: &Visit) -> Value {
 /// Which page a visit is for (../../engine/SPEC.md 3.4): the owner's visit, its own side's page; the person's own
 /// visits, links and watches, the user's; a visit to this room, both (the room to serve it, the person to see it).
 fn visit_for(v: &Visit) -> Option<PageRole> {
+    if v.voice {   // 3.5: a voice visit is the person's, either way
+        return Some(PageRole::User);
+    }
     match (v.local, v.role) {
         (true, Role::Host) => Some(PageRole::Host),
         (true, Role::Visitor) => Some(PageRole::User),
@@ -3641,7 +3853,7 @@ fn page_for(v: &Value) -> PageRole {
     match v.get("type").and_then(Value::as_str).unwrap_or("") {
         "visit_started" | "visit_ended" => {
             if v.get("owner") == Some(&json!(true)) { PageRole::Host }
-            else if v.get("home") == Some(&json!(true)) || v.get("role") == Some(&json!("visitor")) { PageRole::User }
+            else if v.get("home") == Some(&json!(true)) || v.get("role") == Some(&json!("visitor")) || v.get("voice") == Some(&json!(true)) { PageRole::User }
             else { PageRole::Both }
         }
         "input" | "point" | "keyframe" | "scene_resync" | "shared_adds" | "landscapes" | "enter" | "exit" | "addressed" | "act"
@@ -3650,7 +3862,7 @@ fn page_for(v: &Value) -> PageRole {
         | "voice_near" | "room_voice" | "voice_members" | "user" | "banned" | "seen" | "layout" | "landscape"
         | "plot_forgotten" | "knock" | "knock_sent" | "knock_cancelled" | "answered" | "link_stats" | "scene"
         | "scene_lost" | "host_paused" | "host_resumed" | "enter_refused" | "body" | "call" | "phone" | "lobby_pass" | "browser_pending"
-        | "browser_confirm" | "browsers" | "ignored" | "sound" => PageRole::User,
+        | "browser_confirm" | "browsers" | "ignored" | "sound" | "huddle" => PageRole::User,
         _ => PageRole::Both,
     }
 }
@@ -3663,7 +3875,7 @@ fn role_may(role: PageRole, t: &str) -> bool {
         "unhold", "media_get", "preview", "history", "shared", "voice_join", "call", "speaker", "world", "enter", "exit", "pick", "unpick", "place", "unplace", "ignore", "unignore", "ignore_clear", "act",
         "seen", "plot_keep", "plot_load", "plot_forget", "link_where", "knock", "answer", "leave_lobby", "join_lobby", "status", "rename",
         "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set", "group_owner", "group_delete", "groups", "admin",
-        "lobby_pass", "browser_code", "browser_allow", "browsers", "browser_revoke"];
+        "lobby_pass", "browser_code", "browser_allow", "browsers", "browser_revoke", "huddle", "knock_cancel"];
     match role {
         PageRole::Both => true,
         PageRole::Host => !USER.contains(&t),

@@ -273,6 +273,11 @@ pub enum ToLobby {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         huddle: Option<String>,
     },
+    /// 3.5: a knock of this office's withdrawn (a call it rang, given up): its door hears `knock_cancelled`.
+    KnockCancel {
+        #[serde(default, deserialize_with = "id_or_none")]
+        knock: Option<String>,
+    },
     Answer {
         #[serde(default, deserialize_with = "id_or_none")]
         knock: Option<String>,

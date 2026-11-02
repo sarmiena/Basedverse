@@ -1238,6 +1238,13 @@ impl Core {
             ToLobby::Knock { to, message, watch, link, .. } => self.on_knock(oid, to, message, watch, link),
             ToLobby::GroupHuddle { group, on } => self.on_huddle(oid, group, on),
             ToLobby::Answer { knock, accept, message } => self.on_answer(oid, knock, accept, message),
+            ToLobby::KnockCancel { knock } => {
+                let Some(kid) = knock.filter(|k| self.knocks.get(k).is_some_and(|k| k.from == oid)) else {
+                    return self.error(oid, "not_found", "no knock of yours with that id (answered, expired, or withdrawn)", Some("knock_cancel"));
+                };
+                let k = self.remove_knock(&kid).expect("there");
+                self.tell(&k.to, &FromLobby::KnockCancelled { id: kid, reason: "withdrawn".into() });
+            }
             ToLobby::End { visit, reason } => self.on_end(oid, visit, reason),
             ToLobby::Rename { name } => self.on_rename(oid, name),
             ToLobby::Chat { text } => self.on_chat(oid, text),
@@ -1975,9 +1982,9 @@ fn for_web(m: &FromLobby) -> bool {
 }
 
 fn is_type(t: &str) -> bool {
-    const TYPES: [&str; 32] = ["hello", "prove", "link", "status", "max_visitors", "knock", "answer", "end", "rename", "chat", "whisper", "bye",
+    const TYPES: [&str; 33] = ["hello", "prove", "link", "status", "max_visitors", "knock", "answer", "end", "rename", "chat", "whisper", "bye",
         "about", "door", "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set", "group_owner", "group_delete",
-        "group_say", "groups", "admin", "browser_code", "browser_allow", "browsers", "browser_revoke", "browser_forget", "browser_verify", "group_huddle"];
+        "group_say", "groups", "admin", "browser_code", "browser_allow", "browsers", "browser_revoke", "browser_forget", "browser_verify", "group_huddle", "knock_cancel"];
     TYPES.contains(&t)
 }
 
