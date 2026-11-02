@@ -5,6 +5,7 @@
 //! and serves the workroom's pages (the room's, the person's: engine/SPEC.md 3) on 127.0.0.1 only, or on a
 //! container's own network, behind a token. What it keeps, it keeps in the workroom's data directory: its
 //! database is the Postgres inside visit (pg.rs, runtime.rs; ../SPEC.md 8.12), run while it runs.
+mod assets;
 mod core;
 mod db;
 mod frames;
@@ -87,6 +88,10 @@ pub struct Args {
     /// their plots to draw while they are away. Default: landscapes/ in the data directory.
     #[arg(long, env = "VISIT_CACHE_DIR")]
     pub cache_dir: Option<PathBuf>,
+    /// A directory where it keeps rooms' assets (4.1: their big pictures and meshes, each sent once, by its hash):
+    /// its own room's, and those of rooms it visits. Default: assets/ in the data directory.
+    #[arg(long, env = "VISIT_ASSET_DIR")]
+    pub asset_dir: Option<PathBuf>,
     /// The sign-in API (auth/SPEC.md 3), served by this program for the workroom's server: on when given the
     /// service token's file (at least 32 characters, new each run, readable by the user only).
     #[arg(long, env = "AUTH_TOKEN_FILE")]
@@ -398,6 +403,7 @@ pub async fn run_with(a: Args, stop: impl std::future::Future<Output = ()> + Sen
     }
     let state_file = a.state_file.clone().unwrap_or_else(|| data.join("state.json"));
     let cache = a.cache_dir.clone().unwrap_or_else(|| data.join("landscapes"));
+    let asset_dir = a.asset_dir.clone().unwrap_or_else(|| data.join("assets"));
     let relays = a.relays.as_deref().map(|r| match r {
         "none" => link::Relays::Off,
         "default" => link::Relays::Default,
@@ -529,7 +535,8 @@ pub async fn run_with(a: Args, stop: impl std::future::Future<Output = ()> + Sen
 
     println!("{}", json!({ "ready": true, "port": a.port, "version": VERSION, "proto": page::PROTO }));
     let lands = land::Lands::open(Some(cache));
-    let code = core::Core::new(a.lobby.clone(), lobby_tx, core_tx, relays, a.max_visitors, a.idle_exit, saved, fresh, Some(state_file), lands, db_tx, loaded).run(core_rx).await;
+    let assets = assets::Assets::open(Some(asset_dir));
+    let code = core::Core::new(a.lobby.clone(), lobby_tx, core_tx, relays, a.max_visitors, a.idle_exit, saved, fresh, Some(state_file), lands, assets, db_tx, loaded).run(core_rx).await;
     let _ = engine_stop.send(true);
     if let Some(t) = engine_task {
         let _ = t.await;

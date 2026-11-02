@@ -10,6 +10,31 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v4.1.0 — 2026-11-02 — a scene's big pictures and meshes by name, once (#67, follows #37)
+
+- **Heavy rooms join** ([visit/SPEC.md](visit/SPEC.md) 8.14; [#67](https://github.com/sarmiena/Basedverse/issues/67)).
+  A room's whole scene went to every page that came in as one message, each picture in it as a PNG and each mesh as
+  JSON numbers, and again on every join and reconnect: three dozen drawn signs and a textured receptionist made it
+  2 to 4 MB, past a workroom relay's 1 MiB (engine/SPEC.md 6.3), and a page joining through one was cut (4408) and
+  tried again, forever ([#37](https://github.com/sarmiena/Basedverse/issues/37)). Now a room's big pictures (at least
+  16 KiB: drawn canvases as WebP, images as they are) and plain meshes are **assets**:
+  - the room's page makes each once, in the background, and gives it to its visit-client, which keeps it;
+  - the scene names each by its SHA-256 instead of carrying it;
+  - a visitor's page draws the room at once, blanks in their place, and fetches what it lacks a piece of 256 KiB at a
+    time (two at once), from its own visit-client, which asks the room's over their link and keeps what comes.
+
+  What a page is sent when it comes in is then the scene's structure: in the browser test, 36 busy 512 px panels
+  that inline weigh 3.7 MB make a whole scene of 50 kB. A page that reconnects, a reload, a second visit: nothing
+  fetched again. A drawn picture too small to be an asset goes inline as its WebP, no longer the PNG three.js wrote.
+  A visitor on 4.0 or older gets everything inline, as before; a canvas redrawn goes inline in its edit, as before.
+- visit-client keeps assets in `--asset-dir` (`VISIT_ASSET_DIR`; default `assets/` in its data directory), the least
+  lately used let go past 1 GiB. New on the link: `assets`, `asset_want`, `asset_none`, stream 6; to and from the page:
+  `ASSET` frames (flag bits 0 and 1 together), `asset_want`, `asset_kept`, `asset_none`, `assets`, `bad_asset`.
+- The lobby is 4.0.0's (only its version): no new deploy.
+
+**What an integration does:** nothing. A room that cut its pictures and figures down to fit the relay may put them
+back. engine/INTEGRATING.md's 4408 row says what still counts.
+
 ## v4.0.1 — 2026-11-02 — a room's figures heard near them, in the room alone
 
 - **A room's figures talk as people do** ([visit/SPEC.md](visit/SPEC.md) 8.9). A line one of its figures says

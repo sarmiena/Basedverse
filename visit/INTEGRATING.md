@@ -470,6 +470,11 @@ visit.host({
   reloads), and stops looking at it 30 times a second. While you are away, the worlds that picked your room keep drawing it
   where your plot was, and walk them into its walls. Leave out what moves or changes (people, screens, signs,
   agents): those go as before. If something marked does change in itself, call `visit.landscapeChanged()`.
+- **Heavy things are fine** (4.1, SPEC 8.14; nothing to do): your room's big pictures (drawn canvases, a figure's
+  textures) and meshes (a rigged GLB's) go to each visitor once, by name, a piece at a time, and are kept: what a
+  visitor's page is sent when it comes in is your scene's structure, not its weight. A detailed receptionist and three
+  dozen drawn screens are welcome. Keep a texture's `image` a canvas, an image or an image bitmap (a `DataTexture` or
+  a compressed one still goes inline), at most 4096 px a side; a canvas you redraw goes whole with each redraw, as before.
 - **Chat**: the panel's chat window, bottom left: your user presses Enter, types a line, and Enter says it. Said
   (the default), everyone within 45 m of them has it over their head for a few seconds, and in their chat, as their
   voice carries (3.4.2: a room has everyone placed by Visit's voice: `voice_where`); `/w name`

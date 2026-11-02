@@ -1136,6 +1136,57 @@ async def main():
         await asyncio.sleep(10)   # (A's and B's lines here: at most 5 every 10 s, and the next ones count)
         await a.drain(); await b.drain(); await c.drain()
 
+        print("\nscene assets (4.1, #67): the room's page gives its big pictures and meshes once; a visitor's page fetches them by name, a piece at a time")
+        import hashlib
+        await a.drain(); await b.drain()
+
+        async def asset_piece(pg, id_):
+            while True:
+                f = await asyncio.wait_for(pg.frames.get(), 10)
+                if f[2] == 3 and f[11:75].decode() == id_:
+                    total, at = struct.unpack(">II", f[75:83])
+                    return total, at, f[83:]
+
+        async def fetch(pg, ch, id_):
+            got, n = b"", 0
+            while True:
+                await pg.send(type="asset_want", channel=ch, id=id_, at=len(got))
+                total, at, piece = await asset_piece(pg, id_)
+                if at != len(got):
+                    raise AssertionError("a piece out of order")
+                got += piece
+                n += 1
+                if len(got) >= total:
+                    return got, n
+
+        big = b"\x89PNG\r\n\x1a\n" + os.urandom(600 * 1024)
+        aid = hashlib.sha256(big).hexdigest()
+        await b.ws.send(struct.pack(">HBQ", 0, 3, 0) + big)
+        k = await b.until(lambda m: m["type"] in ("asset_kept", "error"))
+        check("B's page gives its room an asset (a picture): kept, named by its SHA-256", (k["type"], k.get("id"), k.get("size")), ("asset_kept", aid, len(big)))
+        await b.ws.send(struct.pack(">HBQ", 0, 3, 0) + b"GIF89a" + bytes(100))
+        check("a GIF is not an asset", (await b.until(lambda m: m["type"] == "error"))["code"], "bad_asset")
+        got, n = await fetch(a, va["channel"], aid)
+        check("A, in B's room, fetches it by name from its visit-client (which has it from B's): whole, in pieces of 256 KiB",
+              (got == big, n), (True, 3))
+        got, n = await fetch(a, va["channel"], aid)
+        check("and again (a page reloaded, another scene naming it): from what A's visit-client kept", (got == big, n), (True, 3))
+        other = b"\x89PNG\r\n\x1a\n" + os.urandom(40 * 1024)
+        oid = hashlib.sha256(other).hexdigest()
+        await b.drain()
+        await a.send(type="asset_want", channel=va["channel"], id=oid, at=0)
+        w = await b.until(lambda m: m["type"] == "asset_want")
+        check("one B's visit-client does not have: B's page is asked for it, by name", w["id"], oid)
+        await b.ws.send(struct.pack(">HBQ", 0, 3, 0) + other)
+        total, at, piece = await asset_piece(a, oid)
+        check("B's page gives it: A has it (one piece)", (total, at, piece == other), (len(other), 0, True))
+        none_id = hashlib.sha256(b"nobody has this").hexdigest()
+        await a.send(type="asset_want", channel=9999, id=none_id, at=0)
+        check("asked for on a channel that is no visit: none", (await a.until(lambda m: m["type"] == "asset_none"))["id"], none_id)
+        await a.send(type="asset_want", channel=va["channel"], id="../etc", at=0)
+        check("a name that is not one: refused", (await a.until(lambda m: m["type"] == "error"))["code"], "bad_message")
+        await a.drain(); await b.drain()
+
         print("\nroom sounds (3.4, #36): the room's page keeps its sounds; one played once, to everyone in it; a visitor fetches its clip from the room")
         await a.drain(); await b.drain(); await c.drain()
 
@@ -1882,6 +1933,35 @@ async def main():
         await u.send(type="point", yaw=0.1, pitch=0.2)
         pt = await h.until(lambda m: m["type"] == "point")
         check("and their clicks", (pt["channel"], round(pt["pitch"], 1)), (cha, 0.2))
+        # 4.1 (#67): the room's assets reach the person's page (through its relay) a piece at a time, as it asks.
+        import hashlib
+
+        async def piece_of(pg, id_):
+            while True:
+                f = await asyncio.wait_for(pg.frames.get(), 10)
+                if f[2] == 3 and f[11:75].decode() == id_:
+                    return struct.unpack(">II", f[75:83]) + (f[83:],)
+        pic = b"\x89PNG\r\n\x1a\n" + os.urandom(300 * 1024)
+        pid = hashlib.sha256(pic).hexdigest()
+        await h.ws.send(struct.pack(">HBQ", 0, 3, 0) + pic)
+        check("the room's page gives an asset: kept", (await h.until(lambda m: m["type"] == "asset_kept"))["id"], pid)
+        await u.send(type="asset_want", channel=chb, id=pid, at=0)
+        t0, a0, p0 = await piece_of(u, pid)
+        await u.send(type="asset_want", channel=chb, id=pid, at=len(p0))
+        t1, a1, p1 = await piece_of(u, pid)
+        check("the person's page fetches it on home's channel, a piece at a time (256 KiB, then the rest)", (t0, a0, len(p0), a1, p0 + p1 == pic), (len(pic), 0, 256 * 1024, 256 * 1024, True))
+        mesh = gzip.compress(os.urandom(30 * 1024))
+        mid = hashlib.sha256(mesh).hexdigest()
+        await u.send(type="asset_want", channel=chb, id=mid, at=0)
+        w = await h.until(lambda m: m["type"] == "asset_want")
+        check("one its visit-client lacks (a mesh): the room's page is asked for it", w["id"], mid)
+        await h.ws.send(struct.pack(">HBQ", 0, 3, 0) + mesh)
+        t, a_, p = await piece_of(u, mid)
+        check("given, it reaches the person's page", (t, a_, p == mesh), (len(mesh), 0, True))
+        await asyncio.sleep(1.1)   # (a refused frame is said once a second)
+        await u.ws.send(struct.pack(">HBQ", 0, 3, 0) + pic)
+        e = await u.expect("error")
+        check("the person's page cannot give the room's assets", (e["code"], e["ref"]), ("wrong_role", "frame"))
         await u.send(type="end", visit=vu["id"])
         e = await u.until(lambda m: m["type"] == "error")
         check("the owner's visit cannot be ended by hand", e["code"], "bad_message")

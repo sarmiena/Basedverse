@@ -13,7 +13,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "4.0.1", PROTO = "basedverse-visit-local/2";
+  const VERSION = "4.1.0", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -40,7 +40,7 @@
   const MAX_PICKS = 8;   // the most plots your world shows at once (3.3: the ones you picked; visit-client's and the lobby's limit too)
   const MAX_IGNORED = 50;   // the most your user ignores in chat (3.3: as WoW's ignore list)
   // What the host hears many times a second: none of it changes what the page shows, so none fires "change".
-  const QUIET = new Set(["input", "point", "keyframe", "link_stats", "scene", "scene_lost", "scene_resync"]);
+  const QUIET = new Set(["input", "point", "keyframe", "link_stats", "scene", "scene_lost", "scene_resync", "assets", "asset_want", "asset_kept", "asset_none"]);
   // A timer from a Worker: a page's own timers slow to once a second (or less) while its tab is in the
   // background, and a host must go on rendering for its visitors.
   function ticker(ms, fn) {
@@ -62,6 +62,12 @@
   // below (Subresource Integrity): nothing else ever runs from it, and what the host sends is only ever read as
   // data (cleanScene). The visitor walks at once, predicted here, and the host's answer corrects it.
   const KEY = 1, EDIT = 2, AVATAR = 4, AUDIO = 8, RELAY = 16, LAND = 32, POSSESSION = 64, MEDIA = 128;   // frames' flags: bit 0 a key delta; bit 1 a scene edit, bit 2 this office's avatar (page to visit-client); bit 3 voice; bit 5 this room's landscape (page to visit-client); bit 6 one of its possessions, its slot the channel (8.11); bit 7 a picture shared in chat (8.12) (SPEC 5.4)
+  // A scene's assets (SPEC 8.14, 4.1, #67): a picture or a mesh of at least ASSET_MIN bytes goes by its name (its
+  // SHA-256), once (ASSET: the frame that carries one, or a piece of one: both bits no other frame has); a page fetches
+  // those it lacks a piece at a time, ASSET_FETCHES at once, waits ASSET_WAIT for each piece, and keeps ASSET_KEEP of
+  // them. A room waits up to ASSET_FIRST for its own to be made before a visitor's first whole scene.
+  const ASSET = KEY | EDIT, ASSET_MIN = 16 << 10, ASSET_MAX = 16 << 20, ASSET_FETCHES = 2, ASSET_KEEP = 256 << 20, ASSET_WAIT = 45000, ASSET_FIRST = 4000;
+  const ASSET_ID = /^[0-9a-f]{64}$/;
   const MEDIA_MAX = 8 << 20, MEDIA_KINDS = ["image/png", "image/jpeg", "image/webp", "image/gif"];   // a picture shared (8.12): at most 8 MB, of these kinds
   const VOICE_MAX = 2 << 20, VOICE_SECS = 60, VOICE_KINDS = ["audio/webm", "audio/ogg", "audio/mp4"];   // a voice message (0.22.0): at most 2 MB, a minute, of these kinds
   // A room's own sounds (3.4, #36): clips its page names (at most SOUNDS kinds, SOUND_MAX each: WAV, MP3, Ogg, WebM or
@@ -229,9 +235,13 @@
     if (!m) return null;
     let b;
     try { b = Uint8Array.from(atob(url.slice(m[0].length, m[0].length + 87380)), c => c.charCodeAt(0)); } catch (e) { return null; }
+    return picDims(m[1], b);
+  }
+  // A picture's size from its first bytes (its kind: "png", "jpeg" or "webp"), before it is decoded; null if unsure.
+  function picDims(kind, b) {
     const u16 = i => (b[i] << 8) | b[i + 1], le = (i, n) => { let v = 0; for (let k = n - 1; k >= 0; k--) v = v * 256 + b[i + k]; return v; };
-    if (m[1] === "png") return b.length >= 24 && b[1] === 0x50 ? [u16(16) * 65536 + u16(18), u16(20) * 65536 + u16(22)] : null;
-    if (m[1] === "jpeg") {
+    if (kind === "png") return b.length >= 24 && b[1] === 0x50 ? [u16(16) * 65536 + u16(18), u16(20) * 65536 + u16(22)] : null;
+    if (kind === "jpeg") {
       for (let i = 2; i + 9 < b.length;) {
         if (b[i] !== 0xff) { i++; continue; }
         const mk = b[i + 1];
@@ -240,11 +250,139 @@
       }
       return null;
     }
-    const kind = String.fromCharCode(...b.slice(12, 16));
-    if (kind === "VP8 ") return [le(26, 2) & 0x3fff, le(28, 2) & 0x3fff];
-    if (kind === "VP8L") return [1 + (((b[22] & 0x3f) << 8) | b[21]), 1 + (((b[24] & 0xf) << 10) | (b[23] << 2) | ((b[22] & 0xc0) >> 6))];
-    if (kind === "VP8X") return [1 + le(24, 3), 1 + le(27, 3)];
+    if (kind !== "webp") return null;
+    const chunk = String.fromCharCode(...b.slice(12, 16));
+    if (chunk === "VP8 ") return [le(26, 2) & 0x3fff, le(28, 2) & 0x3fff];
+    if (chunk === "VP8L") return [1 + (((b[22] & 0x3f) << 8) | b[21]), 1 + (((b[24] & 0xf) << 10) | (b[23] << 2) | ((b[22] & 0xc0) >> 6))];
+    if (chunk === "VP8X") return [1 + le(24, 3), 1 + le(27, 3)];
     return null;
+  }
+  // What an asset's bytes are (SPEC 8.14), by their first bytes: a picture's kind, or "geometry" (gzipped JSON).
+  function assetKind(b) {
+    const at = (i, s) => b.length >= i + s.length && [...s].every((c, k) => b[i + k] === c.charCodeAt(0));
+    if (at(0, "\x89PNG")) return "png";
+    if (b.length > 2 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "jpeg";
+    if (at(0, "RIFF") && at(8, "WEBP")) return "webp";
+    if (b.length > 1 && b[0] === 0x1f && b[1] === 0x8b) return "geometry";
+    return null;
+  }
+  const hexOf = buf => Array.from(new Uint8Array(buf), x => x.toString(16).padStart(2, "0")).join("");
+  const base64 = b => { let t = ""; for (let i = 0; i < b.length; i += 0x8000) t += String.fromCharCode(...b.subarray(i, i + 0x8000)); return btoa(t); };
+  const gzipBytes = async b => new Uint8Array(await new Response(new Blob([b]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
+  // Gzipped text, unpacked, of at most `max` bytes (more: an error, read no further).
+  async function gunzipText(b, max) {
+    const r = new Blob([b]).stream().pipeThrough(new DecompressionStream("gzip")).getReader(), parts = [];
+    let n = 0;
+    for (;;) {
+      const { done, value } = await r.read();
+      if (done) break;
+      n += value.byteLength;
+      if (n > max) { r.cancel(); throw new Error("too big unpacked"); }
+      parts.push(value);
+    }
+    return new TextDecoder().decode(await new Blob(parts).arrayBuffer());
+  }
+  const isCanvas = x => (typeof HTMLCanvasElement !== "undefined" && x instanceof HTMLCanvasElement) || (typeof OffscreenCanvas !== "undefined" && x instanceof OffscreenCanvas);
+  const isImageEl = x => typeof HTMLImageElement !== "undefined" && x instanceof HTMLImageElement;
+  const isBitmap = x => typeof ImageBitmap !== "undefined" && x instanceof ImageBitmap;
+  const blobOf = (c, type, q) => c.convertToBlob ? c.convertToBlob({ type, quality: q })
+    : new Promise((ok, no) => c.toBlob(b => b ? ok(b) : no(new Error("not encoded")), type, q));
+  // A picture's bytes as a scene names it (SPEC 8.14): a canvas as WebP (as a redrawn one goes: _encode), a picture
+  // from a data URL as it is, any other drawn as three.js would write it (PNG; JPEG past 2048 a side). Null: not now
+  // (not loaded yet, or bigger than a visitor draws: those go as before).
+  async function pictureBytes(img) {
+    const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+    if (!(w > 0 && h > 0) || w > MAX_SIDE || h > MAX_SIDE || (isImageEl(img) && !img.complete)) return null;
+    if (isCanvas(img)) return new Uint8Array(await (await blobOf(img, "image/webp", 0.85)).arrayBuffer());
+    if (isImageEl(img) && /^data:image\/(png|jpeg|webp);base64,/.test(img.src)) return Uint8Array.from(atob(img.src.slice(img.src.indexOf(",") + 1)), c => c.charCodeAt(0));
+    const c = document.createElement("canvas"), big = w > 2048 || h > 2048;
+    c.width = w; c.height = h;
+    c.getContext("2d").drawImage(img, 0, 0);
+    return new Uint8Array(await (await blobOf(c, big ? "image/jpeg" : "image/png", big ? 0.9 : undefined)).arrayBuffer());
+  }
+  // A plain geometry's state: its attributes' and index's versions and sizes (a mesh changed in place is another).
+  const geoSig = g => Object.values(g.attributes || {}).map(a => a.version + ":" + a.count).join() + "|" + (g.index ? g.index.version + ":" + g.index.count : "")
+    + "|" + Object.values(g.morphAttributes || {}).map(l => l.length).join();
+  const vals = x => Array.isArray(x) ? x : isObj(x) ? Object.values(x) : [];
+  // The uuids of the textures and geometries a scene's JSON (cleaned) names by their assets (SPEC 8.14).
+  function assetUuids(json) {
+    const imgs = new Set(vals(json.images).filter(im => isObj(im) && im.asset).map(im => im.uuid));
+    return new Set([...vals(json.textures).filter(t => isObj(t) && imgs.has(t.image)).map(t => t.uuid), ...vals(json.geometries).filter(g => isObj(g) && g.asset).map(g => g.uuid)]);
+  }
+
+  // This room's own assets (SPEC 8.14, 4.1, #67): its big pictures (a texture's, as it is) and meshes (a plain
+  // BufferGeometry's, as it is), each made once in the background (encoded, named by its SHA-256) and given to its
+  // visit-client, which keeps them and gives them to its visitors as they ask. One not made yet goes inline, as before.
+  class OwnAssets {
+    constructor(send) {
+      this.send = send;            // (bytes): to the visit-client, if it is there
+      this.texs = new WeakMap();   // texture -> { img, ver, id (an asset's name) or url (a small one, inline, as made), busy }
+      this.geos = new WeakMap();   // geometry -> { sig, id, busy }
+      this.bytes = new Map();      // name -> bytes, the most lately used last (for a visit-client that asks again)
+      this.size = 0;
+      this.queue = [];
+      this.working = false;
+      this.stand = new WeakMap();  // a picture -> what three.js writes in its place while a scene's JSON names its asset
+      this.ok = !!(globalThis.crypto && crypto.subtle && typeof CompressionStream !== "undefined");
+    }
+    busy() { return this.working || this.queue.length > 0; }
+    // A texture's picture as it is now, made: { id } (an asset's name), or { url } (one too small to be an asset, as a
+    // data URL: a canvas's WebP, often a fraction of the PNG three.js would write); else null (and it is made).
+    tex(t) {
+      const img = t && t.image;
+      if (!this.ok || !img || t.isDataTexture || t.isCompressedTexture || t.isVideoTexture || t.isCubeTexture || t.isData3DTexture
+        || t.isDataArrayTexture || !(isCanvas(img) || isImageEl(img) || isBitmap(img))) return null;
+      const r = this.texs.get(t);
+      if (r && r.img === img && r.ver === t.version) { if (r.id) this._used(r.id); return r.id || r.url ? r : null; }
+      if (r && r.busy) return null;
+      const rec = { img, ver: t.version, id: null, url: null, busy: true };
+      this.texs.set(t, rec);
+      this._later(async () => {
+        try {
+          const b = await pictureBytes(img);
+          if (b && b.byteLength < ASSET_MIN) rec.url = "data:image/" + assetKind(b) + ";base64," + base64(b);
+          else if (b) rec.id = await this._keep(b);
+        } finally { rec.busy = false; }
+      });
+      return null;
+    }
+    // A plain geometry's mesh's name, if it is an asset as it is now; else null (and it is made, if it may be one).
+    geo(g) {
+      if (!this.ok || !g || !g.isBufferGeometry || g.type !== "BufferGeometry") return null;
+      const sig = geoSig(g), r = this.geos.get(g);
+      if (r && r.sig === sig) return r.id ? this._used(r.id) : null;
+      if (r && r.busy) return null;
+      const rec = { sig, id: null, busy: true };
+      this.geos.set(g, rec);
+      this._later(async () => {
+        try {
+          const e = g.toJSON();
+          delete e.uuid; delete e.metadata;   // the same mesh, the same name, whatever its uuid
+          const text = JSON.stringify(e);
+          if (text.length >= ASSET_MIN) rec.id = await this._keep(await gzipBytes(new TextEncoder().encode(text)));
+        } finally { rec.busy = false; }
+      });
+      return null;
+    }
+    standIn(img) {
+      let c = this.stand.get(img);
+      if (!c) { c = document.createElement("canvas"); c.width = c.height = 1; this.stand.set(img, c); }
+      return c;
+    }
+    _used(id) { const b = this.bytes.get(id); if (b) { this.bytes.delete(id); this.bytes.set(id, b); } return id; }
+    _later(job) { this.queue.push(job); if (!this.working) this._work(); }
+    async _work() {
+      this.working = true;
+      while (this.queue.length) { try { await this.queue.shift()(); } catch (e) { /* it goes inline, as before */ } }
+      this.working = false;
+    }
+    async _keep(bytes) {
+      if (bytes.byteLength < ASSET_MIN || bytes.byteLength > ASSET_MAX) return null;
+      const id = hexOf(await crypto.subtle.digest("SHA-256", bytes));
+      if (!this.bytes.has(id)) { this.bytes.set(id, bytes); this.size += bytes.byteLength; this.send(bytes); }
+      while (this.size > ASSET_KEEP && this.bytes.size > 1) { const [k, b] = this.bytes.entries().next().value; this.bytes.delete(k); this.size -= b.byteLength; }
+      return id;
+    }
   }
 
   // What a host sends, made safe to hand to three.js's ObjectLoader (SPEC 8.3): materials only of the kinds
@@ -313,6 +451,7 @@
     const arr = k => (Array.isArray(json[k]) ? json[k] : []).filter(isObj);
     json.materials = arr("materials").map(m => MATERIALS.has(m.type) ? m : { uuid: String(m.uuid), type: "MeshLambertMaterial", color: 0x808080 });
     json.geometries = arr("geometries").map(g => {
+      if (typeof g.asset === "string" && ASSET_ID.test(g.asset)) return { uuid: String(g.uuid), type: "BufferGeometry", data: { attributes: {} }, asset: g.asset };   // its mesh by name (8.14): fetched
       if (NO_RECIPE.has(g.type)) return { uuid: String(g.uuid), type: "BufferGeometry", data: { attributes: {} } };   // from an older host, with nothing to make it from: empty, not a warning an object
       let n = 1;
       if (isObj(g.data)) n = (((g.data.attributes || {}).position || {}).array || []).length / 3;
@@ -332,7 +471,8 @@
       return isObj(u) && Array.isArray(u.data) && ARRAYS.has(u.type) && u.width > 0 && u.height > 0 && u.width <= MAX_SIDE && u.height <= MAX_SIDE
         && u.data.length <= u.width * u.height * 4 ? u : BLANK;
     };
-    json.images = arr("images").map(im => ({ uuid: String(im.uuid), url: Array.isArray(im.url) ? im.url.slice(0, 6).map(ok) : ok(im.url) }));
+    json.images = arr("images").map(im => typeof im.asset === "string" && ASSET_ID.test(im.asset) ? { uuid: String(im.uuid), url: BLANK, asset: im.asset }   // by name (8.14): fetched
+      : { uuid: String(im.uuid), url: Array.isArray(im.url) ? im.url.slice(0, 6).map(ok) : ok(im.url) });
     let count = 0;
     const stack = [json.object];
     while (stack.length) {
@@ -481,6 +621,53 @@
       return r;
     }
 
+    // What three.js writes of `top` (`f`), the pictures and meshes in `sets` that are assets now named in it instead
+    // (SPEC 8.14), when `on` (every visitor it goes to reads them): each such picture is a stand-in while it writes
+    // (nothing to encode), each such geometry its name; then the JSON's images and geometries name them. A picture too
+    // small to be an asset goes inline as it was made (a canvas's WebP), not as three.js would write it.
+    _asRefs(on, sets, f) {
+      const A = this.assets;
+      if (!on || !A || !sets) return f();
+      const tx = [], gx = [];
+      for (const t of sets.texs) { const r = A.tex(t); if (r) tx.push([t, r, t.image]); }
+      for (const g of sets.geos) { const id = A.geo(g); if (id) gx.push([g, id]); }
+      for (const [t] of tx) t.image = A.standIn(t.image);
+      for (const [g, id] of gx) g.toJSON = () => ({ uuid: g.uuid, type: "BufferGeometry", asset: id });
+      let json;
+      try { json = f(); } finally {
+        for (let i = tx.length - 1; i >= 0; i--) tx[i][0].image = tx[i][2];   // (in turn, backwards: textures may share a picture)
+        for (const [g] of gx) delete g.toJSON;
+      }
+      const byTex = new Map(tx.map(([t, r]) => [t.uuid, r])), byImg = new Map();
+      for (const t of vals(json.textures)) if (isObj(t) && byTex.has(t.uuid)) byImg.set(t.image, byTex.get(t.uuid));
+      for (const im of vals(json.images)) {
+        const r = isObj(im) && byImg.get(im.uuid);
+        if (r && r.id) { delete im.url; im.asset = r.id; } else if (r) im.url = r.url;
+      }
+      return json;
+    }
+    // The textures and geometries under `top` (its landscape apart), for _asRefs.
+    _refsUnder(top) {
+      const texs = new Set(), geos = new Set(), stack = [top];
+      while (stack.length) {
+        const o = stack.pop();
+        if (o !== top && o.userData && o.userData.visitStatic === true) continue;
+        for (const m of list(o.material)) for (const k of MAPS) if (m[k] && m[k].isTexture) texs.add(m[k]);
+        if (o.geometry) geos.add(o.geometry);
+        for (const c of o.children) stack.push(c);
+      }
+      if (top.isScene && top.background && top.background.isTexture) texs.add(top.background);
+      return { texs, geos };
+    }
+    // Every picture and mesh of the scene made an asset (in the background), once: before a first whole scene.
+    prime() {
+      this.primed = true;
+      if (!this.assets) return;
+      const { texs, geos } = this._refsUnder(this.cfg.root);
+      for (const t of texs) this.assets.tex(t);
+      for (const g of geos) this.assets.geo(g);
+    }
+
     // Since the last round: objects added (whole, with what they are made of), removed, moved to another parent,
     // given other materials or geometry; materials' state; geometries and textures changed in place; the scene's
     // background and fog: { edit (null: nothing), moved (the objects whose place or visibility changed) }.
@@ -624,7 +811,7 @@
     // An added object: its JSON (with what it is made of, but, when its visitors read that, the geometries and
     // materials they have: those it names by uuid), each object's number, its lights' targets.
     _added(r) {
-      const json = this._without(r.o, () => sharedJSON(r.o)), ids = [];
+      const json = this._asRefs(this.assetsOn, this.assetsOn ? this._refsUnder(r.o) : null, () => this._without(r.o, () => sharedJSON(r.o))), ids = [];
       if (this.shared) {
         for (const k of ["geometries", "materials"]) if (json[k]) json[k] = json[k].filter(x => !this.sent.has(x.uuid));
         // A texture goes with each material (or object) that names it, an image with each texture, a shape with each
@@ -676,6 +863,15 @@
     // Geometries, materials and textures to send again (or for the first time), as three.js's toJSON makes them; a
     // texture encoded already (_encode), with that picture, not one made now.
     _resources(items) {
+      const on = !!this.assetsOn, sets = { texs: new Set(), geos: new Set() }, drawn = new Set(items.filter(([k, , url]) => k === "texture" && url).map(([, x]) => x));
+      if (on) for (const [kind, x, url] of items) {   // (4.1: by name, those that are assets now; a canvas redrawn goes as it was encoded)
+        if (kind === "geometry") sets.geos.add(x);
+        else if (kind === "material") { for (const k of MAPS) if (x[k] && x[k].isTexture && !drawn.has(x[k])) sets.texs.add(x[k]); }
+        else if (!url) sets.texs.add(x);
+      }
+      return this._asRefs(on, sets, () => this._resourcesJSON(items));
+    }
+    _resourcesJSON(items) {
       const meta = { geometries: {}, materials: {}, textures: {}, images: {}, shapes: {}, skeletons: {}, animations: {}, nodes: {} };
       for (const [kind, x, url] of items) {
         if (kind === "geometry") {
@@ -736,7 +932,7 @@
     snapshot(h, hooks) {
       const { root, three, renderer } = this.cfg, w = hooks.walk, apart = !!h.landscapes && this.statics.length > 0;
       root.updateMatrixWorld();
-      const json = apart ? this._without(root, () => sharedJSON(root)) : sharedJSON(root);
+      const on = !!h.assets && !!this.assets, json = this._asRefs(on, on ? this._refsUnder(root) : null, () => apart ? this._without(root, () => sharedJSON(root)) : sharedJSON(root));
       this.sent = new Set(["geometries", "materials", "textures", "images"].flatMap(k => (json[k] || []).map(x => x.uuid)));
       this.interSig = JSON.stringify(this.inter);
       this.figSig = JSON.stringify(this.figs || null);
@@ -801,6 +997,11 @@
       this._puts = new Map();     // pictures being kept (8.12), by slot: { resolve, reject, t }
       this._slot = 0;
       this._media = new Map();    // pictures by id: a promise of a URL this page can show (null: not to be had)
+      this._ownAssets = new OwnAssets(b => this._assetOut(b));   // 4.1 (#67): this room's assets, made once, by name
+      this._have = new Map();     // assets this page has (8.14), by name: their bytes, the most lately used last
+      this._haveSize = 0;
+      this._fetching = new Map(); // assets on their way, by name: { channel, parts, got, waiters, on, timer }
+      this._fetchQ = [];          // and those waiting their turn
       this._mediaWait = new Map();   // id -> its promise's resolve, while the visit-client fetches it
       this.voiceRange = VOICE_RANGE;   // metres: farther, nobody is heard (visit-client's, from ready)
       this._voices = new Map();   // their key -> a decoder, its panner, and where its next moment plays
@@ -1107,7 +1308,10 @@
         case "link_stats":
           if (this._viewer && this._viewer.channel === m.channel) { this.stats.rtt = Number(m.rtt_ms); this.stats.path = String(m.path); }
           break;
-        case "keyframe": case "input": case "scene_resync": case "point": case "shared_adds": case "landscapes": this._hostMessage(m); break;
+        case "keyframe": case "input": case "scene_resync": case "point": case "shared_adds": case "landscapes": case "assets": this._hostMessage(m); break;
+        case "asset_want": { const b = this._ownAssets.bytes.get(m.id); if (b) this._assetOut(b); break; }   // this room's, once more (its visit-client let it go)
+        case "asset_kept": break;
+        case "asset_none": this._assetDone(m.id, null); break;
         case "act": this._act(m); break;
         case "sound": if (this.role !== "host") this._soundOnce(m); break;   // 3.4 (#36): a one-shot of the room your user is in
         // 3.3 (#48): a line meant for one of this room's figures, whoever said it (from: { id (their visit here) | owner,
@@ -1821,7 +2025,7 @@
         const h = { id: m.id, channel: m.channel, visitor: Object.assign({}, m.peer || {}, owner ? { owner: true } : {}), owner, mirror, guest: m.guest === true, watch: m.watch === true,
           inside: m.watch !== true || m.inside === true,
           pose: null, yaw0: 0, input: null, inputAt: 0, keyNext: true, fails: 0, sceneSent: false, posed: null, sharedAdds: m.shared_adds === true,
-          landscapes: m.landscapes === true, since: performance.now(), possessions: possessionsFrom(m.possessions), models: new Map(), wanted: new Set(), ride: null };
+          landscapes: m.landscapes === true, assets: m.assets === true, since: performance.now(), possessions: possessionsFrom(m.possessions), models: new Map(), wanted: new Set(), ride: null };
         if (m.state && m.state.pose && h.inside) { h.pose = m.state.pose; h.yaw0 = m.state.yaw0 || 0; }   // back after this page reloaded
         this._hosted.set(m.channel, h);
         if (owner) this.owner = { id: m.id, channel: m.channel };
@@ -1859,6 +2063,8 @@
     }
 
     _dropAll() {
+      for (const id of [...this._fetching.keys()]) this._assetDone(id, null);   // (what this page has, it keeps: 8.14)
+      this._fetchQ = [];
       // Visitors' bodies and mounts out of this room's scene with them: they come back, made again, with their visits
       // (were they left, a page that lost its visit-client a moment had two of each).
       for (const h of this._hosted.values()) { this._avatarDrop(h); this._rideDrop(h); if (h.held && h.held.parent) h.held.parent.remove(h.held); }
@@ -3041,6 +3247,7 @@
       else if (m.type === "scene_resync") h.sceneSent = false;
       else if (m.type === "shared_adds") h.sharedAdds = true;   // its page reads an add naming what it has by uuid (8.3)
       else if (m.type === "landscapes") h.landscapes = true;   // its visit-client reads landscapes (8.10): the room's goes apart
+      else if (m.type === "assets") h.assets = true;   // and assets (8.14, 4.1): its pictures and meshes go by name
       else if (m.type === "point") this._point(h, m);
     }
 
@@ -3092,6 +3299,7 @@
         if (!this._sync || this._sync.cfg !== this._hooks.scene) {   // a new scene, or numbered anew: everyone gets it whole
           this._sync = new SceneSync(this._hooks.scene);
           this._sync.perf = (part, ms) => this._pt(part, ms);
+          this._sync.assets = this._ownAssets.ok ? this._ownAssets : null;   // 4.1 (#67): its pictures and meshes by name, to visitors that read them
           for (const h of hs) h.sceneSent = false;
         }
         if (this._hooks.beforeSample) {   // 4.0 (#42 F): the room's own step, once before each sample of its scene
@@ -3101,6 +3309,7 @@
         sync.inter = this._interList();
         sync.figs = { figures: this._figures || [], targeting: targetingOf(this._hooks.targeting), sounds: this._soundTable || {} };
         sync.shared = ready.every(h => h.sharedAdds);   // one visitor on an older Visit: every add whole, as it reads them
+        sync.assetsOn = ready.length > 0 && ready.every(h => h.assets);   // and every picture and mesh inline
         const t0 = this._perf ? performance.now() : 0, { edit, moved } = sync.scan(now);
         if (this._perf) this._pt("scan", performance.now() - t0);
         if (edit && ready.length) this._sendScene(ready, edit);
@@ -3115,6 +3324,10 @@
         }
         for (const h of hs) {   // the whole room to a visitor starting: once its visit-client said it reads landscapes (8.10), or a moment on (an older one never says)
           if (h.sceneSent || (!h.landscapes && sync.statics.length && now - h.since < LAND_WAIT)) continue;
+          if (h.assets && sync.assets) {   // 4.1: its pictures and meshes made first (a moment at most), so the room goes by name
+            if (!sync.primed) sync.prime();
+            if (sync.assets.busy() && now - h.since < ASSET_FIRST) continue;
+          }
           const t1 = this._perf ? performance.now() : 0, whole = sync.snapshot(h, this._hooks);
           this._sendScene([h], whole, "whole"); h.sceneSent = true; h.keyNext = true;
           if (this._perf) this._pt("whole", performance.now() - t1);
@@ -3254,6 +3467,7 @@
       relight(s.root, ...s.relight);
       this._sceneOwn(s);
       w.scene = s;
+      this._assetsFill(w, s, e.json);
       this._landAttach(w);
       if (w.home && wd) wd.listAt = -1;   // home has arrived: the world's own plot is known
       const key = w.host && w.host.key;
@@ -3291,6 +3505,7 @@
       }
       w.scene = s;
       this._sceneOwn(s);
+      this._assetsFill(w, s, e.json);
       this._landAttach(w);
       this._sceneAttach(w);
       this._send({ type: "keyframe", channel: w.channel });   // where its moving things are now
@@ -3356,7 +3571,7 @@
     _sceneApply(w, e) {
       const s = w.scene;
       if (!s) return this._sceneResync(w);   // an edit with no scene to apply it to: start again
-      if (isObj(e.res)) this._sceneResources(s, e.res);
+      if (isObj(e.res)) this._sceneResources(s, e.res, w);
       if (Array.isArray(e.interactions)) s.interactions = interMap(e.interactions);
       if (Array.isArray(e.figures)) { s.figures = figMap(e.figures); this._targetCheck(); }
       if (typeof e.targeting === "string") s.targeting = targetingOf(e.targeting);
@@ -3379,6 +3594,7 @@
           }
           if (s.relight) relight(o, ...s.relight);
           this._sceneAdopt(s, o);
+          this._assetsFill(w, s, a.json);
           const byUuid = new Map();
           o.traverse(c => byUuid.set(c.uuid, c));
           for (const [uuid, idx] of Array.isArray(a.ids) ? a.ids : []) { const c = byUuid.get(uuid); if (c && idx) { s.byIdx.set(idx, c); s.idxOf.set(c, idx); } }
@@ -3486,17 +3702,19 @@
 
     // Geometries, materials and textures sent again (changed in place) or new: one the scene has takes the new
     // one's content, where it is used; a new one is kept for what refers to it.
-    _sceneResources(s, res) {
-      const L = s.loader, json = cleanScene(Object.assign({}, res), s.budget);
+    _sceneResources(s, res, w) {
+      const L = s.loader, json = cleanScene(Object.assign({}, res), s.budget), named = assetUuids(json);
       const geos = L.parseGeometries(json.geometries, L.parseShapes(Array.isArray(res.shapes) ? res.shapes : []));
       const texs = L.parseTextures(Array.isArray(res.textures) ? res.textures : [], L.parseImages(json.images));
       const mats = L.parseMaterials(json.materials, Object.assign(Object.fromEntries(s.texs), texs));
       for (const [uuid, g] of Object.entries(geos)) {
         const have = s.geos.get(uuid);
+        if (have && named.has(uuid)) { g.dispose(); continue; }   // (by name: what it has stays until the asset is here)
         if (have) { have.dispose(); have.copy(g); g.dispose(); } else s.geos.set(uuid, g);
       }
       for (const [uuid, t] of Object.entries(texs)) {
         const have = s.texs.get(uuid);
+        if (have && named.has(uuid)) continue;
         if (have) { have.copy(t); have.needsUpdate = true; } else s.texs.set(uuid, t);
       }
       for (const [uuid, m] of Object.entries(mats)) {
@@ -3506,6 +3724,106 @@
         if (have) s.root.traverse(o => { if (o.material === have) o.material = m; else if (Array.isArray(o.material)) o.material = o.material.map(x => x === have ? m : x); });
         s.mats.set(uuid, m);
       }
+      if (w) this._assetsFill(w, s, json);
+    }
+
+    // ---------- a scene's assets (SPEC 8.14, 4.1, #67): pictures and meshes by name, fetched a piece at a time ----------
+
+    // One of this room's assets to its visit-client (it keeps it, and gives it to visitors that ask).
+    _assetOut(bytes) {
+      if (!this._ws || this._ws.readyState !== 1) return;   // (it asks again when a visitor wants it)
+      const buf = new Uint8Array(11 + bytes.byteLength);
+      buf[2] = ASSET;
+      buf.set(bytes, 11);
+      this._ws.send(buf);
+    }
+    // The assets a scene's JSON (cleaned) names, fetched and put in place: a texture's picture, a geometry's mesh,
+    // as that scene has them by uuid (until then, a blank picture, an empty mesh).
+    _assetsFill(w, s, json) {
+      if (!isObj(json)) return;
+      const imgs = new Map(), want = [];
+      for (const im of vals(json.images)) if (isObj(im) && im.asset) imgs.set(im.uuid, im.asset);
+      for (const t of vals(json.textures)) if (isObj(t) && imgs.has(t.image)) want.push([true, String(t.uuid), imgs.get(t.image)]);
+      for (const g of vals(json.geometries)) if (isObj(g) && g.asset) want.push([false, String(g.uuid), g.asset]);
+      for (const [tex, uuid, id] of want) {
+        this._assetGet(w.channel, id).then(b => {
+          if (!b || !this._live(w) || w.scene !== s) return null;
+          return tex ? this._assetTex(s, uuid, b) : this._assetGeo(s, uuid, b);
+        }).catch(e => console.warn("visit: an asset of this room's that could not be drawn", e));
+      }
+    }
+    async _assetTex(s, uuid, b) {
+      const kind = assetKind(b), d = kind && kind !== "geometry" ? picDims(kind, b) : null;
+      if (!d || d[0] > MAX_SIDE || d[1] > MAX_SIDE) return console.warn("visit: an asset that is not a picture this page draws");
+      const url = URL.createObjectURL(new Blob([b], { type: "image/" + kind })), img = new Image();
+      try { img.src = url; await img.decode(); } finally { URL.revokeObjectURL(url); }
+      const bg = s.root.background, ts = [s.texs.get(uuid), bg && bg.isTexture && bg.uuid === uuid ? bg : null].filter(Boolean);
+      for (const t of ts) { t.image = img; t.needsUpdate = true; }
+    }
+    async _assetGeo(s, uuid, b) {
+      if (assetKind(b) !== "geometry") return console.warn("visit: an asset that is not a mesh");
+      const e = JSON.parse(await gunzipText(b, 64 << 20));
+      if (!isObj(e)) return;
+      e.uuid = uuid;
+      const [g] = cleanScene({ geometries: [e] }, s.budget).geometries, have = s.geos.get(uuid);
+      if (!have || !isObj(g.data) || !Object.keys(g.data.attributes || {}).length) return;   // (past this page's budget: stays empty)
+      const made = new s.T.BufferGeometryLoader().parse(g);
+      have.dispose(); have.copy(made); made.dispose();
+    }
+    // An asset by name: from what this page has, else fetched from its visit-client (which has it, or asks the room
+    // on `channel` for it), a piece at a time. Resolves to its bytes, or null if it is not to be had.
+    _assetGet(channel, id) {
+      const have = this._have.get(id);
+      if (have) { this._have.delete(id); this._have.set(id, have); return Promise.resolve(have); }
+      return new Promise(resolve => {
+        const f = this._fetching.get(id);
+        if (f) return f.waiters.push(resolve);
+        this._fetching.set(id, { channel, parts: [], got: 0, waiters: [resolve], on: false, timer: 0 });
+        this._fetchQ.push(id);
+        this._assetPump();
+      });
+    }
+    _assetPump() {
+      let on = 0;
+      for (const f of this._fetching.values()) if (f.on) on++;
+      while (on < ASSET_FETCHES && this._fetchQ.length) {
+        const id = this._fetchQ.shift(), f = this._fetching.get(id);
+        if (!f) continue;
+        f.on = true; on++;
+        this._assetAsk(id, f);
+      }
+    }
+    _assetAsk(id, f) {
+      clearTimeout(f.timer);
+      f.timer = setTimeout(() => this._assetDone(id, null), ASSET_WAIT);
+      this._send({ type: "asset_want", channel: f.channel, id, at: f.got });
+    }
+    // A piece of one (its name, its whole length, where it starts): the next asked for, or the whole of it had.
+    _assetIn(b) {
+      if (b.length < 72) return;
+      const id = String.fromCharCode(...b.subarray(0, 64)), dv = new DataView(b.buffer, b.byteOffset + 64, 8), total = dv.getUint32(0), at = dv.getUint32(4);
+      const f = this._fetching.get(id);
+      if (!f || at !== f.got || total > ASSET_MAX) return;
+      f.parts.push(b.slice(72));
+      f.got += b.length - 72;
+      if (f.got < total && b.length > 72) return this._assetAsk(id, f);
+      const all = new Uint8Array(f.got);
+      let k = 0;
+      for (const p of f.parts) { all.set(p, k); k += p.length; }
+      this._assetDone(id, f.got === total ? all : null);
+    }
+    _assetDone(id, bytes) {
+      const f = this._fetching.get(id);
+      if (!f) return;
+      clearTimeout(f.timer);
+      this._fetching.delete(id);
+      if (bytes) {
+        this._have.set(id, bytes);
+        this._haveSize += bytes.byteLength;
+        while (this._haveSize > ASSET_KEEP && this._have.size > 1) { const [k, x] = this._have.entries().next().value; this._have.delete(k); this._haveSize -= x.byteLength; }
+      }
+      for (const w of f.waiters) w(bytes);
+      this._assetPump();
     }
 
     // A delta: where the host has this visitor, and its moving things' places, each kept with the host's time
@@ -4026,6 +4344,7 @@
       if (buf.byteLength < 11) return;
       const fl = new DataView(buf).getUint8(2);
       if (fl === MEDIA) return this._mediaIn(new Uint8Array(buf, 11));
+      if (fl === ASSET) return this._assetIn(new Uint8Array(buf, 11));
       if (fl === AUDIO || fl === RELAY) return this._voiceIn(new DataView(buf).getUint16(0), new Uint8Array(buf, 11), fl === RELAY, new DataView(buf).getUint8(3));
       const dv = new DataView(buf), w = this._viewing(dv.getUint16(0));
       if (w) this._sceneDelta(w, dv, (dv.getUint8(2) & KEY) !== 0);
@@ -6780,6 +7099,6 @@
     chat,
     stage,
     map,
-    _test: { cleanScene, imageDims },   // for visit-client's own tests
+    _test: { cleanScene, imageDims, picDims, assetKind },   // for visit-client's own tests
   };
 })();
