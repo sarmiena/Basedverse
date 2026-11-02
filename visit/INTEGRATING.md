@@ -12,8 +12,9 @@ below are relative to `visit/`.
 
 Your sim draws an office (a "workroom") in a browser page, with three.js. After this integration:
 
-- it shows up in a lobby where other workrooms are, and can link with theirs or let them link: a linked room
-  shows in a corner, to go into, or to put in your world;
+- it shows up in a lobby where other workrooms are: in a world with some of them (one you join, or make), each
+  puts the other's room in their world and walks into it (4.0: worlds are the way to meet), and anyone online can be
+  rung to talk (4.0);
 - **as a host**, it lets up to a few visitors walk around your room: Visit sends them your room's three.js
   scene, as data, and their browsers draw it; your page only decides where they may walk;
 - **as a visitor**, it draws the room you are walking around itself, as quickly as your own, and sends your
@@ -47,7 +48,7 @@ take them unless your user asks for something else. The defaults are Visit's own
   / 🗺 ✓ by someone in a world with you: their room in your world, or out, 3.3),
   your worlds (who of each is online, Leave; for one you own: ✕ out, ⛔ kept out, ♛ hand it on, its password, public,
   End it; **Find** the lobby's worlds, **New** one of your own, public or with a password), your line in the lobby's
-  list, knocks, your door (open to your worlds, closed), your world's Map (and how many rooms you picked, of 8), the microphone and who is near, calls (📞 call, Pick up, speaker / handset, Hang up), notes (where
+  list, the people you can reach (your worlds', your visitors; 🎧 to talk, someone who wants to talk ringing), your door (open to your worlds, closed), your world's Map (and how many rooms you picked, of 8), the microphone and who is near, calls (📞 call, Pick up, speaker / handset, Hang up), notes (where
   a friend's world put your room), and ⏱ (how this page is doing);
 - **the chat window** (the panel's, `Visit.chat`): bottom left, as in a game. Enter to type, and say a line to
   everyone near you (within 45 m, as your voice carries: 3.4.2), whisper to one person (`/w name`), say it in your
@@ -55,7 +56,7 @@ take them unless your user asks for something else. The defaults are Visit's own
   (`/g name`, or `/2`, `/3`…); joining the lobby, it says the lobby's name and its message of the day; Tab finishes a name, else moves on to the next of those (Shift+Tab: back); 🎙 a voice
   message; 📬 what came for your user while nobody looked (whispers, your room's chat, mentions), kept until read;
   a whisper to someone away is kept by your `visit` until you are both in the lobby; 🎧 talks with whoever
-  the box talks to (3.5: a whisper's person, voice alone, wherever they are; a world's huddle; a room's voice, where
+  the box talks to (4.0: a whisper's person, voice alone, wherever they are; a world's huddle; a room's voice, where
   everyone in it hears everyone else), someone who wants to talk ringing above the box until answered, and a line over
   the box says who you are talking with; a click on a name in
   its log: Whisper, Ignore (3.3: their lines never reach your user again; `/ignore name`, `/unignore name`, and the
@@ -63,7 +64,8 @@ take them unless your user asks for something else. The defaults are Visit's own
 - **mounts** (`visit.ride`, M, the panel's "your mount"): Visit carries them and puts them under their rider in
   the room they ride into; what they are (models, names, paces) is your room's to say (`visit.possessions`), and the
   panel shows them once you give some;
-- **the stage** (`Visit.stage`): the room you visit, full-window or in the corner;
+- **the stage** (`Visit.stage`): your own room, first person, for a page that draws no world (4.0: another's room is
+  visited through your world);
 - **the Map** (`Visit.map`, from the panel): your world from above;
 - **in your world** (`visit.world`): chat bubbles over whoever said something, and a 🔊 over whoever you hear
   speaking, drawn by Visit (`bubbles`, `speaking`);
@@ -555,53 +557,31 @@ the room). Keep a margin of about 0.3 of your units so visitors do not stand ins
 room from your spawn point; walking and turning are instant; it stops at your walls; your room's moving
 things move in its view; it does not see its own body.
 
-## Step 6 — Be a visitor: show the room you are in
+## Step 6 — Be a visitor: your world is how you visit (4.0)
 
-The quickest way: the ready-made stage, once, right after `connect`:
+Since 4.0 (#57) your user visits a room the one way there is: it is a plot in their world (step 9), picked from
+someone they share a world with, and they walk onto it, as onto any ground of their own; walking off is coming back.
+Your world draws it with your own three.js, and Visit carries everything else (their input to its host, its scene
+to you, voices, chat). There is no knock to walk in, no link, and no stage drawing another's room.
+
+Still call the ready-made stage once, right after `connect`, if your page draws no world of its own:
 
 ```js
 Visit.stage(visit);
 ```
 
-While your user visits, the room they are in fills the window, with how the visit is going (the link's
-path and round trip, input to screen, frames a second), **Back to my room** and **Leave**. Back to my room
-shrinks it to the bottom-right corner, your own room full-window behind it; a click on the corner brings
-it back. Full-window it takes WASD, Shift and the mouse (click it to look around; Esc gives the pointer
-back); while your user looks around, a crosshair shows at the middle, and a click points at what is there
-(the host decides what that does: step 5, Interactions); in the corner it takes nothing. It goes away when the visit ends, and comes back by itself after a
-reload mid-visit. It sits at `z-index: 5`; `.visit-stage` is yours to restyle.
+It draws your user's own room, first person, for a page without a world (engine/SPEC.md 4). `visit.viewFocused` stays
+false (nothing else takes your keys), so a room's own keys need no guard. With a world (step 9), you need neither.
 
-A **link** (step 7) starts in the corner: the other room seen from outside, from above it, going round. A click
-on it offers **Go there** (the room fills the window, as a visit; Back to my room puts it in the corner again),
-**Put in my world** (with a world, step 9: their room becomes a plot beside yours) and **Unlink**.
-
-**If your room has keys of its own** (WASD for your user's avatar, say), they wait while
-`visit.viewFocused` is true, and work while it is false (not visiting, or the visit in the corner):
-
-```js
-addEventListener("keydown", e => {
-  if (window.visit && visit.viewFocused) return;   // the room your user is visiting has the keys
-  // ... your own keys
-});
-```
-
-Or your own view: `const view = visit.view(element)` draws the host's room in an element of yours and
-captures the keyboard and mouse; `view.setActive(false)` stops it capturing (a picture-in-picture, say),
-`view.release()` takes it away. Show it when `visit.visiting` becomes true (and at once after a reload, if
-already visiting), give your user a way to leave (`visit.leave()`), and show `visit.stats` if you can:
-it is what to look at when a visit feels slow. A link's room (`visit.visiting.link`) is drawn there too, from
-outside, until `visit.stepIn()`; keep it small until `visit.visiting.inside`, and offer `visit.stepIn()`,
-`visit.stepOut()`, `visit.toWorld()` and `visit.unlink()`.
-
-The host's scene is drawn by your page itself, in that view: nothing for you to do. It fetches the host's
-release of three.js from cdn.jsdelivr.net (checked against its hash) and runs it from a `blob:` URL, so a
+The host's scene is drawn by your page itself: nothing for you to do. Your world fetches the host's release of
+three.js from cdn.jsdelivr.net (checked against its hash) and runs it from a `blob:` URL, so a
 Content-Security-Policy on your page needs `connect-src https://cdn.jsdelivr.net` and `script-src blob:`
 (or pass `threeBase` to `connect`, to serve those same files yourself).
 
-**Check:** with a host to visit (step 8), its room fills the window; WASD and the mouse move you in it,
-and turning is instant; Back to my room shrinks it to the corner and gives your room its keys back.
+**Check:** with a friend in a world with you (step 9), their room is a plot beside yours; walking onto it puts you in
+their room (they see you there), and walking off brings you home.
 
-## Step 7 — The lobby: linking and letting in
+## Step 7 — The lobby: worlds, walking in, talking
 
 **Signed in to take part.** Since 3.0, `visit` joins its lobby only while someone is signed in on your workroom: a
 live session of its sign-in (`AUTH_TOKEN_FILE`, [../auth/INTEGRATING.md](../auth/INTEGRATING.md)), not an API key.
@@ -616,19 +596,17 @@ The quickest way: the ready-made panel, in any element of yours (a corner of the
 Visit.panel(document.getElementById("visit-panel"), visit);
 ```
 
-It lists the workrooms online (with whether each is available, how many visitors it has and takes), lets
-your user **link** with one (with a message): once they say yes, their room shows in the stage's corner (step 6),
-and your user chooses to go there, put it in their world, or unlink. Each person is one row: linked, it says where
-you two stand (in your room, in theirs, linked), and opened, the rest (**Go there**, **Put in my world**, **their
-model** / **our model** for how they look in your room, **Kick**, **Unlink**). It shows links asked of you with
-**Link** / **Not now**, whose look your visitors have by
-default (their model),
-**Map** (your world, from above: step 9), the microphone (🎙) and who is near, calls, the chat window (Enter), sets your
-status and max visitors, and has **Go offline** / **Go online**. Your
-**guests** (3.3) are whoever is in a world with your user: while your door is open (the panel's "your door"), a
-guest's link or knock is let in at once, without asking your user; by each, **🗺 +** puts their room in your user's
-world (at most 8), **🗺 ✓** takes it out. Before 3.3 a star (☆) made a guest: gone. An office on an older Visit gets **Knock** instead: let in, your
-user walks straight into its room, as before.
+It lists the people your user can reach (4.0, #57: worlds are the way to meet; no Knock, no Link): those in a world
+with your user, those in your room, and those whose room your world shows. Each person is one row: where you two
+stand (in your room, in your world, you are in their room), **🎧** to talk with them (4.0: voice alone, wherever each
+of you is: it rings for them), **🗺 +** to put their room in your user's world (at most 8; **🗺 ✓** takes it out), and,
+opened, the rest (**their model** / **our model** for how they look in your room, ban from your room's voice or chat,
+**Kick**, **Part**: out of each other's rooms now). Someone who wants to talk rings there and in the chat window
+(**Answer** / **Not now**). It shows whose look your visitors have by default (their model), **Map** (your world, from
+above: step 9), the microphone (🎙) and who is near, calls, the chat window (Enter), sets your status and max
+visitors, and has **Go offline** / **Go online**. Your **guests** (3.3) are whoever is in a world with your user:
+while your door is open (the panel's "your door"), they put your room in their world and walk in without asking;
+closed, nobody comes in. Who else is in the lobby is the lobby's page (**🌐 Lobby**).
 
 It shows your **worlds** too (3.0; 3.1: public or with a password): worlds in the lobby whose members are each
 other's guests (3.3), each picking whose rooms sit round their own (step 9), each with a chat (`/g`). Each of yours is a row (how many of
@@ -639,14 +617,13 @@ in the lobby's list** (what you are, a few tags; on the lobby's public page too)
 (3.1): **🌐 Lobby** opens the lobby's page in a tab, as your workroom; **📱 Phone** shows a QR code that does the same
 on a phone; **Link a browser** takes the code a browser at the lobby's page shows (its pictures shown to check),
 then (3.2) shows a QR code and 6 digits that browser must show back (its camera scans the QR code, or its person
-types the digits there) before it is linked; and lists the browsers linked, each to **Unlink**. A linked browser talks, runs your worlds and knocks as your workroom;
-it never answers a knock or opens your door.
+types the digits there) before it is linked; and lists the browsers linked, each to **Unlink**. A linked browser chats
+and runs your worlds as your workroom; it never opens your door, knocks, nor answers.
 
-Or build your own from the state and actions: `visit.offices`, `visit.knocks`, `visit.visiting`,
-`visit.visitors`, `visit.links`, `visit.watchers`, `visit.link(id, message)` (or `visit.knock`, for an office
-whose `links` is false), `visit.answer(knockId, true | false)`, `visit.stepIn()`, `visit.stepOut()`,
-`visit.toWorld()`, `visit.unlink(id)`, `visit.leave()`,
-`visit.kick(visitId)`, `visit.setStatus("available" | "busy")`, `visit.setMaxVisitors(n)`,
+Or build your own from the state and actions: `visit.offices`, `visit.visitors`, `visit.watchers`,
+`visit.kick(visitId)`, talking (4.0): `visit.talk(key)`, `visit.canTalk(key)`, `visit.calls` (a talk: `voice: true`;
+`state` "ringing" when someone wants to talk: `visit.pickUp(key)` answers, `visit.hangUp(key)` declines or ends it),
+`visit.huddle(group, on)`, `visit.joinHuddle(group)`, `visit.huddles`, `visit.inHuddle`, `visit.setStatus("available" | "busy")`, `visit.setMaxVisitors(n)`,
 `visit.leaveLobby()`, `visit.joinLobby()`, the door and your guests (3.3: your worlds' members): `visit.door`,
 `visit.setDoor(open)`, `visit.guests`, `visit.isGuest(key)`; whose rooms your world shows (3.3): `visit.picks`,
 `visit.pick(office.key, office.name)`, `visit.unpick(key)`, `visit.isPicked(key)`, `visit.maxPicks`; the lobby's list and
@@ -660,12 +637,10 @@ worlds (3.0; 3.1: public or with a password): `visit.signedIn`, `visit.lobbyInfo
 and the events `"group"`, `"group_left"`, `"groups"`, `"browsers"`, `"browser_pending"`, `"online"` (with
 `lobbyInfo`) and `"signed_in"`; redraw on `"change"`. Rules your UI must follow:
 
-- Offer **Link** only for offices that are `ready`, `available`, not you, and not already linked or visited
-  (and **Knock**, for one whose `links` is false, only when it is not full: `visitors < maxVisitors`).
-- Show each link and knock on your door (`knock.link` says which) with who, their message and the seconds
-  left, and both answers.
-- Show your user who is linked to them, seeing their room from outside it: `visit.watchers` with `link`
-  (and `inside` once they come in), with a way to end it (`visit.kick(id)`).
+- Make someone who wants to talk impossible to miss, until it is answered or stops (a call in `visit.calls`, `voice`,
+  `state: "ringing"`): who, a ring, and both answers. Nobody hears your user until they answer.
+- Show your user whose worlds see their room from outside it (`visit.watchers`, and `inside` once they come in), with a
+  way to end it (`visit.kick(id)`).
 - Escape all names and messages before putting them in HTML: they come from strangers. So do rooms' lines and
   tags, and worlds' names and lines.
 - Say plainly what joining a world means (3.3): its members are your guests, and you theirs; through your open door
@@ -674,16 +649,17 @@ and the events `"group"`, `"group_left"`, `"groups"`, `"browsers"`, `"browser_pe
   ones on the browser's screen before allowing it; then show `allowBrowser`'s confirmation (its QR code as an image,
   never as markup, and its digits) until `"browsers"` has that browser.
 - Give your user a way to **go offline and back** (`leaveLobby()` / `joinLobby()`), and show when they
-  are: `visit.state === "away"`. Away, nobody sees them or can link, and their visits end; they stay away
+  are: `visit.state === "away"`. Away, nobody sees them or can reach them, and their visits end; they stay away
   until they come back, restarts included (its state file keeps it). Do not stop `visit` for this: it keeps
   your page connected while away, so the switch works.
 - Show whether the door is open, and say plainly that a guest (anyone in a world with your user) walks in without
-  asking while it is. A visitor let in that way has `guest: true` in `visit.visitors`.
+  asking while it is, and that closed, nobody comes in (4.0: there is no knocking). A visitor has `guest: true` in
+  `visit.visitors`.
 - Let your user pick whose rooms are in their world (`pick` / `unpick`, among `visit.guests`), and show which are;
   never pick for them: nobody's room is in it by itself (3.3).
 
-**Check:** your user can see other workrooms, link with one (its room in the corner; go there and back), answer
-a link, and go offline and back.
+**Check:** your user can join or make a world, put a member's room in their world and walk into it and back, talk
+with someone (it rings for them; they answer), answer someone who wants to talk, and go offline and back.
 
 ## Step 8 — Test it on one machine
 
@@ -710,30 +686,29 @@ environment), the second needs ports of its own for them too (`--auth-port`, `--
 Then, in order:
 
 1. Both pages show both offices in the lobby. (Sign B out: B leaves the lobby at once; sign in again: back.)
-2. From B, link with A; in A, say yes. B's page shows A's room in the corner, from above; A's
-   `visit.watchers` lists B, linked. Click the corner, **Go there**: A's room fills B's window, and A's
-   `visit.visitors` lists B.
-3. In B, walk with WASD and look with the mouse: the view moves, and stops at A's walls.
-4. **Reload A's page.** B's view holds, says the host is reloading, then carries on by itself.
-5. **Reload B's page.** It comes back still linked with A, without asking again (in the corner: Go there).
-6. In B, **Back to my room**: A's room in the corner again, A's visitors list empty. Then **Unlink**: B's corner
-   goes, and A's watchers list empties.
+2. In A's panel, **New** world (public); in B's, **Find**, **Join** it. Each is the other's guest now: `/g` a line,
+   both have it. With both worlds on (step 9), **🗺 +** by the other in each panel: each has the other's room round its
+   own. (4.0: there is no other way into a room: no knocking, no linking.)
+3. In B, walk onto A's plot: B is in A's room (A's `visit.visitors` lists B), and stops at A's walls; walk off: home.
+4. **Reload A's page** while B is in A's room: B's world holds A's plot, then carries on by itself.
+5. **Reload B's page.** It comes back home, A's room still in its world, without asking again.
+6. Close A's door (the panel's "your door"): B's watch of A's room ends, and B cannot walk in; open it again.
 7. Turn both microphones on (🎙) with B in A's room: each hears the other (headphones on one, or the other
-   page's speakers echo). Type a line in B's **Say** box: it shows over B's head in A's room, and in B's view.
-8. With your landscape marked (step 5), reload B's page while it is in A's room: A's walls and floor are there
+   page's speakers echo). Type a line in B's **Say** box: it shows over B's head in A's room, and in B's world.
+8. In B's chat window, `/w A`, then 🎧: A's page rings (a line over its box, a ring); **🎧 Answer** in A: each hears the
+   other, wherever they are. **Hang up**.
+9. With your landscape marked (step 5), reload B's page with A's plot in its world: A's walls and floor are there
    again at once (B's `visit` kept them).
-9. Set A's status to busy: B's link is refused.
-10. Stop B's `visit`: B disappears from A's lobby.
-11. In A's panel, **New** group (open); in B's, **Find**, **Join** it. Each is the other's guest now: `/g` a line, both
-    have it. With both worlds on (step 9), **🗺 +** by the other in each panel: each has the other's room round its own.
+10. Stop B's `visit`: B disappears from A's lobby, and its room from A's world (kept from its landscape, step 9).
 
 ## Step 9 — Your world: friends' plots round your room
 
 With a world ([WORLD.md](WORLD.md), SPEC 8.4) your user stays in their own room, as themselves, and their
-friends' rooms sit round it as plots they walk onto, without knocking. A friend is someone in a world with your
-user (the panel's worlds), their door open, whose room your user picked (3.3: **🗺 +** in the panel, `visit.pick`). Do it once step 8 passes: it is a few lines in your page, and without it
-your room still knocks and visits as before, but your user sees no friends' rooms round theirs, and a friend who
-walks onto your plot from their world may have no way back out.
+friends' rooms sit round it as plots they walk onto. A friend is someone in a world with your user (the panel's
+worlds), their door open, whose room your user picked (3.3: **🗺 +** in the panel, `visit.pick`). Since 4.0 (#57) it
+is the way into anyone's room: without it your user visits nobody (others can still walk into yours from their
+worlds, and anyone can talk with them, 4.0), and a friend who walks onto your plot from their world may have no way
+back out.
 
 1. **Say your plot** in `visit.host`: `plot: { center: [x, z], size: [w, d] }`, the rectangle of your floor
    that is your land (in your scene's units), and `unit`, how many metres one of them is. Without it, your plot is
@@ -814,15 +789,14 @@ marked offline, walked into but not through its walls; start it again, and the p
       ignore a text box (typing "w" there does not walk), and nothing of yours hides the window.
 - [ ] Your landscape (what never changes) marked `userData.visitStatic`; nothing that moves or changes under it,
       or `visit.landscapeChanged()` when it does.
-- [ ] Visiting: the host's room fills the window (`Visit.stage`, or your own view); WASD, Shift and the
-      mouse work; Esc frees the pointer; there is a way to leave, and back to your room; your own keys wait
-      while `visit.viewFocused`.
+- [ ] Visiting (4.0: through your world): a friend's picked room is a plot round yours; walking onto it puts your
+      user in their room, walking off brings them home (step 9).
 - [ ] The sign-in is on (`AUTH_TOKEN_FILE`), and the office is in the lobby only while its owner is signed in.
-- [ ] World groups: made, found, joined (or asked and let in), left; a group's chat (`/g`); its members' rooms in
-      your world (step 9). Your room's line in the lobby's list, and the door open to anyone, if your user wants them.
-- [ ] The lobby: offices, links and knocks, answers, links into a corner (go there, back, unlink), visitors and
-      who is linked to you (kick, unlink), status and max visitors all work, with the rules of step 7; names
-      and messages are escaped.
+- [ ] Worlds: made, found, joined, left; a world's chat (`/g`) and its huddle (🎧); its members' rooms in your world
+      (step 9). Your room's line in the lobby's list.
+- [ ] The lobby: the people your user can reach, your visitors and whose worlds see your room (kick, part), talking
+      (🎧: it rings until answered), the door (closed: nobody in), status and max visitors all work, with the rules of
+      step 7; names and messages are escaped.
 - [ ] Your user can go offline and back (the panel, or `leaveLobby()` / `joinLobby()`), and stays offline
       across a restart (its state file).
 - [ ] Step 8 passes, reloads included.

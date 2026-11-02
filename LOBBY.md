@@ -13,12 +13,12 @@ and **a place to meet**, the way a game's lobby was (Battle.net in its Diablo II
   a line about them if they wrote one; a world is a group of them whose members put each other's plots round their
   own (SPEC 8.4), as if each were everyone's guest, for worlds only. A world is public (anyone joins) or takes a
   password; whoever makes one owns it. Someone in several worlds places anyone of any of them, together, round
-  their own room. A link (SPEC 8.5) still reaches anyone outside your worlds, and a knock still walks anyone into a
-  room its user lets them into. Each world has its own chat;
+  their own room. (Before 4.0, a link (SPEC 8.5) reached anyone outside your worlds, and a knock walked anyone into a
+  room its user let them into: 4.0, #57, has neither.) Each world has its own chat;
 - **the lobby-wide chat and whispers**, as before;
 - **friends**: Visit's guests, by key, shown online and where they are;
 - **its page**: the lobby's address in a browser shows its worlds and who is here, read only; in a browser your
-  workroom linked (3.1), it is your workroom's lobby: its chat, who is here, its worlds, knocking;
+  workroom linked (3.1), it is your workroom's lobby: its chat, who is here, its worlds;
 - **its own relay**: the iroh relay for links that cannot go direct runs inside `lobby`, for offices in the lobby
   only, in place of iroh's public relays (and of coturn, which only the browser sims of version 1 used);
 - **anyone can host one**: one file, a few flags, and Caddy in front for its certificate. A workroom joins the
@@ -58,7 +58,7 @@ visit-clients, directly or through the relay, which cannot read them.
    proved by the link (SPEC 3, point 9). Later: member lists signed by the world's owner, which a lobby could not
    forge.
 8. **World chat is text.** Voice stays as it is (SPEC 8.7): by who is near in a room, and across a plot's side
-   where both worlds agree. (3.5, #58: and a world's **huddle**, by the owner's word: one member starts it, it rings for
+   where both worlds agree. (4.0, #58: and a world's **huddle**, by the owner's word: one member starts it, it rings for
    the others online, and whoever joins is in the starter's room's voice, carried by the starter's office as any room
    voice is; the lobby only says it started and ended. And **talking**: two people, voice alone, by a knock to talk
    the other answers. The lobby carries the knock, never a sound.) Anyone on a plot is in that room, however they came (a knock, a guest, a world, a
@@ -70,7 +70,7 @@ visit-clients, directly or through the relay, which cannot read them.
     a world is. Public: anyone in the lobby joins with a click. A password: anyone who has it; nobody need be online
     to let them in, as requests needed. Its owner keeps keys out, gives a new password (its members stay), hands it
     on. A public world takes at most `--world-size` members (50): each member's plot is on every other's map. Your
-    door stays yours: a world puts your plot on its members' maps; walking into your room is a knock you answer.
+    door stays yours: a world puts your plot on its members' maps, and its members walk in through your open door (4.0: no knocks).
     Worlds with a password are listed with a 🔒 (Diablo II hid its password games; worlds are meant to be found).
 11. **A browser your workroom linked (3.1).** A browser at the lobby's page has no sign-in: the workroom has that,
     and its key. So the browser makes a key of its own (never leaving it), and the workroom vouches for it, once:
@@ -81,7 +81,7 @@ visit-clients, directly or through the relay, which cannot read them.
     browser; the confirmation, that the browser sees the room: a code someone talks you into typing links nothing
     without your screen. Linked, the browser comes back by its key alone, and
     speaks for the workroom while the workroom is in the lobby, until either unlinks it. Talk, worlds, the list,
-    knocking, yes; letting anyone in, never: that stays in the room. Signatures, not a shared secret: the lobby
+    yes; letting anyone in, never: that stays in the room. Signatures, not a shared secret: the lobby
     needs proof that the room vouches for this browser, not a channel the two share. The page, unlinked, is read
     only: lobby chat is said to the workrooms in the lobby, not to the web.
 12. **One protocol crate.** `lobby/proto` (the `lobby-proto` crate) has what both ends must agree on: the
@@ -100,7 +100,7 @@ What it did well, and what Visit's panel and chat window take from it:
 - **A game's details: who is in it.** Picking a game showed its players, its description, its limits. A world's
   entry shows its line, its members (online or not, its owner ♛), and Join, or Join… with its password, as a
   password game asked for one. Someone's entry shows their line, their tags, how many are in their room out of how
-  many it takes, and Knock or Link.
+  many it takes, and Whisper (4.0: no Knock nor Link; worlds are the way to meet).
 - **Who is online, for friends.** Its friends list said what each friend was doing, and which game only to mutual
   friends. Visit marks co-members (⚑: 3.3, its guests) among those online. Where anyone is, the lobby tells nobody
   (its list has no `visiting` in version 4): those they visit know.

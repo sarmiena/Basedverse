@@ -628,8 +628,8 @@ async def t_whisper(L):
 
 
 async def t_voice(L):
-    """3.5: a knock to talk (voice alone): rung on a door that takes voice, however busy or full; answered, a voice
-    visit, counted toward neither visitors nor watchers; to an office before 3.5, refused (it would take it for a
+    """4.0: a knock to talk (voice alone): rung on a door that takes voice, however busy or full; answered, a voice
+    visit, counted toward neither visitors nor watchers; to an office before 4.0, refused (it would take it for a
     knock to visit)."""
     a, b = await join(L, "V A", proto=P4, voice=True), await join(L, "V B", proto=P4, voice=True)
     old = await join(L, "V Old", proto=P4)
@@ -638,7 +638,7 @@ async def t_voice(L):
     check("the lobby says who takes voice", (office(lob, "V B").get("voice"), office(lob, "V Old").get("voice")), (True, None))
     await a.send(type="knock", to=old.id, voice=True)
     e = await a.expect("error")
-    check("to an office before 3.5: not_supported, by name", (e["code"], e.get("ref"), "V Old" in e["message"]), ("not_supported", "knock", True))
+    check("to an office before 4.0: not_supported, by name", (e["code"], e.get("ref"), "V Old" in e["message"]), ("not_supported", "knock", True))
     check("and it heard nothing", [m["type"] for m in await old.quiet() if m["type"] != "lobby"], [])
     await old.send(type="knock", to=a.id, voice=True)
     check("from one that did not say voice: refused too", (await old.expect("error"))["code"], "not_supported")
@@ -678,8 +678,25 @@ async def t_voice(L):
         await c_.send(type="bye")
 
 
+async def t_v4_no_knocks(L):
+    """4.0 (#57): worlds are the way to meet. A version-4 office's knock to walk in, or to link, is refused with a
+    reason (the door hears nothing); its knocks to watch (its world's) and to talk go on."""
+    a, b = await join(L, "N A", proto=P4, voice=True), await join(L, "N B", proto=P4, voice=True)
+    for extra in ({}, {"link": True}, {"message": "hi"}):
+        await a.send(type="knock", to=b.id, **extra)
+        e = await a.expect("error")
+        check("a knock %s: not_supported, Visit 4's reason" % (extra or "to walk in"), (e["code"], e.get("ref"), "world" in e["message"]), ("not_supported", "knock", True))
+    check("and B heard none of them", [m["type"] for m in await b.quiet() if m["type"] != "lobby"], [])
+    await a.send(type="knock", to=b.id, watch=True)
+    check("a knock to watch goes on (B's visit-client answers it: its world's)", ((await b.expect("knock")).get("watch"), (await a.expect("knock_sent")).get("watch")), (True, True))
+    await a.send(type="knock", to=b.id, voice=True)
+    check("and a knock to talk", ((await b.expect("knock")).get("voice"), (await a.expect("knock_sent")).get("voice")), (True, True))
+    for c_ in (a, b):
+        await c_.send(type="bye")
+
+
 async def t_huddle(L):
-    """3.5: a huddle in a world: its members online who take voice hear it start and end; one at a time in a world;
+    """4.0: a huddle in a world: its members online who take voice hear it start and end; one at a time in a world;
     joining is a voice knock to its starter, saying the world."""
     a, b, c = await join(L, "H A", proto=P4, voice=True), await join(L, "H B", proto=P4, voice=True), await join(L, "H C", proto=P4, voice=True)
     old = await join(L, "H Old", proto=P4)
@@ -782,8 +799,12 @@ async def t_v4_hello(L):
 
 
 async def t_v4_takeover_and_resume(L):
-    a, b = await join(L, "T A", proto=P4), await join(L, "T B", proto=P4)
-    await visit(a, b)
+    a, b = await join(L, "T A", proto=P4, voice=True), await join(L, "T B", proto=P4, voice=True)
+    await a.send(type="knock", to=b.id, voice=True)   # (4.0: a voice visit; knocks to walk in are gone)
+    await a.expect("knock_sent")
+    await b.send(type="answer", knock=(await b.expect("knock"))["id"], accept=True)
+    await a.expect("answered"); await a.expect("visit"); await b.expect("visit")
+    await a.quiet(); await b.quiet()
     secret = a.welcome["resume"]
     a2, w = await hello4(L, "T A again", sk=a.sk)
     check("the key says hello again (a restart): a new session, under its new name", (w["resumed"], w["id"] != a.id, w["name"]), (False, True, "T A again"))
@@ -853,10 +874,10 @@ async def forget_hello(lob, b, signer=None):
 async def t_browsers(L):
     """3.1: a browser with its own key, linked to an office (by a web pass its office made, or by the pairing code it
     shows, typed in the office's room), speaks for the office while the office is in the lobby: its chat, whispers,
-    worlds, knocks; never its door nor answering. Linked, it comes back by its key alone; unlinked by its office or by
+    worlds; never its door, knocking nor answering. Linked, it comes back by its key alone; unlinked by its office or by
     itself, it is out."""
     host = "127.0.0.1:%d" % L.port
-    a, b = await join(L, "Web A", proto=P4), await join(L, "Web B", proto=P4)
+    a, b = await join(L, "Web A", proto=P4, voice=True), await join(L, "Web B", proto=P4, voice=True)
     p = web_pass(a.sk, a.key, host)
     w, wel = await browser(L, pass_=p)
     check("a pass: the browser linked, and in as its office", (wel["type"], wel["id"], wel["name"], wel["key"], "resume" in wel), ("web_welcome", a.id, "Web A", a.key, False))
@@ -889,14 +910,10 @@ async def t_browsers(L):
     check("a whisper from the browser: from its office", (wb["from"]["id"], wb["text"]), (a.id, "psst"))
     await b.send(type="whisper", to=a.id, text="back")
     check("one to its office: the browser has it too", ((await a.expect("whisper"))["text"], (await w.expect("whisper"))["text"]), ("back", "back"))
-    await w.send(type="knock", to=b.id, message="from the web")
-    ks, kb = await a.expect("knock_sent"), await b.expect("knock")
-    check("a knock from the browser: its office knocks (its visit-client sees knock_sent), the door asked", (ks["to"], kb["from"]["id"], kb["message"]), (b.id, a.id, "from the web"))
-    check("and the browser sees it go", (await w.expect("knock_sent"))["to"], b.id)
-    await b.send(type="knock", to=a.id)
+    await b.send(type="knock", to=a.id, voice=True)   # (4.0: knocks to talk alone; none to walk in)
     k = await a.expect("knock")
-    check("a knock on its office: the browser is told too", (await w.expect("knock"))["id"], k["id"])
-    for t, extra in (("answer", {"knock": k["id"], "accept": True}), ("door", {"public": True}), ("link", {"endpoint": None, "addr": None}), ("status", {"status": "busy"}),
+    check("a knock to talk on its office: the browser is told too", (await w.expect("knock"))["id"], k["id"])
+    for t, extra in (("knock", {"to": b.id, "voice": True}), ("answer", {"knock": k["id"], "accept": True}), ("door", {"public": True}), ("link", {"endpoint": None, "addr": None}), ("status", {"status": "busy"}),
                      ("browser_code", {"code": "ABCD-EFGH"}), ("browser_revoke", {"key": w.key})):
         await w.send(type=t, **extra)
         e = await w.expect("error", skip=("lobby", "knock_sent", "knock", "answered"))
@@ -1312,7 +1329,7 @@ async def main():
     T = await Lobby("--v3", "--knock-ttl", "1").start()
     tests = [(t, L) for t in (t_hello, t_hello_rules, t_knock_refusals, t_visit, t_end_and_full, t_announce, t_resume, t_resume_replays_visits, t_rename,
                                t_link_withdrawn, t_keys, t_watch, t_link, t_chat, t_whisper, t_v4_hello, t_v4_takeover_and_resume, t_browsers, t_browsers_guarded, t_browsers_confirmed, t_flood, t_v4_directory,
-                               t_v4_groups, t_voice, t_huddle)]
+                               t_v4_groups, t_voice, t_huddle, t_v4_no_knocks)]
     tests += [(t_resume_window_and_bye, S), (t_world_size, S), (t_knock_timeout_and_health, T)]
     try:
         for t, lob in tests:

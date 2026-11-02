@@ -275,8 +275,8 @@ async def main():
               (True, True, "open", [], False))
         lob = await a.until(lambda m: m["type"] == "lobby" and len(m["offices"]) == 2)
         check("both offices in the lobby, neither ready: no page hosts its scene yet", sorted((o["name"], o["ready"]) for o in lob["offices"]), [("A", False), ("B", False)])
-        await b.send(type="knock", to=next(o["id"] for o in lob["offices"] if o["name"] == "A"))
-        check("knocking before hosting: refused, not_hosting", (await b.expect("error"))["code"], "not_hosting")
+        await b.send(type="knock", to=next(o["id"] for o in lob["offices"] if o["name"] == "A"), voice=True)
+        check("knocking (to talk) before hosting: refused, not_hosting", (await b.expect("error"))["code"], "not_hosting")
         await b.send(type="host", three="r128")
         check("a revision that is not digits: refused", (await b.expect("error"))["code"], "bad_message")
         await a.send(type="host", three="128")
@@ -313,8 +313,8 @@ async def main():
         check("B's owner signs out: B's page hears it", si["signed_in"], False)
         lob = await a.until(lambda m: m["type"] == "lobby" and not any(o["name"] == "B" for o in m["offices"]))
         check("and B leaves the lobby at once", [o["name"] for o in lob["offices"]], ["A"])
-        await b.send(type="knock", to=ids["A"])
-        check("signed out, B cannot knock: refused, signed_out", (await b.until(lambda m: m["type"] == "error"))["code"], "signed_out")
+        await b.send(type="knock", to=ids["A"], voice=True)
+        check("signed out, B cannot knock (to talk): refused, signed_out", (await b.until(lambda m: m["type"] == "error"))["code"], "signed_out")
         await sign_in("B")
         lob = await a.until(both)
         ids = {o["name"]: o["id"] for o in lob["offices"]}
@@ -322,18 +322,54 @@ async def main():
         await a.drain()
         await b.drain()
 
-        print("\nknock, let in, link up")
-        await b.send(type="knock", to=ids["A"], message="may I?")
-        k = await a.expect("knock")
-        check("the knock reaches A's page", (k["from"]["name"], k["message"]), ("B", "may I?"))
-        await a.send(type="answer", knock=k["id"], accept=True)
-        await b.expect("answered")
-        sa, sb = await a.expect("visit_started"), await b.expect("visit_started")
-        check("both pages: visit_started, A hosting, B visiting, one visit", (sa["role"], sb["role"], sa["id"] == sb["id"], sa["peer"]["name"], sb["peer"]["name"]),
-              ("host", "visitor", True, "B", "A"))
+        quiet_types = lambda pg: [m["type"] for m in [pg.texts.get_nowait() for _ in range(pg.texts.qsize())] if m]
+
+        async def walk_in(vis, host, host_key, host_name, enter=True, pose=None):
+            """4.0 (#57): `vis` into `host`'s room the one way there is: both in Yard (A's world, public), `vis`'s world on,
+            `host` picked: its plot watched (the host's open door lets a guest in, neither page asked); then (`enter`)
+            stepped onto. (vis's visit_started, host's.)"""
+            for pg in (vis, host):
+                await pg.send(type="group_join", group="Yard")   # (refused, already_member, if it is: passed over)
+            await vis.send(type="world", on=True)
+            await vis.send(type="pick", key=host_key, name=host_name)
+            seen = []
+            try:
+                sv = await vis.until(lambda m: seen.append(m) or (m["type"] == "visit_started" and m.get("watch") and m["peer"].get("key") == host_key), timeout=20)
+            except (AssertionError, asyncio.TimeoutError):
+                print("walk_in: no watch. the visitor's page had:", [(m["type"], m.get("code"), m.get("message"), m.get("name")) for m in seen if m["type"] != "lobby"][-20:])
+                print("the host's:", [(m["type"], m.get("code"), m.get("name")) for m in [host.texts.get_nowait() for _ in range(host.texts.qsize())] if m and m["type"] != "lobby"][-20:])
+                print("the lobby:", await L.state())
+                raise
+            sh = await host.until(lambda m: m["type"] == "visit_started" and m["role"] == "host" and m["id"] == sv["id"], timeout=20)
+            if enter:
+                await vis.send(type="enter", channel=sv["channel"], pose=pose or {"x": 0, "z": 0})
+                await host.until(lambda m: m["type"] == "enter" and m["channel"] == sh["channel"])
+            return sv, sh
+
+        async def walk_out(vis, host, host_key):
+            """Out of their room and their plot out of `vis`'s world (else the world would watch it again), its world off."""
+            await vis.send(type="unpick", key=host_key)
+            e = await vis.until(lambda m: m["type"] == "visit_ended")
+            await host.until(lambda m: m["type"] == "visit_ended" and m["id"] == e["id"])
+            await vis.send(type="world", on=False)
+            await asyncio.sleep(0.3)
+            return e
+
+        print("\nwalking in (4.0, #57: a world is the way in): a world in common, a plot picked, watched, stepped onto")
+        await a.send(type="group_create", group="Yard", open=True)
+        await a.until(lambda m: m["type"] == "group")
+        await b.send(type="group_join", group="Yard")
+        await b.until(lambda m: m["type"] == "group")
+        await a.until(lambda m: m["type"] == "group" and len(m["members"]) == 2)
+        sb, sa = await walk_in(b, a, ka, "A", enter=False)
+        check("B picks A's room in Yard: a watch, A hosting, B watching, one visit; A's open door let B in (its guest), A's page never asked",
+              (sa["role"], sb["role"], sa["id"] == sb["id"], sa["peer"]["name"], sb["peer"]["name"], sa.get("watch"), sa.get("guest")), ("host", "visitor", True, "B", "A", True, True))
+        check("both told the other's key, as its link proved it", (sa["peer"]["key"], sb["peer"]["key"]), (kb, ka))
         cha, chb, vid = sa["channel"], sb["channel"], sa["id"]
         sh = await a.until(lambda m: m["type"] == "shared_adds")
         check("B's visit-client says its page reads an add naming what it has by uuid: A's page hears it", sh, {"type": "shared_adds", "channel": cha})
+        await b.send(type="enter", channel=chb, pose={"x": 0, "z": 0})
+        check("B steps onto A's plot: A's page hears it", (await a.until(lambda m: m["type"] == "enter"))["channel"], cha)
 
         print("\nvisitor to host: input, key deltas, the link")
         await b.send(type="input", forward=1, strafe=-1, run=True, yaw=0.5, pitch=9, t=12345.5)
@@ -449,7 +485,8 @@ async def main():
         await b.close()
         b = await Page(7412, tb).open()
         rb = await b.expect("ready")
-        check("B's page back: still visiting", [(v["id"], v["role"]) for v in rb["visits"]], [(vid, "visitor")])
+        await b.send(type="world", on=True)   # (its watch goes on only if its page asks for its world again)
+        check("B's page back: still visiting", [(v["id"], v["role"], v.get("inside")) for v in rb["visits"]], [(vid, "visitor", True)])
         check("and A is asked for its whole scene again, for B's new page (at most every 2 s: this one waited, and went)",
               (await a.until(lambda m: m["type"] == "scene_resync", timeout=5))["channel"], cha)
         await b.send(type="host", three="128")
@@ -471,9 +508,10 @@ async def main():
         check("the visit never noticed: deltas still flow", unframe(await asyncio.wait_for(b.frames.get(), 5))[3], b"still linked")
 
         print("\nending")
-        await b.send(type="end", visit=vid)
+        await b.send(type="unpick", key=ka)   # (its world would watch A's plot again)
         ea, eb = await a.until(lambda m: m["type"] == "visit_ended"), await b.until(lambda m: m["type"] == "visit_ended")
-        check("B leaving: both pages hear visit_ended, `left`", (ea["reason"], eb["reason"], ea["channel"], eb["channel"]), ("left", "left", cha, chb))
+        check("B takes A's room out of its world: both pages hear visit_ended, `left`", (ea["reason"], eb["reason"], ea["channel"], eb["channel"]), ("left", "left", cha, chb))
+        await b.send(type="world", on=False)
         await asyncio.sleep(1.5)
         stray = []
         for pg in (a, b):
@@ -483,48 +521,43 @@ async def main():
                     stray.append(m)
         check("and no error after it (the link ended on purpose: no redialling, no link_failed)", stray, [])
 
-        print("\nguests (3.3: whoever is in a world with you) and the door")
+        print("\nguests (3.3: whoever is in a world with you) and the door (4.0: open, they walk in; closed, nobody)")
         await a.drain()
         await b.drain()
-        await a.send(type="group_create", group="Yard", open=True)
-        await a.until(lambda m: m["type"] == "group")
-        await b.send(type="group_join", group="Yard")
-        await b.until(lambda m: m["type"] == "group")
-        await a.until(lambda m: m["type"] == "group" and len(m["members"]) == 2)
         saved = json.load(open(state))
         check("A's state file: its door, its picks (none), no guest list, its key (the secret half, readable by A only)",
               (saved["door"], saved["picks"], "guests" in saved, len(saved["key"]), oct(os.stat(state).st_mode & 0o777)), ("open", [], False, 64, "0o600"))
-        await b.send(type="knock", to=ids["A"])
-        sa, sb = await a.until(lambda m: m["type"] == "visit_started"), await b.until(lambda m: m["type"] == "visit_started")
-        check("B, in a world with A (its guest): walks in at the open door, A's page never asked (it hears the visit start, a guest's)",
+        sb, sa = await walk_in(b, a, ka, "A", enter=False)
+        check("B, in a world with A (its guest): its plot watched through the open door, A's page never asked (it hears it start, a guest's)",
               (sa["role"], sa.get("guest"), sa["peer"]["name"], sb["role"]), ("host", True, "B", "visitor"))
-        check("both told the other's key, as its link proved it", (sa["peer"]["key"], sb["peer"]["key"]), (kb, ka))
-        await b.send(type="end", visit=sa["id"])
-        await a.until(lambda m: m["type"] == "visit_ended")
-        await b.until(lambda m: m["type"] == "visit_ended")
         await a.send(type="door", open=False)
         check("A closes its door", (await a.until(lambda m: m["type"] == "picks"))["door"], "closed")
-        await b.send(type="knock", to=ids["A"])
-        k = await a.until(lambda m: m["type"] == "knock")
-        check("door closed: even a guest knocks, and A's page is asked", (k["from"]["name"], k["from"]["key"]), ("B", kb))
-        await a.send(type="answer", knock=k["id"], accept=False)
-        await b.until(lambda m: m["type"] == "answered")
+        e = await b.until(lambda m: m["type"] == "visit_ended")
+        check("door closed: B's watch ends, kicked", (e["id"], e["reason"]), (sb["id"], "kicked"))
+        await b.send(type="pick", key=ka, name="A")   # (asked anew)
+        await asyncio.sleep(1)
+        check("and nobody comes in: B asking again gets nothing, A's page asked nothing",
+              ([t for t in quiet_types(b) if t == "visit_started"], [t for t in quiet_types(a) if t in ("knock", "visit_started")]), ([], []))
         await a.send(type="door", open=True)
         await a.until(lambda m: m["type"] == "picks")
+        await b.send(type="unpick", key=ka)
+        await b.send(type="world", on=False)
         await b.send(type="group_leave", group="Yard")
         await b.until(lambda m: m["type"] == "group_left")
         await a.until(lambda m: m["type"] == "group" and len(m["members"]) == 1)
-        await b.send(type="knock", to=ids["A"])
-        k = await a.until(lambda m: m["type"] == "knock")
-        check("B out of the world: no longer a guest, A's page is asked", k["from"]["name"], "B")
-        await a.send(type="answer", knock=k["id"], accept=False)
-        await b.until(lambda m: m["type"] == "answered")
+        await b.send(type="world", on=True)
+        await b.send(type="pick", key=ka, name="A")
+        await asyncio.sleep(1)
+        check("B out of the world: no longer a guest, it does not even ask (A's page asked nothing)",
+              ([t for t in quiet_types(b) if t == "visit_started"], [t for t in quiet_types(a) if t in ("knock", "visit_started")]), ([], []))
+        await b.send(type="unpick", key=ka)
+        await b.send(type="world", on=False)
         await a.send(type="pick", key="o1a2b3c4", name="nope")
         check("a pick's key must be a key", (await a.until(lambda m: m["type"] == "error"))["code"], "bad_message")
         await a.send(type="pick", key=ka)
         check("and not A's own", (await a.until(lambda m: m["type"] == "error"))["code"], "bad_message")
-        # A lobby that lies: it says B's knock comes from a guest's key (a third office's, in Yard with A). A lets it
-        # in, and the visit is agreed, but B's link is B's own key, not the guest's: A ends it before any link is made.
+        # A lobby that lies: it says B's knock to watch comes from another guest's key (a third office's, in Yard with A).
+        # A lets it in, and the visit is agreed, but B's link is B's own key, not that one: A ends it before any link is made.
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
         lobby_host = re.match(r"^wss?://([^/]+)", url).group(1)
@@ -543,13 +576,15 @@ async def main():
 
         liar, other = await raw_office("Someone")
         await liar.send(json.dumps({"type": "group_join", "group": "Yard"}))
-        await a.until(lambda m: m["type"] == "group" and len(m["members"]) == 2)
+        await b.send(type="group_join", group="Yard")
+        await a.until(lambda m: m["type"] == "group" and len(m["members"]) == 3)
+        await b.send(type="world", on=True)
         await asyncio.sleep(0.3)
         await a.drain()
         await b.drain()
         await L.post("/debug/lie", other.encode())
         try:
-            await b.send(type="knock", to=ids["A"])
+            await b.send(type="pick", key=ka, name="A")   # B's visit-client knocks to watch A's plot
             await asyncio.sleep(1.5)
         finally:
             await L.post("/debug/lie")
@@ -557,14 +592,19 @@ async def main():
         seen_b = [m["type"] for m in [b.texts.get_nowait() for _ in range(b.texts.qsize())] if m]
         check("a lobby lying about whose knock it is: no visit (A's page asked nothing, B's never in)",
               ("knock" in seen_a, "visit_started" in seen_a, "visit_started" in seen_b, (await L.state())["visits"]), (False, False, False, 0))
+        await b.send(type="unpick", key=ka)
+        await b.send(type="world", on=False)
+        await b.send(type="group_leave", group="Yard")
         await liar.send(json.dumps({"type": "group_leave", "group": "Yard"}))
         await liar.close()
         await a.until(lambda m: m["type"] == "group" and len(m["members"]) == 1)
+        await asyncio.sleep(0.5)
+        await a.drain()
+        await b.drain()
 
         print("\nthe world (3.3): only the plots picked, watched; stepping in and out")
         await a.drain()
         await b.drain()
-        quiet_types = lambda pg: [m["type"] for m in [pg.texts.get_nowait() for _ in range(pg.texts.qsize())] if m]
         await b.send(type="group_join", group="Yard")
         await b.until(lambda m: m["type"] == "group")
         await a.send(type="world", on=True)
@@ -621,15 +661,12 @@ async def main():
         check("out again: A's input goes nowhere", [t for t in quiet_types(b) if t == "input"], [])
         await a.send(type="enter", channel=cha_w, pose={"x": 1, "z": 1})
         await b.expect("enter", skip=("lobby", "link_stats", "input"))
-        await a.send(type="knock", to=ids["B"])   # in B's plot, A visits B the old way (a guest: let in at once)
-        r = await a.expect("enter_refused", skip=("lobby", "link_stats", "knock_sent", "answered"))
-        ex = await b.until(lambda m: m["type"] == "exit")
-        va = await a.until(lambda m: m["type"] == "visit_started")
-        check("in B's plot, A starts a visit: out of the plot first (A's page told: moved; B's: it stepped out)",
-              (r["channel"], r["reason"], ex["channel"], va["role"], va.get("watch")), (cha_w, "moved", chb_w, "visitor", None))
-        await a.send(type="end", visit=va["id"])
-        await a.until(lambda m: m["type"] == "visit_ended")
-        await b.until(lambda m: m["type"] == "visit_ended")
+        await a.send(type="knock", to=ids["B"])   # 4.0 (#57): visiting the old way, gone
+        e = await a.until(lambda m: m["type"] == "error")
+        await asyncio.sleep(0.3)
+        check("in B's plot, A knocking to walk in the old way: refused (4.0), and A stays in the plot", (e["code"], e.get("ref"), [t for t in quiet_types(b) if t == "exit"]), ("not_supported", "knock", []))
+        await a.send(type="exit", channel=cha_w)
+        await b.until(lambda m: m["type"] == "exit")
         await b.send(type="max_visitors", n=0)
         await asyncio.sleep(0.3)
         await a.send(type="enter", channel=cha_w, pose={"x": 1, "z": 1})
@@ -730,55 +767,23 @@ async def main():
         await b.drain()
         await a.send(type="unpick", key=kb)
         await a.until(lambda m: m["type"] == "picks")
-        await a.send(type="group_delete", group="Yard")
-        await a.until(lambda m: m["type"] == "group_left")
+        await asyncio.sleep(0.5)   # (Yard stays, A alone in it: 4.0's way into a room below, walk_in)
         check("and every visit is over", (await L.state())["visits"], 0)
 
-        print("\nlinks: a knock let in as a watch, seen in a corner, stepped into")
+        print("\nno knocks nor links (4.0, #57): worlds are the way in")
         await a.drain()
         await b.drain()
-        await a.send(type="knock", to=ids["B"], link=True, message="peek")   # (A knocks: B has knocked its six a minute)
-        k = await b.expect("knock")
-        sent = await a.until(lambda m: m["type"] == "knock_sent")
-        check("A links to B: B's page asked, told it is a link; A's knock_sent says so", (k.get("link"), k["message"], sent.get("link")), (True, "peek", True))
-        await b.send(type="answer", knock=k["id"], accept=True)
-        lb = await b.until(lambda m: m["type"] == "visit_started")
-        la = await a.until(lambda m: m["type"] == "visit_started")
-        check("let in: a link both ways, A outside B's room",
-              (lb["role"], lb.get("watch"), lb.get("link"), lb.get("inside"), la["role"], la.get("watch"), la.get("link"), la.get("inside")),
-              ("host", True, True, False, "visitor", True, True, False))
-        cha_l, chb_l = la["channel"], lb["channel"]
-        await b.send(type="door", open=False)
-        await b.until(lambda m: m["type"] == "picks")
-        await a.send(type="world", on=False)
-        await asyncio.sleep(0.6)
-        check("B's door shut, A's world off: the link goes on", [t for t in quiet_types(a) + quiet_types(b) if t == "visit_ended"], [])
-        await b.send(type="door", open=True)
-        await b.until(lambda m: m["type"] == "picks")
-        await a.send(type="enter", channel=cha_l)
-        e = await b.expect("enter", skip=("lobby", "link_stats", "picks"))
-        check("A goes there: B's page hears it step in with no pose (B's spawn says where)", (e["channel"], "pose" in e), (chb_l, False))
-        await a.send(type="exit", channel=cha_l)
-        check("and back to its own room", (await b.expect("exit", skip=("lobby", "link_stats")))["channel"], chb_l)
-        await a.send(type="end", visit=la["id"])
-        ends = (await a.until(lambda m: m["type"] == "visit_ended"), await b.until(lambda m: m["type"] == "visit_ended"))
-        check("A unlinks: over for both", [x["id"] for x in ends], [la["id"]] * 2)
-        await b.send(type="group_create", group="Porch", open=True)
-        await b.until(lambda m: m["type"] == "group")
-        await a.send(type="group_join", group="Porch")
-        await b.until(lambda m: m["type"] == "group" and len(m["members"]) == 2)
-        await a.send(type="knock", to=ids["B"], link=True)
-        lb = await b.until(lambda m: m["type"] == "visit_started")
-        la = await a.until(lambda m: m["type"] == "visit_started")
-        check("A, B's guest (in a world with it), links through B's open door: let in at once, a link still", (lb.get("link"), lb.get("guest"), la.get("link")), (True, True, True))
-        await b.send(type="group_delete", group="Porch")
-        await b.until(lambda m: m["type"] == "group_left")
-        await asyncio.sleep(0.5)
-        check("A no longer B's guest: its link goes on", [t for t in quiet_types(b) if t == "visit_ended"], [])
-        await b.send(type="end", visit=lb["id"])
-        await a.until(lambda m: m["type"] == "visit_ended")
-        await b.until(lambda m: m["type"] == "visit_ended")
-        check("B ends it: every visit over", (await L.state())["visits"], 0)
+        for extra in ({}, {"link": True}, {"message": "may I?"}):
+            await a.send(type="knock", to=ids["B"], **extra)
+            e = await a.until(lambda m: m["type"] == "error")
+            check("A's page knocking %s: refused, not_supported, naming worlds" % (extra or "to walk in"), (e["code"], e.get("ref"), "world" in e["message"]), ("not_supported", "knock", True))
+        await a.send(type="answer", knock="k0123456789ab", accept=True)
+        check("an answer to no knock to talk: not_found", (await a.until(lambda m: m["type"] == "error"))["code"], "not_found")
+        await a.send(type="link_where", channel=1, where="world")
+        check("link_where: no such message", (await a.until(lambda m: m["type"] == "error"))["code"], "unknown_type")
+        await asyncio.sleep(0.3)
+        check("and B heard none of it", [t for t in quiet_types(b) if t in ("knock", "visit_started")], [])
+        check("every visit over", (await L.state())["visits"], 0)
 
         print("\nworlds (LOBBY.md): members are each other's guests, and watch the plots they pick; public, or with a password")
         await a.drain()
@@ -901,10 +906,7 @@ async def main():
         await b.drain()
         av = {"unit": 1, "json": {"metadata": {"version": 4.5}, "object": {"type": "Group", "uuid": "av-1", "name": "me"}}}
         await a.ws.send(struct.pack(">HBQ", 0, 4, 0) + gzip.compress(json.dumps(av).encode()))   # A's own, kept by A's visit-client
-        await a.send(type="knock", to=ids["B"])
-        await b.send(type="answer", knock=(await b.expect("knock"))["id"], accept=True)
-        vb = await b.until(lambda m: m["type"] == "visit_started")
-        va = await a.until(lambda m: m["type"] == "visit_started")
+        va, vb = await walk_in(a, b, kb, "B")   # (4.0: into B's room through Yard)
         await b.send(type="avatar_want", channel=vb["channel"])
         got = await b.until(lambda m: m["type"] == "avatar")
         check("B asks for A's avatar: A's visit-client sends the one A's page gave it, and B's page has it, whole", (got["channel"], got["avatar"]), (vb["channel"], av))
@@ -949,10 +951,7 @@ async def main():
         kc = (await c.expect("ready"))["key"]
         await c.send(type="host", three="128")
         await c.until(lambda m: m["type"] == "lobby" and any(o["name"] == "B" and o["ready"] for o in m["offices"]))
-        await c.send(type="knock", to=ids["B"])
-        await b.send(type="answer", knock=(await b.until(lambda m: m["type"] == "knock"))["id"], accept=True)
-        vbc = await b.until(lambda m: m["type"] == "visit_started")
-        vc = await c.until(lambda m: m["type"] == "visit_started")
+        vc, vbc = await walk_in(c, b, kb, "B")   # (4.0: into B's room through Yard)
         await b.send(type="avatar_want", channel=vbc["channel"])
         check("B asks C for its avatar, and C's page never gave one: B's page hears so (not silence)", (await b.until(lambda m: m["type"] == "avatar_none"))["channel"], vbc["channel"])
         await b.send(type="body", channel=vbc["channel"], look="mine", eyes=1.7, problem="their room gives no model of its own\u0007")
@@ -1135,15 +1134,11 @@ async def main():
         check("a hang-up goes all the same", (await b.until(lambda m: m["type"] == "call"))["act"], "hangup")
         await a.send(type="phone", on=False)
         check("A's phone gone: B's page hears it", (await b.until(lambda m: m["type"] == "phone"))["on"], False)
-        await a.send(type="end", visit=va["id"])
-        await a.until(lambda m: m["type"] == "visit_ended")
-        await b.until(lambda m: m["type"] == "visit_ended")
+        await a.send(type="exit", channel=va["channel"])   # (4.0: A home again; B's plot still in its world, its watch goes on)
+        await b.until(lambda m: m["type"] == "exit")
 
         print("\na phone on speaker: those near it hear the call, and are heard in it")
-        await a.send(type="knock", to=ids["B"], link=True)   # A, at home, linked to B, calls B's room
-        await b.send(type="answer", knock=(await b.until(lambda m: m["type"] == "knock"))["id"], accept=True)
-        lb = await b.until(lambda m: m["type"] == "visit_started")
-        la = await a.until(lambda m: m["type"] == "visit_started")
+        la, lb = va, vb   # A, at home, B's plot in its world (watched), calls B's room
         await a.send(type="phone", on=True)
         await b.send(type="phone", on=True)
         await a.until(lambda m: m["type"] == "phone")
@@ -1324,7 +1319,7 @@ async def main():
         await a.send(type="ban", key=kb, chat=True)
         check("A keeps B out of its chat (kept in its database, until lifted: see A's restart)", (await a.until(lambda m: m["type"] == "bans"))["bans"],
               [{"key": kb, "name": "B", "voice": False, "chat": True}])
-        print("\nvoice visits and huddles (3.5, #58): a knock to talk rings; answered, a call at once; a world's huddle, joined by a knock its starter's visit-client answers")
+        print("\nvoice visits and huddles (4.0, #58): a knock to talk rings; answered, a call at once; a world's huddle, joined by a knock its starter's visit-client answers")
         async def gathered(pg, secs=1.0):   # every message that comes in `secs`
             await asyncio.sleep(secs)
             return [m for m in [pg.texts.get_nowait() for _ in range(pg.texts.qsize())] if m]
@@ -1603,10 +1598,10 @@ async def main():
         await a.drain(); await b.drain(); await c.drain()
         for pg in (a, b):
             await pg.send(type="phone", on=False)
-        await a.send(type="end", visit=la["id"])
-        await c.send(type="end", visit=vc["id"])
-        for _ in range(2):
-            await b.until(lambda m: m["type"] == "visit_ended")
+        await walk_out(a, b, kb)
+        await walk_out(c, b, kb)
+        await b.send(type="group_leave", group="Yard")   # (as before 4.0's walking in: B and A in no world together)
+        await b.until(lambda m: m["type"] == "group_left")
         await c.close()
         pc.terminate()
         await pc.wait()
@@ -1691,15 +1686,15 @@ async def main():
         print("\naway: out of the lobby on purpose, and back")
         await a.drain()
         await b.drain()
-        await b.send(type="knock", to=ids["A"])
-        await a.send(type="answer", knock=(await a.expect("knock"))["id"], accept=True)
-        await a.until(lambda m: m["type"] == "visit_started")
-        await b.until(lambda m: m["type"] == "visit_started")
+        await walk_in(b, a, ka, "A")
         await a.send(type="leave_lobby")
         off = await a.until(lambda m: m["type"] == "offline")
         check("A leaves the lobby: its page hears offline, away", off.get("away"), True)
         eb = await b.until(lambda m: m["type"] == "visit_ended")
         check("B's visit to A ends, `gone`", eb["reason"], "gone")
+        await b.send(type="unpick", key=ka)
+        await b.send(type="world", on=False)
+        await b.send(type="group_leave", group="Yard")
         lob = await b.until(lambda m: m["type"] == "lobby" and all(o["name"] != "A" for o in m["offices"]))
         check("and B's lobby no longer has A (it said bye: no resume window)", [o["name"] for o in lob["offices"]], ["B"])
         await b.send(type="say", text="while you were out", to={"whisper": ka, "name": "A"})
@@ -1712,8 +1707,8 @@ async def main():
         check("and one taken back before it went", [h["text"] for h in hb["held"]], ["while you were out"])
         await b.send(type="say", text="look", to={"whisper": ka}, media=[pic])
         check("one with a picture: refused (kept whispers are text only)", (await b.until(lambda m: m["type"] == "error"))["code"], "no_link")
-        await a.send(type="knock", to=ids["B"])
-        check("away, A cannot knock: refused `away`", (await a.expect("error", skip=("lobby", "visit_ended")))["code"], "away")
+        await a.send(type="knock", to=ids["B"], voice=True)
+        check("away, A cannot knock (to talk): refused `away`", (await a.expect("error", skip=("lobby", "visit_ended")))["code"], "away")
         check("A's state file says away", json.load(open(state))["away"], True)
         a2 = await Page(7411, ta).open()
         ra2 = await a2.expect("ready")

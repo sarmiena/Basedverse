@@ -243,7 +243,7 @@ pub enum ToLobby {
         chat: bool,
         #[serde(default, skip_serializing_if = "is_false", deserialize_with = "truthy")]
         whisper: bool,
-        /// 3.5, any version: it takes voice knocks and huddles (an office before 3.5 would take a voice knock for a
+        /// 4.0, any version: it takes voice knocks and huddles (an office before 4.0 would take a voice knock for a
         /// knock to visit, so only an office that says so is sent one).
         #[serde(default, skip_serializing_if = "is_false", deserialize_with = "truthy")]
         voice: bool,
@@ -266,14 +266,14 @@ pub enum ToLobby {
         watch: bool,
         #[serde(default, skip_serializing_if = "is_false", deserialize_with = "truthy")]
         link: bool,
-        /// 3.5: to talk, voice alone (no room, no plot): a voice visit once answered.
+        /// 4.0: to talk, voice alone (no room, no plot): a voice visit once answered.
         #[serde(default, skip_serializing_if = "is_false", deserialize_with = "truthy")]
         voice: bool,
-        /// 3.5, with `voice`: to join the huddle the door started in this world.
+        /// 4.0, with `voice`: to join the huddle the door started in this world.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         huddle: Option<String>,
     },
-    /// 3.5: a knock of this office's withdrawn (a call it rang, given up): its door hears `knock_cancelled`.
+    /// 4.0: a knock of this office's withdrawn (a call it rang, given up): its door hears `knock_cancelled`.
     KnockCancel {
         #[serde(default, deserialize_with = "id_or_none")]
         knock: Option<String>,
@@ -342,7 +342,7 @@ pub enum ToLobby {
     GroupOwner { group: Option<String>, key: Option<String> },
     GroupDelete { group: Option<String> },
     GroupSay { group: Option<String>, text: Option<String> },
-    /// 3.5: a huddle in one of this office's worlds, started (`on`) or over: every member online who takes voice hears.
+    /// 4.0: a huddle in one of this office's worlds, started (`on`) or over: every member online who takes voice hears.
     GroupHuddle {
         group: Option<String>,
         #[serde(default, deserialize_with = "truthy")]
@@ -414,7 +414,7 @@ pub struct Office {
     pub world: bool,
     pub links: bool,
     pub whisper: bool,
-    /// 3.5: it takes voice knocks and huddles.
+    /// 4.0: it takes voice knocks and huddles.
     #[serde(default, skip_serializing_if = "is_false")]
     pub voice: bool,
     /// Version 4: its line, in the list of who is here.
@@ -534,7 +534,7 @@ pub enum FromLobby {
         title: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         motd: Option<String>,
-        /// 3.5: this lobby carries voice knocks and huddles (an older one would pass a voice knock on as a knock).
+        /// 4.0: this lobby carries voice knocks and huddles (an older one would pass a voice knock on as a knock).
         #[serde(skip_serializing_if = "is_false", default)]
         voice: bool,
     },
@@ -587,7 +587,7 @@ pub enum FromLobby {
         watch: bool,
         #[serde(skip_serializing_if = "is_false", default)]
         link: bool,
-        /// 3.5: a voice visit (voice alone: no scene, no room), and the world whose huddle it joins, if one.
+        /// 4.0: a voice visit (voice alone: no scene, no room), and the world whose huddle it joins, if one.
         #[serde(skip_serializing_if = "is_false", default)]
         voice: bool,
         #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -628,7 +628,7 @@ pub enum FromLobby {
     /// Version 4: no longer in a world (`left`, `removed`, `banned`, `deleted`).
     GroupLeft { group: String, reason: String },
     GroupChat { group: String, from: Sayer, text: String },
-    /// 3.5: a huddle in one of this office's worlds: started by `from` (`on`), or over. `since`: seconds since it
+    /// 4.0: a huddle in one of this office's worlds: started by `from` (`on`), or over. `since`: seconds since it
     /// started (on welcome, those going on are told again).
     Huddle { group: String, from: Sayer, on: bool, #[serde(default)] since: u64 },
     Groups { groups: Vec<Listed> },
