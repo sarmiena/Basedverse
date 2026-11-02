@@ -13,7 +13,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "4.0.0", PROTO = "basedverse-visit-local/2";
+  const VERSION = "4.0.1", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -2301,8 +2301,9 @@
     }
     // A line one of your room's own figures says (8.9: a receptionist, a guide; never a person): `id` names it, 1 to 40
     // letters, digits, _ . or -, and its object in your scene is named "visit:npc:<id>" (its bubble goes over it);
-    // `name` is what it goes by in everyone's chat. Said in your room, to everyone who can see it, and kept in its
-    // chat; never as your user, and on a limit of its own (each figure CHATS lines every CHAT_WINDOW). False if not sent.
+    // `name` is what it goes by in everyone's chat. Said in your room as a person's line is (4.0.1): heard within
+    // voiceRange of that object, by those in the room (never by a world member outside it); never as your user, and
+    // on a limit of its own (each figure CHATS lines every CHAT_WINDOW). False if not sent.
     sayAs(id, name, text, { to = null } = {}) {
       const t = [...String(text == null ? "" : text).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim()].slice(0, CHAT_LEN).join("").trim(), now = Date.now();
       const i = String(id == null ? "" : id), n = String(name == null ? "" : name).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim();
@@ -2310,7 +2311,12 @@
       const said = (this._saidAs.get(i) || []).filter(at => now - at < CHAT_WINDOW);
       if (said.length >= CHATS) return false;
       this._saidAs.set(i, said.concat(now));
-      this._send({ type: "say_as", id: i, name: n, text: t, ...(to != null ? { to: String(to) } : {}) });
+      // Where it is, in metres, as voice_where has everyone in your room (none: no such object, heard in the whole room).
+      const sc = this._hooks && this._hooks.scene, o = sc && sc.root && sc.three && sc.root.getObjectByName("visit:npc:" + i);
+      let at = null;
+      if (o) { const k = this._unit(), p = o.getWorldPosition(new sc.three.Vector3()), q = x => Math.round(x * k * 10) / 10; at = [q(p.x), q(p.y), q(p.z)]; }
+      if (at && !at.every(Number.isFinite)) at = null;
+      this._send({ type: "say_as", id: i, name: n, text: t, ...(at ? { at } : {}), ...(to != null ? { to: String(to) } : {}) });
       return true;   // (it comes back from the visit-client as your room's line, kept; `to`: to them alone, a whisper)
     }
     // The conversation of the room your user is in (8.12): "room:" its owner's key.
@@ -2479,7 +2485,7 @@
       }
       // 3.4.2 (#54): said in your own room out of your user's hearing (more than voiceRange off, or they are not in it):
       // for the room's logic ("said_far"), never a line in your chat or a bubble.
-      if (m.far === true) { this._emit("said_far", { key: line.key, name: line.name, text: line.text, id: typeof m.id === "string" ? m.id : null, channel: m.channel }); return null; }
+      if (m.far === true) { this._emit("said_far", { key: line.key, name: line.name, text: line.text, id: typeof m.id === "string" ? m.id : null, ...(typeof m.npc === "string" ? { npc: m.npc } : {}), channel: m.channel }); return null; }
       const npc = typeof m.npc === "string" ? m.npc : null;   // one of a room's own figures (sayAs): yours, said with no channel
       const aim = isObj(m.target) && ["figure", "person"].includes(m.target.kind) && typeof m.target.id === "string" ? { kind: m.target.kind, id: m.target.id } : null;   // (3.3: meant for)
       // (3.4.2: `seam`, said by a friend at home near your user across your plots' side: by the visit that shows their room.)
