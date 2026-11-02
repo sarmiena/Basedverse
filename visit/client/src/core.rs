@@ -387,8 +387,10 @@ pub struct Core {
     /// call at once: only one this office asked for, or let in, and with the key it let in; any other is ended.
     voice_asked: HashMap<String, Instant>,
     voice_let: HashMap<String, (String, Instant)>,
-    /// 3.5: the world whose huddle this office's user started (its room's voice carries it).
+    /// 3.5: the world whose huddle this office's user started (its room's voice carries it); and the huddles going on in
+    /// its worlds, as the lobby last said (by world, lower case: the page's `huddle` message), for a page that connects.
     huddle: Option<String>,
+    huddles: BTreeMap<String, Value>,
     visits: HashMap<String, Visit>,
     next_channel: u16,
     /// The three.js revision of the scene this office's page hosts (`host`): only then is the office in the
@@ -467,6 +469,7 @@ impl Core {
             voice_asked: HashMap::new(),
             voice_let: HashMap::new(),
             huddle: None,
+            huddles: BTreeMap::new(),
             visits: HashMap::new(),
             next_channel: 1,
             hosting: None,
@@ -784,7 +787,7 @@ impl Core {
     fn ready_json(&self, role: PageRole) -> Value {
         let visits: Vec<Value> = self.visits.values().filter(|v| v.up && visit_for(v).map_or(true, |r| r == role || role == PageRole::Both)).map(started).collect();
         let mut m = json!({
-            "type": "ready", "version": VERSION, "office": self.office, "online": self.online, "lobby_chat": self.lobby_chat, "away": self.saved.away, "status": self.status,
+            "type": "ready", "version": VERSION, "office": self.office, "online": self.online, "lobby_chat": self.lobby_chat, "lobby_voice": self.lobby_voice, "huddles": self.huddles.values().cloned().collect::<Vec<_>>(), "away": self.saved.away, "status": self.status,
             "signed_in": self.signed_in, "lobby_info": self.lobby_info, "groups": self.groups.values().cloned().collect::<Vec<_>>(),
             "about": self.saved.about,
             "max_visitors": self.max_visitors, "visits": visits, "key": self.key, "door": self.door(), "picks": self.saved.picks_json(), "ignored": self.saved.ignored_json(),
@@ -2769,8 +2772,9 @@ impl Core {
                 self.online = true;
                 self.lobby_chat = m.get("chat") == Some(&json!(true));
                 self.lobby_voice = m.get("voice") == Some(&json!(true));
-                if !resumed {   // a new session: no huddle of this office's goes on
+                if !resumed {   // a new session: no huddle of this office's goes on (and those going on are told again)
                     self.huddle = None;
+                    self.huddles.clear();
                 }
                 self.lobby_info = json!({ "title": m.get("title"), "motd": m.get("motd"), "admin": m.get("admin") == Some(&json!(true)) });
                 // Each comes again, whole, after the welcome: the ones it had count meanwhile.
@@ -2790,7 +2794,7 @@ impl Core {
                 info!(office = %self.office, resumed, "in the lobby");
                 self.publish_link();
                 let (office, knocking) = (self.office.clone(), m.get("knocking").cloned().unwrap_or(json!([])));
-                self.to_page(json!({ "type": "online", "office": office, "knocking": knocking, "lobby_chat": self.lobby_chat, "lobby_info": self.lobby_info }));
+                self.to_page(json!({ "type": "online", "office": office, "knocking": knocking, "lobby_chat": self.lobby_chat, "lobby_voice": self.lobby_voice, "lobby_info": self.lobby_info }));
             }
             // A world group of this office's, whole (../../LOBBY.md): its members may watch each other's plots.
             "group" => {
@@ -2906,9 +2910,15 @@ impl Core {
                     self.huddle_over(&group);
                 }
                 let since = m.get("since").and_then(Value::as_u64).unwrap_or(0);
-                self.to_page(json!({ "type": "huddle", "group": group, "on": on, "since": since,
-                                     "from": { "id": s(&from["id"], 40), "name": s(&from["name"], 24), "key": key },
-                                     "mine": key.as_deref() == Some(self.key.as_str()) }));
+                let h = json!({ "type": "huddle", "group": group, "on": on, "since": since,
+                                "from": { "id": s(&from["id"], 40), "name": s(&from["name"], 24), "key": key },
+                                "mine": key.as_deref() == Some(self.key.as_str()) });
+                if on {
+                    self.huddles.insert(group.to_ascii_lowercase(), h.clone());
+                } else {
+                    self.huddles.remove(&group.to_ascii_lowercase());
+                }
+                self.to_page(h);
             }
             "visit" => self.visit_agreed(&m),
             "visit_ended" => {
