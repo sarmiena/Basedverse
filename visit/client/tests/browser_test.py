@@ -1032,7 +1032,11 @@ async def run(a, b, url):
         await b.js("room.add('visit:npc:guide')")
         await a.until("!!(here() && here().scene && here().scene.root.getObjectByName('visit:npc:guide'))")
         check("a bad figure id is refused at once", await b.js("v.sayAs('../x', 'Guide', 'no')"), False)
+        await b.js("window.sentAs = []; (s => { v._send = m => { if (m.type === 'say_as') sentAs.push(m); return s(m); }; })(v._send.bind(v))")
         check("B's room's guide says a line (sayAs)", await b.js("v.sayAs('guide', 'Guide', 'welcome to my room')"), True)
+        check("4.0.1: with where the guide stands, in metres (heard within 45 m of it)", await b.js(
+            "(m => (sc => (p => Array.isArray(m.at) && m.at.length === 3 && m.at.every((x, i) => Math.abs(x - p[i] * v._unit()) < 0.06))"
+            "(sc.root.getObjectByName('visit:npc:guide').getWorldPosition(new sc.three.Vector3()).toArray()))(v._hooks.scene))(sentAs.at(-1))"), True)
         check("A, in B's room, has it from the guide, by its name, not from B", await a.until(
             "(c => c && c.npc === 'guide' && !c.owner && !c.id && c.text)(v.chats.find(c => c.name === 'Guide'))"), "welcome to my room")
         check("A's world draws it, in B's room", await a.until("[...room.world.bubbles.by.values()].some(x => x.text === 'welcome to my room')"), True)

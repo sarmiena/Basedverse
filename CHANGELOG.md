@@ -10,6 +10,23 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v4.0.1 — 2026-11-02 — a room's figures heard near them, in the room alone
+
+- **A room's figures talk as people do** ([visit/SPEC.md](visit/SPEC.md) 8.9). A line one of its figures says
+  (`v.sayAs`: a receptionist, a guide) went to everyone who could see the room, so a world member standing in their
+  own plot, anywhere in the world, had every line of a friend's receptionist in their chat. Now it goes as a person's
+  `/s` has since 3.4.2: visit.js says where the figure's object (`visit:npc:<id>`) is, and the room's visit-client
+  gives the line to each visitor in the room within 45 m of it. Nobody outside the room has it: not a world member
+  whose world shows the plot, even beside it. The room's own page still has every line, marked `far` when its user
+  is not near (visit.js: `"said_far"`, now with the figure's `npc`), as for a visitor's line. A figure with no object
+  in the scene is heard in the whole room, by those in it. A 4.0.1 office also drops the figures' lines a room on
+  4.0.0 or older still sends to those watching its plot from outside.
+- The lobby is 4.0.0's (only its version): no new deploy.
+
+**What an integration does:** nothing, if each figure that talks has its object named `visit:npc:<id>` in your scene
+(the bubble already needed it). A room page that listened to `chat` for its own figures' lines listens to
+`"said_far"` too.
+
 ## v4.0.0 — 2026-11-01 — worlds are the way to meet: Knock and Link gone (#57); 🎧 follows the chat box: talk, huddles (#58); rooms act out their interactions on a visitor's own model (#59, #60); friends' plots cost less (#42)
 
 **4.0 breaks the page's API** (Knock and Link are gone): every workroom upgrades, and the lobby is deployed again.

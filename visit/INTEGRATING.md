@@ -477,7 +477,8 @@ visit.host({
   game's party), `/room name` in a linked friend's, `/1` to the whole lobby
   (`visit.say(text, to)` from code). Something of your room's own that talks (a receptionist, a guide; not a
   person): name its object `visit:npc:<id>` and say its lines with `visit.sayAs(id, name, text)`: in your room, over
-  it, in everyone's chat under its own name, never as your user (on the engine, from the server page). With a world (step
+  it, in the chat of those within 45 m of it under its own name, never as your user (on the engine, from the server
+  page). Keep that object in your scene: Visit measures from it (4.0.1; with none, the whole room hears it). With a world (step
   9) Visit draws the bubbles in your room too; without one, draw them yourself from `visit.chats`
   (`Visit.bubble(THREE, text, unit)` makes one). A chat window of your own: give names a click to ignore them
   (`visit.ignore(key, { npc, name })`; 3.3: their lines then never reach your page). Make sure your room's keys ignore a text box (WASD there is typing,

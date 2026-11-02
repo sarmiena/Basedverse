@@ -1445,8 +1445,10 @@ impl Core {
             }
             // A line one of this room's own figures says (8.9: a receptionist, a guide; none of them a person): `id` names
             // it (its object in the room's scene is `visit:npc:<id>`), `name` is what it goes by. Said in this office's
-            // room, to everyone who can see it (its visitors, and those who have it in their worlds or corners), and kept
-            // in its chat, never as this office's user: their own limit is untouched, each figure has one of its own.
+            // room, to those in it, never as this office's user: their own limit is untouched, each figure has one of
+            // its own. 4.0.1: as a person's line goes (#54), by where the figure is (`at`, in metres, as voice_where has
+            // everyone): to each visitor within VOICE_RANGE of it (one the room has not placed: all the same), and to
+            // nobody outside the room (a world member whose world shows the plot sees the figure, not its talk).
             "say_as" => {
                 let id = m.get("id").and_then(Value::as_str).filter(|id| link::possession_id_ok(id)).map(str::to_string);
                 let name = m.get("name").and_then(Value::as_str).map(state::clip_name).map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
@@ -1484,12 +1486,19 @@ impl Core {
                     }
                     return;
                 }
-                for v in self.visits.values().filter(|v| v.up && v.role == Role::Host && !v.local && !self.chat_banned(v.peer.get("key").and_then(Value::as_str).unwrap_or(""))) {
-                    let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "said": line })));
+                let at = spot(m.get("at"));
+                for v in self.visits.values().filter(|v| v.up && v.role == Role::Host && v.inside && !v.local && !self.chat_banned(v.peer.get("key").and_then(Value::as_str).unwrap_or(""))) {
+                    if at.is_none_or(|at| self.voice.visitors.get(&v.channel).is_none_or(|p| flat(*p, at) <= VOICE_RANGE)) {
+                        let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "said": line })));
+                    }
                 }
                 let mut chat = line;
                 chat["type"] = json!("chat");
                 chat["conversation"] = json!(format!("room:{}", self.key));
+                // As a visitor's line: one its user is not near (more than VOICE_RANGE off, or not in the room) is `far`.
+                if at.is_some_and(|at| self.voice.me.is_none_or(|me| flat(at, me) > VOICE_RANGE)) {
+                    chat["far"] = json!(true);
+                }
                 self.to_page(chat);
             }
             // 3.4 (#36): a sound of this room's own, once, from a point in it (`at`, its units): to everyone in it (its
@@ -3749,6 +3758,11 @@ impl Core {
                 } else if let Some(p) = m.get("paused").and_then(Value::as_bool) {
                     self.to_page(json!({ "type": if p { "host_paused" } else { "host_resumed" }, "channel": ch }));
                 } else if let Some(line) = m.get("said").and_then(said_from) {   // a line said in the host's room (8.9)
+                    // 4.0.1: one of its figures' lines aloud, watching its plot from outside it: not this office's to
+                    // hear (a room on 4.0.0 or older sends them to everyone who sees its plot, wherever they stand).
+                    if line.get("npc").is_some() && !v.inside && m.get("whisper") != Some(&json!(true)) {
+                        return;
+                    }
                     self.want_media(&line, id);
                     let mut line = line;
                     line["type"] = json!("chat");
