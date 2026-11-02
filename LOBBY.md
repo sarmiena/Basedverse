@@ -58,7 +58,10 @@ visit-clients, directly or through the relay, which cannot read them.
    proved by the link (SPEC 3, point 9). Later: member lists signed by the world's owner, which a lobby could not
    forge.
 8. **World chat is text.** Voice stays as it is (SPEC 8.7): by who is near in a room, and across a plot's side
-   where both worlds agree. Anyone on a plot is in that room, however they came (a knock, a guest, a world, a
+   where both worlds agree. (3.5, #58: and a world's **huddle**, by the owner's word: one member starts it, it rings for
+   the others online, and whoever joins is in the starter's room's voice, carried by the starter's office as any room
+   voice is; the lobby only says it started and ended. And **talking**: two people, voice alone, by a knock to talk
+   the other answers. The lobby carries the knock, never a sound.) Anyone on a plot is in that room, however they came (a knock, a guest, a world, a
    link): they see and hear each other there, linked or not.
 9. **Visit draws the lobby.** The chat window gets each world's chat (`/g <world>`), the panel gets the worlds,
    who is here, and the browsers linked. Rooms may draw their own from the API, as for everything else.

@@ -54,8 +54,10 @@ take them unless your user asks for something else. The defaults are Visit's own
   room's chat (`/room`: everyone in it and linked with it) or a linked friend's (`/room name`), to the lobby (`/1`), or to one of your worlds
   (`/g name`, or `/2`, `/3`…); joining the lobby, it says the lobby's name and its message of the day; Tab finishes a name, else moves on to the next of those (Shift+Tab: back); 🎙 a voice
   message; 📬 what came for your user while nobody looked (whispers, your room's chat, mentions), kept until read;
-  a whisper to someone away is kept by your `visit` until you are both in the lobby; 🎧 joins a
-  room's voice (everyone in it hears everyone else), and a line over the box says who is in it; a click on a name in
+  a whisper to someone away is kept by your `visit` until you are both in the lobby; 🎧 talks with whoever
+  the box talks to (3.5: a whisper's person, voice alone, wherever they are; a world's huddle; a room's voice, where
+  everyone in it hears everyone else), someone who wants to talk ringing above the box until answered, and a line over
+  the box says who you are talking with; a click on a name in
   its log: Whisper, Ignore (3.3: their lines never reach your user again; `/ignore name`, `/unignore name`, and the
   panel lists them to let go, or Clear); it fades when nobody has said anything for a while;
 - **mounts** (`visit.ride`, M, the panel's "your mount"): Visit carries them and puts them under their rider in
