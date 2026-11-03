@@ -14,6 +14,12 @@ so walking in it is as quick as in your own. What everyone agrees on is a thin i
 two hooks, and two pieces everyone drops in unchanged.
 
 <p align="center">
+  <img alt="A workroom by the pool at night: four agents at the pool's edge, what each is doing written above it, their cards in a list on the left, the kanban board under a POOL PARTY sign, someone on a donut float saying vegas baby, and the ⏱ report in the corner" src=".github/assets/agent-room.png">
+  <br>
+  <em>A workroom with its agents out by the pool: what each one is working on, over its head and in the list, with the board behind them. Vegas baby.</em>
+</p>
+
+<p align="center">
   <img alt="In a friend's workroom, drawn by your own page: Gooshy's office, its name on the ground, blocky agents at their desks under the kanban board, a visitor among them, the Visit panel, and you, walking around" src=".github/assets/gooshy-office.png">
   <br>
   <em>In a friend's room: Gooshy's office, with GOOSHY on the ground, drawn by your own page from what his room sends. The panel is yours; the room is his.</em>
