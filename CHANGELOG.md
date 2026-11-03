@@ -10,6 +10,21 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v4.3.1 — 2026-11-03 — the sky drawn for less; ⏱ counts draw calls, shadows apart
+
+Nothing changes a protocol's name: offices on 4.2 and 4.3 meet and visit each other as before.
+
+- **The sky costs nothing now.** A world painted its sky by drawing the room's whole scene with nothing of it in view:
+  three.js still walked and worked out every object in it each frame (1.2 ms a frame in a room of 6,600 objects,
+  measured on Sweatshop's). It is drawn from a scene of its own now, holding the background alone.
+- **⏱ counts draw calls**: "draw calls a frame: 612 + 1,200 for shadows", and `draws` ({ colour, shadow }) in each row
+  of the report. three.js's own count (`renderer.info`) leaves the shadow passes out, and they are often the larger
+  part: every mesh that casts a shadow is drawn again for each light that casts them. Counted only while ⏱ is on.
+
+**What an integration does:** nothing. A room that draws slowly: turn on ⏱ and look at its draw calls (INTEGRATING,
+"Troubleshooting"): fewer meshes (shared geometries, instancing, merging what stands still) and fewer shadow casters
+(small things rarely need to cast) are the usual ways down.
+
 ## v4.3.0 — 2026-11-03 — people named by the name they go by, in the rooms they are in; your own room never round yours
 
 Nothing changes a protocol's name: offices on 4.2 and 4.3 meet and visit each other as before.

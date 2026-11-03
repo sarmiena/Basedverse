@@ -13,7 +13,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "4.3.0", PROTO = "basedverse-visit-local/2";
+  const VERSION = "4.3.1", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -2511,8 +2511,11 @@
       const p = this._perf, secs = (now - p.at) / 1000, r1 = x => Math.round(x * 10) / 10, sync = this._sync, w = this._world;
       const gaps = p.frames.splice(0).sort((a, b) => a - b), long = p.long.splice(0);
       const parts = Object.fromEntries(Object.entries(p.cur).map(([k, x]) => [k, { n: x.n, ms: r1(x.ms / secs), max: r1(x.max) }]));
+      const dc = w && w._count, drawn = p.cur.draw ? p.cur.draw.n : 0;   // 4.3.1: draw calls a frame, colour and shadows apart
+      const draws = dc && drawn ? { colour: Math.round(dc.colour / drawn), shadow: Math.round(dc.shadows / drawn) } : null;
+      if (dc) { dc.colour = 0; dc.shadows = 0; }
       const row = { visit: VERSION, t: Date.now(), fps: Math.round(gaps.length / secs), frame_p95_ms: gaps.length ? r1(gaps[Math.floor(gaps.length * 0.95)]) : null,
-        frame_max_ms: gaps.length ? r1(gaps[gaps.length - 1]) : null, long_tasks: long.length, long_max_ms: long.length ? r1(Math.max(...long)) : 0, parts,
+        frame_max_ms: gaps.length ? r1(gaps[gaps.length - 1]) : null, long_tasks: long.length, long_max_ms: long.length ? r1(Math.max(...long)) : 0, parts, draws,
         counts: { visitors: [...this._hosted.values()].filter(h => h.inside).length, watchers: [...this._hosted.values()].filter(h => h.watch && !h.inside).length,
           plots: w ? w.plots.filter(x => !x.home).length : 0, offline: w ? w.plots.filter(x => x.offline).length : 0, objects: sync ? sync.objs.size : 0,
           landscape: sync ? sync.statics.length : 0, voices: this.voices.length, visiting: !!(this.visiting && this.visiting.inside) } };
@@ -2523,6 +2526,7 @@
       p.el.innerHTML = `<b>⏱ ${row.fps} fps</b> <span style="color:#8b949e">(Visit ${VERSION})</span> · slowest frame ${row.frame_max_ms ?? "–"} ms · ${row.long_tasks ? `<span style="color:#f85149">${row.long_tasks} stall${row.long_tasks > 1 ? "s" : ""} (${row.long_max_ms} ms)</span>` : "no stalls"}\n`
         + `Visit ${r1(all)} ms a second: ${own.map(line).filter(Boolean).join(" · ") || "idle"}`
         + (parts.draw ? `\ndrawing your room${c.plots ? " and its plots" : ""}: ${parts.draw.ms} ms a second (${r1(parts.draw.ms / Math.max(1, parts.draw.n))} a frame)` : "")
+        + (draws ? `\ndraw calls a frame: ${draws.colour.toLocaleString("en")} + ${draws.shadow.toLocaleString("en")} for shadows` : "")
         + (parts.textures ? `\npictures sent: ${parts.textures.n} (encoded in the background, off the page: ${parts.textures.max} ms at most)` : "")
         + `\n${c.visitors} visitor${c.visitors === 1 ? "" : "s"} · ${c.watchers} watching · ${c.plots} plot${c.plots === 1 ? "" : "s"}${c.offline ? ` (${c.offline} offline)` : ""} · ${c.objects} objects`
         + `${c.landscape ? ` + ${c.landscape} landscape` : ""}${c.voices ? ` · ${c.voices} near` : ""}\n`
@@ -5278,8 +5282,26 @@
     // plot out of view is left out, and its lights' shadows are worked out on a beat (cull, shadowMs; _neighbour);
     // world.drawn says how many plots this frame drew and left out.
     render(camera) {
-      const t0 = this.v._perf ? performance.now() : 0;
-      try { this._render(camera); } finally { if (this.v._perf) this.v._pt("draw", performance.now() - t0); }
+      const p = this.v._perf;
+      if (!!p !== !!this._count) this._countDraws(!!p);
+      const t0 = p ? performance.now() : 0, c = this._count;
+      if (c) c.on = true;
+      try { this._render(camera); } finally { if (c) c.on = false; if (p) this.v._pt("draw", performance.now() - t0); }
+    }
+    // ⏱ (4.3.1): the draw calls this drawing makes, its colour and its shadows apart (three.js's own count, renderer.info,
+    // leaves out the shadow passes), counted while ⏱ is on, the renderer as it was once it is off.
+    _countDraws(on) {
+      const r = this.renderer, sm = r.shadowMap, was = this._count;
+      if (was) {
+        if (r.renderBufferDirect === was.draw) r.renderBufferDirect = was.rbd;
+        if (sm && sm.render === was.shadow) sm.render = was.smr;
+        this._count = null;
+      }
+      if (!on || typeof r.renderBufferDirect !== "function" || !sm || typeof sm.render !== "function") return;
+      const c = this._count = { on: false, inShadow: false, colour: 0, shadows: 0, rbd: r.renderBufferDirect, smr: sm.render };
+      c.draw = function (...a) { if (c.on) { if (c.inShadow) c.shadows++; else c.colour++; } return c.rbd.apply(this, a); };
+      c.shadow = function (...a) { const before = c.inShadow; c.inShadow = true; try { return c.smr.apply(this, a); } finally { c.inShadow = before; } };
+      r.renderBufferDirect = c.draw; sm.render = c.shadow;
     }
     _render(camera) {
       const r = this.renderer, auto = r.autoClear, planes = r.clippingPlanes, now = performance.now(), v = this.v;
@@ -5297,10 +5319,16 @@
         // Your scene's sky alone first (its background: nothing of it drawn, nor its shadows worked out again), then the
         // ground between plots; then the rooms farthest first, the nearest last, so that each one's see-through things
         // (a name over a head, a window) land on what is behind them, not under a farther room drawn after it.
-        const mask = camera.layers.mask, su = r.shadowMap.autoUpdate;
+        // 4.3.1: the sky drawn from a scene of its own with nothing in it, its background alone; drawing the room's scene with
+        // nothing of it in view still had three.js walk and work out every object in it (1.2 ms a frame at 6,600 objects).
         const hx = !this.scene && list.find(x => x.home), sky = this.scene || (hx ? hx.w.scene.root : this.commons);   // a user page: its room's sky
-        r.clippingPlanes = []; r.shadowMap.autoUpdate = false; camera.layers.set(31);
-        try { r.render(sky, camera); } finally { camera.layers.mask = mask; r.shadowMap.autoUpdate = su; }
+        const bg = this._sky || (this._sky = new this.T.Scene());
+        bg.background = sky.background || null;
+        for (const k of ["backgroundBlurriness", "backgroundIntensity"]) if (k in sky && k in bg) bg[k] = sky[k];
+        if (sky.backgroundRotation && bg.backgroundRotation) bg.backgroundRotation.copy(sky.backgroundRotation);
+        r.clippingPlanes = [];
+        r.render(bg, camera);
+        bg.background = null;   // (nothing of the room kept here between frames)
         r.autoClear = false;
         this.commons.fog = sky.fog || null;
         r.render(this.commons, camera);
@@ -5395,6 +5423,7 @@
     }
 
     release() {
+      this._countDraws(false);
       this.leave();
       this._homeRide(null, 0);
       if (this.bubbles) this.bubbles.release();

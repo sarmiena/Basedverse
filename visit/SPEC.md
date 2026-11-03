@@ -1703,7 +1703,9 @@ v.landscapeChanged()        // something marked userData.visitStatic (8.10) chan
 v.perf(on); v.perfReport()  // telemetry (the panel's ⏱; remembered in this browser; ?visit-perf=1): a corner of the page,
                             //   each second, this page's frames and stalls (long tasks) and Visit's own work by part (ms);
                             //   perfReport(): the last two minutes, a row a second, each with this Visit's version
-                            //   (`visit`, as `Visit.version`). Nothing leaves the page
+                            //   (`visit`, as `Visit.version`); with a world, `draws`: { colour, shadow }, its drawing's
+                            //   draw calls a frame (4.3.1; three.js's renderer.info leaves the shadow passes out).
+                            //   Nothing leaves the page
 v.setName(name); v.userName   // the name your user goes by (8.9), shown to others with what they say; null: your office's
 v.userOf(key)               // the name the user of a linked office goes by, or null (their office's)
 v.say(text, to, { media, links })   // with pictures (v.share's) or links (v.preview's) (8.12); a line may be them alone
