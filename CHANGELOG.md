@@ -10,7 +10,7 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
-## v4.2.0 — unreleased — voice over WebRTC: each page to the office that passes it on, TURN in the lobby (#71)
+## v4.2.0 — 2026-11-03 — voice over WebRTC: each page to the office that passes it on, TURN in the lobby (#71)
 
 **Every workroom upgrades, and the lobby is deployed again** (voice between a 4.2 office and an older one is gone:
 4.2 sends none over links and takes none from them; everything else meets as before).
