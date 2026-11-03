@@ -252,7 +252,7 @@ Two routes on your server. Both sit behind your session check (auth step 5), lik
 - **`GET /visit/ws`**, a WebSocket upgrade: the relay (SPEC 6.3). A session, never an API key. It opens a
   WebSocket to `ws://127.0.0.1:7401/ws` with the browser's `Origin`, sends the **relay preface** as the first
   message, then pipes bytes both ways unread. It never parses a frame after the preface, never forwards a token
-  from the browser, buffers at most 1 MiB toward the browser (then closes both ends 4408), and holds one
+  from the browser, buffers at most 64 MiB toward the browser (then hangs up both ends, with no close frame), and holds one
   connection per session (a second replaces the first, 4409).
 
 A sketch in Python's standard library (the shape, not a library; your server's own HTTP handling goes round it):
@@ -301,7 +301,7 @@ def relay(handler):
     pump(down, up, head[head.index(b"\r\n\r\n") + 4:])
 
 def pump(down, up, leftover):
-    """Bytes both ways, unread, until either side closes. At most 1 MiB waiting for the browser, else 4408."""
+    """Bytes both ways, unread, until either side closes. At most 64 MiB waiting for the browser, else hung up."""
     sel = selectors.DefaultSelector(); sel.register(down, selectors.EVENT_READ); sel.register(up, selectors.EVENT_READ)
     for s in (down, up): s.setblocking(False)
     to_browser = bytearray(leftover)
@@ -313,8 +313,8 @@ def pump(down, up, leftover):
                     return
                 if key.fileobj is up:
                     to_browser += data
-                    if len(to_browser) > 1 << 20:
-                        down.sendall(b"\x88\x06" + (4408).to_bytes(2, "big") + b"slow"); return
+                    if len(to_browser) > 64 << 20:   # above what visit-client sends at once as a page joins
+                        return   # hung up, no close frame: the browser has part of a frame, and one after it is garbage
                     try: sent = down.send(to_browser); del to_browser[:sent]
                     except BlockingIOError: pass
                 else:
@@ -405,7 +405,7 @@ Through the HTTPS proxy of auth step 10, on your LAN first, then from outside it
       page, a response, a URL or a log; `visit.json` and `/api/visit` gone.
 - [ ] `VISIT_ORIGINS` names the local origins, the proxy's, and `ENGINE_ROOM_URL`'s.
 - [ ] `/visit/visit.js` proxied; `/visit/ws` relayed behind the session check (a key refused): the preface, bytes
-      unread after it, 1 MiB then 4408, one connection per session.
+      unread after it, 64 MiB then hung up (no close frame), one connection per session.
 - [ ] `ENGINE_ROOM_URL` given to `visit`, with the sign-in on; the server page served to the engine's key only
       (`/v1/check {key}`), never to a session.
 - [ ] `/health` says `room: hosting`, at `127.0.0.1` only; the room `ready` with every tab closed; a restart of your
@@ -441,7 +441,7 @@ Through the HTTPS proxy of auth step 10, on your LAN first, then from outside it
 | a sign or a screen in the room never updates | its canvas is a WebGL canvas read back (`toDataURL`): draw it on a 2D canvas, which is real in the engine |
 | the room stops moving when nobody is there | that is `ENGINE_TICK_IDLE`: 10 frames a second with nobody in it, watching it, or connected. Raise it if your room's logic needs more, or use a timer |
 | the engine's memory climbs until it restarts | the room's page leaks (geometries or textures made each frame and never disposed); profile it in a normal browser |
-| a slow laptop's page keeps closing 4408 | what is sent at once is too big for its link (the relay's 1 MiB). Since 4.1 a scene's big pictures and meshes go apart by name, a piece at a time (visit/SPEC.md 8.14): what counts is its structure (its objects, materials, small pictures), not its textures or a figure's mesh. Past it still: tens of thousands of small objects, or a `DataTexture`/compressed texture (those still go inline); a landscape marked `visitStatic` goes apart too. A room on 4.0 or older, or a visitor on one, sends all of it inline |
+| the room never shows on your page: blank, and visit.log has "page connected" then "page gone" a moment later, every 2 s (the browser's console: "Could not decode a text frame as UTF-8", or a close 4408) | your relay's buffer toward the browser is smaller than what visit-client sends a page at once as it joins: a relay built to the 1 MiB this guide gave before 2026-11-03, and a room whose scene outgrew it. Buffer 64 MiB, and past it hang up with no close frame (the code above). What is sent at once is kept small anyway: since 4.1 a scene's big pictures and meshes go apart by name, a piece at a time (visit/SPEC.md 8.14), and a landscape marked `visitStatic` goes apart too; what counts is the scene's structure (its objects, materials, small pictures). A page on a link too slow for the scene's changes still falls behind: then it is hung up on, and comes back to the scene whole |
 | walking from the laptop lags behind the keys | the room gives no `walk` (`v.host`): then walking waits for the round trip; give the speed your `move` uses |
 | `/api/visit` is still asked for | an old client page: it must connect through `/visit/ws` with no token |
 | the room's colours are wrong for the person: white walls, day under a dark theme, the wrong environment | the engine's page decided from its own browser (light, an empty `localStorage`): the setting, the theme, the look go through your server (Upgrading, below) |

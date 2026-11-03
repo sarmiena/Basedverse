@@ -1378,7 +1378,7 @@ async def run(a, b, url):
             await hc.js("for (const h of v._hosted.values()) h.sceneSent = false")
             whole = await hc.until("wholes.length && wholes.at(-1)", 20)
             print("      (the panels inline: %s bytes; the whole scene by name: %s bytes)" % (inline, whole))
-            check("its whole scene for its person: under a relay's 1 MiB, the panels by name (inline they are past it)",
+            check("its whole scene for its person: small (under 1 MiB), the panels by name (inline they are past it)",
                   (isinstance(whole, int) and whole < 1 << 20, isinstance(inline, int) and inline > 1 << 20), (True, True))
             check("and the person's page fetches and draws every panel's picture", await b.until(
                 "(s => !!s && [...Array(36).keys()].every(k => (o => !!o && !!o.material.map.image && o.material.map.image.width === 512)(s.root.getObjectByName('panel' + k))))(v._homeScene())", 60), True)

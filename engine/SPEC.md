@@ -336,8 +336,13 @@ The person's browser never connects to visit-client. The workroom's server has a
    or a second one, closes 4400;
 4. **pipes bytes both ways unread**, text and binary frames alike, pings, pongs and closes with them (close
    codes pass through: a 4409 from visit-client reaches the page as 4409). It never parses a frame after the
-   preface. Toward the browser it buffers at most 1 MiB; past that (a slow link that cannot take the scene), it
-   closes both ends with **4408** `slow`, and the page reconnects as after any drop, asking for the scene whole;
+   preface. Toward the browser it buffers at most 64 MiB, above the most visit-client sends a page at once as it
+   joins (a scene and a landscape, each at most 16 MiB); past that (a link that cannot take the scene), it hangs
+   up both ends, with no close frame (it never reads where a frame ends: a close frame after part of one is read as
+   its rest, and the browser fails the connection), and the page reconnects as after any drop, asking for the
+   scene whole. (It was 1 MiB, with a **4408** `slow` close frame, until 2026-11-03: a room's scene outgrew it,
+   and a page still loading, not yet reading, was cut, and cut again each time it came back, never drawing the
+   room);
 5. **holds one connection per session at a time**: a second from the same session replaces the first (the
    first closed 4409); visit-client's one user slot (3.1) does the same for different sessions.
 
@@ -482,11 +487,11 @@ The MUSTs of visit/SPEC.md 3 hold. These are added.
 | page slots | one host, one user; a newer one of a role replaces it (4409); a page without a role takes both |
 | the owner's visit | counts in nothing (`max_visitors`, watchers); its inputs and points rate-limited as a visitor's (visit/SPEC.md 3, point 7) |
 | engine | frames `ENGINE_TICK_BUSY` (30) a second busy, `ENGINE_TICK_IDLE` (1 to 60) idle; a page loaded again after 1, 2, 4, … 30 s; the server page 60 s to reach `ready`; 10 s without a frame is a stall; `ENGINE_MEMORY_MAX` 1024 MiB |
-| relay | one connection per session (a second replaces); 1 MiB buffered toward the browser, then 4408 `slow`; frames as the local protocol allows (visit/SPEC.md 10): a 16 MiB frame limit either way is safe (the largest a user sends is a picture, 8 MiB) |
+| relay | one connection per session (a second replaces); 64 MiB buffered toward the browser, then hung up (no close frame; 1 MiB and 4408 `slow` before 2026-11-03); frames as the local protocol allows (visit/SPEC.md 10): a 16 MiB frame limit either way is safe (the largest a user sends is a picture, 8 MiB) |
 | tokens | at least 32 hex characters each, new each run, constant-time compared |
 
-**Errors** added to visit/SPEC.md 11: `wrong_role` (`ref`: the message's type); close codes 4408 `slow` (the
-relay's), 4401 for a `relay` preface with the wrong token or a role without its token, 4400 for a preface out
+**Errors** added to visit/SPEC.md 11: `wrong_role` (`ref`: the message's type); close codes 4408 `slow` (a
+relay's, before 2026-11-03: it hangs up now), 4401 for a `relay` preface with the wrong token or a role without its token, 4400 for a preface out
 of place.
 
 ## 11. Proving it: the experiment's exit
