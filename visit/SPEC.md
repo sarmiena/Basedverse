@@ -411,7 +411,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `world` | `on` (bool) | on: this office watches the plots its user picked, of those online whose lobby entry says `world` and whose visit-clients let it (it is their guest, their door open) (8.4), by itself, and keeps doing so (a declined or refused watch is tried again after 20 s); off: its watches end. No page for a minute: off |
 | `enter` | `channel` (a watch's), `pose` {`x`, `y`, `z`, `yaw`, `air`} (in the watched room's terms; `air`: how far above its floor, flying, 8.2) | step into the room watched (8.4): out of any other room first (a visit there ends); refused by its host when full (`enter_refused`) |
 | `exit` | `channel` | step out of it again: the watch goes on |
-| `place` / `unplace` | `key`, `x`, `z` (within 100 km), `turn` (0–3) / `key` | put a friend's plot in this office's world: its middle there, turned so many quarter turns (8.4); kept in the state file. At most 256 |
+| `place` / `unplace` | `key`, `x`, `z` (within 100 km), `turn` (0–3) / `key` | put a friend's plot in this office's world: its middle there, turned so many quarter turns (8.4); kept in the state file. At most 256; not this office's own key (4.3.0: its room is its world's middle; a state file from before that has it, or a pick of it, drops it as it is read) |
 | `seen` | `key`, `at` {`dx`, `dz` (m, within 100 km), `turn` (0–3), `size` ([w, d] m: this plot's)} \| null | where this office's world has that office's plot (8.4): its middle `dx`, `dz` metres from this plot's middle, turned `turn` quarter turns left; null, not in it. Told to that office over any link with it, and again over each new one (kept in memory, not in the state file). At most 256 |
 | `plot_keep` | `key`, `name`, `plot` {`center`, `size`}, `unit` | a picked plot in this office's world, to keep while its office is away (8.10): drawn from its last landscape. At most 64 |
 | `plot_load` | `key` | that kept plot's landscape, please: sent as `landscape` on channel 0 (`not_found` if none is kept) |
@@ -503,7 +503,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `voice_near` | `channel`?, `near`: [{`key`, `name`, `distance` (m), `id`?, `phone`?, `world`?}] | who is near this office's user (8.7), within `voice_range`: in its own room (no `channel`: as its visit-client has it), or in the room it is in (that visit's `channel`: as its owner's says). `id`: a visitor's, by its visit there; `phone`: a call on that room's speaker; `world`: a friend across a plot's side, near in both worlds (by this office's world's measure). When it changes; distances at most every second. `ready` has `voice_range` (45) |
 | `room_voice` | `key` \| null, `name`, `members` [{`key`, `name`}], `out`? {`key`, `name`, `why`} | the room voice this office's user is in (8.7), and who is in it, when that changes; null: none (`out`: they were taken out, `why` "kicked", "banned" or "gone"). `ready` has `room_voice` (its `members` null until its room says again) |
 | `voice_members` | `members` [{`key`, `name`}] | who is in this office's own room's voice (8.7), its own user first if they are. `ready` has `voice_members` |
-| `user` | `key`, `name` | the name a linked office's user goes by (8.9), as they said (`user`), or their office's again. `ready` has `users` [{`key`, `name`}] |
+| `user` | `key`, `name` | the name a linked office's user goes by (8.9), as they said (`user`), or their office's again; 4.3.0: this office's own user's too, by its own key, so its room's page names its owner. `ready` has `users` [{`key`, `name`}] (its own first) |
 | `bans` | `bans` [{`key`, `name`, `voice`, `chat`}] | whom this office's user keeps out of their room's voice or chat (8.9), as it changes. `ready` has `bans` |
 | `ignored` | `ignored` [{`key`, `npc`?, `name`}] | 3.3: whom this office's user ignores in chat (8.9), as it changes. `ready` has `ignored` |
 | `banned` | `key`, `name`, `voice`, `chat` | a room that keeps this office's user out of its voice or chat (8.9), or no longer (both false). `ready` has `banned_by` |
@@ -1329,7 +1329,9 @@ As in a game's chat, a line goes one of five ways (its scope). Nothing to join b
 
 **Who says it.** A line, a voice, a room voice's member, and who is near are named by the name their user goes by
 (Visit 0.20.1: `v.setName`, given to every office linked with theirs, `user`), else by their office's. A room is
-named by its office's ("Gooshy's room"). A lobby line or a whisper through the lobby is named by the user's own name
+named by its office's ("Gooshy's room"). So are the people in a room as its host has them (4.3.0: `v.visitors`'
+`visitor.name`, its owner too; their office's beside it, `visitor.office`): a label over a visitor says who they are,
+and the room they come from is theirs to say after it. A lobby line or a whisper through the lobby is named by the user's own name
 when their office is linked with this one, else by their office's (the lobby knows offices only).
 
 - **Say** (the default; 3.4.2, #54: by distance, as voice is, 8.7): whoever would hear its speaker's voice in person:
@@ -1654,8 +1656,11 @@ v.seen         // [{ key, name, at: { dx, dz, turn, size } }]: where friends' wo
 v.watchers     // [{ id, visitor, inside }]: who sees your room from outside it (worlds that picked it)
 v.visiting     // the room in your stage: { id, host: { id, name, sim }, paused, link, inside } or null (a link's: in
                //   the corner until you go there, inside: true)
-v.visitors     // your visitors as a host: [{ id, visitor: { id, name, sim, key }, guest, pose, link, look, eyes, problem,
-               //   riding }]: pose, their feet (8.1); look, "theirs" (Visit draws their own model) or "mine" (draw yours);
+v.visitors     // your visitors as a host: [{ id, visitor: { id, name, office, sim, key }, guest, pose, link, look, eyes, problem,
+               //   riding }]: visitor.name, the name the person goes by (their user's, 8.9; your own user's for the
+               //   owner), else their office's till theirs is known, and anew as they change it; visitor.office, their
+               //   office's name (4.3.0: before, `name` was always the office's); the same object your hooks are given;
+               //   pose, their feet (8.1); look, "theirs" (Visit draws their own model) or "mine" (draw yours);
                //   eyes over their feet (your units); problem, why not their own, if you would show it; riding, the mount
                //   they ride here (8.11), { id, name, fly }, or null
 v.avatars      // whose look your visitors have in your room (8.6): { default: "mine" | "theirs", by: [{ key, use }] }

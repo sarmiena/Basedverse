@@ -409,7 +409,10 @@ visit.host({
   visitors still look around at once, but walking waits for your answer.
 - **Visitors' bodies**: if you draw your visitors in your room (`visit.visitors` has where each stands), mark
   each body `body.userData.visitor = entry.id` (the `id` of its entry), so a visitor's own eyes do not see it
-  from inside. Your visitors then see each other. When `entry.avatar` is set (below: your user chose to show
+  from inside. A label over one says `entry.visitor.name`: the name the person goes by (yours, for your own user in
+  your room), their office's till theirs is known; `entry.visitor.office` is their office's, the room they come from.
+  The name can change while they are in your room (they rename themselves): make the label again when it does, and
+  make anything else of theirs that should stay the same (a colour, a random look) from `entry.visitor.key`. Your visitors then see each other. When `entry.avatar` is set (below: your user chose to show
   that visitor's own look), draw it instead of your model: it is already marked, scaled to your units, its feet at
   its origin, facing −z, and walks and stands by itself; put it at the visitor's `x`, `z` (its feet on your
   floor) and turn it by `yaw`.

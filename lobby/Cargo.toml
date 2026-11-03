@@ -1,6 +1,6 @@
 [package]
 name = "lobby"
-version = "4.2.0"
+version = "4.3.0"
 edition = "2021"
 license = "MIT"
 description = "The lobby (../LOBBY.md): who is online, knocks, visits and links between visit-clients, world groups, chat; one program, for anyone to host"

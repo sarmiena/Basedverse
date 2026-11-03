@@ -1165,6 +1165,8 @@ async def main():
         await a.send(type="user", name="  Ann\u0007 ")
         u = await b.until(lambda m: m["type"] == "user")
         check("A's page says the name its user goes by: B's page hears it, checked", (u["key"], u["name"]), (ka, "Ann"))
+        mine = await a.until(lambda m: m["type"] == "user")
+        check("…and A's own page by A's own key (4.3.0: a room names its owner by it, as anyone else)", (mine["key"], mine["name"]), (ka, "Ann"))
         await a.send(type="say", text="it's Ann")
         x, y = await b.until(chat), await c.until(chat)
         check("A's lines go by it, in B's room: B's, and C's (passed on by B)", (x["name"], y["name"]), ("Ann", "Ann"))

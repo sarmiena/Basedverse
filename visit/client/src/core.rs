@@ -1235,6 +1235,7 @@ impl Core {
             }
             // Where this office has put a friend's plot in its world (kept in the state file).
             "place" => match state::place_from(&m) {
+                Some(p) if p.key == self.key => self.page_error("bad_message", "that is this office's own key: its room is the middle of its world", Some("place")),
                 Some(p) => {
                     let full = self.saved.layout.len() >= state::MAX_PLACES;
                     match self.saved.layout.iter_mut().find(|x| x.key == p.key) {
@@ -1642,6 +1643,10 @@ impl Core {
                 for v in self.visits.values().filter(|v| v.up) {
                     let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "user": { "name": name } })));
                 }
+                // 4.3.0: this office's pages too, by its own key: the room's own page names its owner by it (its
+                // visitors, 8.6), as every other room names them.
+                let key = self.key.clone();
+                self.to_page(json!({ "type": "user", "key": key, "name": name }));
                 self.tell_near();
                 self.tell_voice_members();
             }
@@ -3591,8 +3596,10 @@ impl Core {
     /// The names the users of offices linked with this one go by, for a page that connects (8.9).
     fn users_json(&self) -> Value {
         let mut seen = HashSet::new();
-        json!(self.visits.values().filter(|v| v.up && v.peer_user.is_some())
-            .filter_map(|v| v.peer.get("key").and_then(Value::as_str).filter(|k| seen.insert(k.to_string())).map(|k| json!({ "key": k, "name": v.peer_user })))
+        // (4.3.0: this office's own user first, by its key, when they have said their name)
+        let own = self.user_name.iter().map(|n| { seen.insert(self.key.clone()); json!({ "key": self.key, "name": n }) }).collect::<Vec<_>>();
+        json!(own.into_iter().chain(self.visits.values().filter(|v| v.up && v.peer_user.is_some())
+            .filter_map(|v| v.peer.get("key").and_then(Value::as_str).filter(|k| seen.insert(k.to_string())).map(|k| json!({ "key": k, "name": v.peer_user }))))
             .collect::<Vec<_>>())
     }
 
