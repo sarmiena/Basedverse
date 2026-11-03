@@ -128,7 +128,7 @@ feature in a workroom's code. If the changelog has something newer than the tabl
 | chat window, scopes (say, whisper, a room's chat, the lobby); a room's voice (🎧), bans (panel) | 0.15, 0.16, 0.20 | vanilla | the panel's chat window (`chat: false`: their own), `visit.say(text, to)` |
 | one panel row a person (their look, Kick, Unlink in it) | 0.16 | vanilla | the panel; visitors' own look by default (`visit.useAvatars(`) |
 | landscapes, offline plots | 0.12 | step 5 | `userData.visitStatic`, `visit.landscapeChanged(` |
-| a scene's big pictures and meshes sent once, by name, a piece at a time (heavy rooms within a relay's 1 MiB) | 4.1 | vanilla ("Heavy things are fine") | nothing: textures that are canvases, images or bitmaps; plain `BufferGeometry` meshes |
+| a scene's big pictures and meshes sent once, by name, a piece at a time (a heavy room's page joins in small pieces) | 4.1 | vanilla ("Heavy things are fine") | nothing: textures that are canvases, images or bitmaps; plain `BufferGeometry` meshes |
 | mounts (possessions: the room's own; Visit carries them) | 0.18 | vanilla, step 5 | `visit.ride(`, `visit.possessions(`, `mounts:`, `eye:` in `visit.host(` |
 | positions at the feet; bodies drawn by Visit; `body` reports (MODELS.md) | 0.19 | step 5, MODELS.md | `spawn(`, `move(` return feet; `look` in `visit.visitors`; `Visit.checkModel(` |
 | physics: falling, flying, riders (the room's own) | 0.17, 0.19 | step 5 | `move(` (`input.up`, `who.riding`), `spawn(` (`at.air`), `eye:`, `walk: { speed, mounts }`; `air` in `world.frame(` |

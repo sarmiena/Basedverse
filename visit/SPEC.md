@@ -1611,7 +1611,7 @@ to nothing on the next.
   else its page is asked, `asset_want`, and gives it again), else `asset_none`; nothing else it keeps (another room's,
   seen visiting) is given. Each comes checked against its name (its SHA-256) and is kept: a page that reloads, or
   another scene naming it, has it without the room. A page keeps up to 256 MiB of them itself, so a page whose
-  connection drops (a relay's 4408) fetches nothing again. One not to be had (`asset_none`, or 45 s without a piece)
+  connection drops (a relay hanging up on a page that fell behind) fetches nothing again. One not to be had (`asset_none`, or 45 s without a piece)
   stays blank.
 - **Put in place.** A picture is checked from its header (kind, at most 4096 px a side) and decoded before it is a
   texture's; a mesh is unpacked (at most 64 MiB), checked as an inline one (cleanScene, the scene's budget of
