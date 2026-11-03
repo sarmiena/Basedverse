@@ -434,6 +434,23 @@ async def run(a, b, url):
         merged = "(s => !!s && s.root.children.filter(c => c.name === 'visit:merged').map(c => c.userData.visitMerged).sort())(([...v._watches.values()].find(w => w.host.name === 'B') || {}).scene)"
         check("4.0 (#42 B): B's landscape on its scene's root, drawn merged in A's world: its 8 wall halves (one material) one mesh, the floor and desk as they are",
               await a.until(merged), [8])
+        # 4.3.1: the sky from a scene of its own (the room's scene no longer walked for it); its background still drawn,
+        # each page with its own three.js. Looking straight up from high over the room: nothing but sky.
+        sky = """(() => { const w = room.world, T = w.T, r = w.renderer, s = w.scene, was = s.background;
+          s.background = new T.Color(0x00ff00);
+          const c = new T.PerspectiveCamera(60, r.domElement.width / r.domElement.height, 0.1, 500); c.position.set(5, 80, 4); c.up.set(0, 0, 1); c.lookAt(5, 200, 4); c.updateMatrixWorld();
+          try { w.render(c); const gl = r.getContext(), px = new Uint8Array(4); gl.readPixels(gl.drawingBufferWidth >> 1, gl.drawingBufferHeight >> 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); return [...px].slice(0, 3); }
+          finally { s.background = was; } })()"""
+        check("4.3.1: the sky drawn from a scene of its own, the room's background in it (A, r128)", await a.js(sky), [0, 255, 0])
+        check("and B's (r160)", await b.js(sky), [0, 255, 0])
+        await a.js("v.perf(true)")
+        drew = await a.until("(r => r.length && r[r.length - 1].draws)(v.perfReport())", 6)
+        check("4.3.1: ⏱ counts a frame's draw calls, its shadows apart (three.js's own count leaves them out)",
+              bool(drew) and drew["colour"] > 0 and drew["shadow"] > 0, True)
+        check("and says so", "draw calls a frame:" in (await a.js("document.querySelector('.visit-perf').textContent") or ""), True)
+        await a.js("v.perf(false)")
+        check("⏱ off: the renderer as it was, nothing counted", await a.until(
+            "!room.world._count && !String(room.world.renderer.renderBufferDirect).includes('inShadow') && !String(room.world.renderer.shadowMap.render).includes('inShadow')"), True)
         await a.shot("a_world.png")
 
         async def walk(tab, x, z, yaw, secs, until=None):
