@@ -8,4 +8,4 @@ repo="$(cd "$here/../../.." && pwd)"
 "$here/../cargo" build -p visit -p lobby
 docker run --rm -e AS_UID="$(id -u)" -e AS_GID="$(id -g)" \
   -v visit-target:/target:ro -v "$repo":/repo:ro -w /repo python:3.13-slim-bookworm sh visit/client/tests/as-user.sh \
-  sh -c 'pip install -q --user websockets==15.0.1 cryptography==46.0.3 2>/dev/null && python3 -u visit/client/tests/e2e.py /target/debug/visit /target/debug/lobby'
+  sh -c 'pip install -q --user websockets==15.0.1 cryptography==46.0.3 aiortc==1.15.0 2>/dev/null && python3 -u visit/client/tests/e2e.py /target/debug/visit /target/debug/lobby'

@@ -111,6 +111,10 @@ LOBBY_RELAY_CERT=$cert_dir/$domain.crt
 LOBBY_RELAY_KEY=$cert_dir/$domain.key
 EOF
 [ -z "$world" ] || echo "LOBBY_WORLD_SIZE=$world" >> "$ETC/env"   # (none: the lobby's own, 50; a blank one would not parse)
+# 4.2 (#71): STUN and TURN for Visit's voice, on UDP 3478, its relays on UDP 49152-65535, at this server's public IPv4
+# (none found: STUN only) and its name.
+echo "LOBBY_TURN_HOST=$domain" >> "$ETC/env"
+[ -z "$ip" ] || echo "LOBBY_TURN_IP=$ip" >> "$ETC/env"
 chgrp "$USER_NAME" "$ETC/env"
 umask 022
 # Caddy: TLS for the lobby's name (a free Let's Encrypt certificate, renewed by Caddy, kept where the relay reads it

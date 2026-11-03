@@ -13,7 +13,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "4.1.0", PROTO = "basedverse-visit-local/2";
+  const VERSION = "4.2.0", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -61,7 +61,7 @@
   // draws it with the very three.js release the host runs, fetched from a CDN and checked against the hashes
   // below (Subresource Integrity): nothing else ever runs from it, and what the host sends is only ever read as
   // data (cleanScene). The visitor walks at once, predicted here, and the host's answer corrects it.
-  const KEY = 1, EDIT = 2, AVATAR = 4, AUDIO = 8, RELAY = 16, LAND = 32, POSSESSION = 64, MEDIA = 128;   // frames' flags: bit 0 a key delta; bit 1 a scene edit, bit 2 this office's avatar (page to visit-client); bit 3 voice; bit 5 this room's landscape (page to visit-client); bit 6 one of its possessions, its slot the channel (8.11); bit 7 a picture shared in chat (8.12) (SPEC 5.4)
+  const KEY = 1, EDIT = 2, AVATAR = 4, LAND = 32, POSSESSION = 64, MEDIA = 128;   // frames' flags: bit 0 a key delta; bit 1 a scene edit, bit 2 this office's avatar (page to visit-client); bit 3 voice; bit 5 this room's landscape (page to visit-client); bit 6 one of its possessions, its slot the channel (8.11); bit 7 a picture shared in chat (8.12) (SPEC 5.4)
   // A scene's assets (SPEC 8.14, 4.1, #67): a picture or a mesh of at least ASSET_MIN bytes goes by its name (its
   // SHA-256), once (ASSET: the frame that carries one, or a piece of one: both bits no other frame has); a page fetches
   // those it lacks a piece at a time, ASSET_FETCHES at once, waits ASSET_WAIT for each piece, and keeps ASSET_KEEP of
@@ -80,12 +80,16 @@
   const LAND_WAIT = 400;
   // A canvas texture redrawn is encoded again in the background, and sent, at most this often (ms).
   const TEX_EVERY = 1000;
-  // Voice (SPEC 8.7): 20 ms of 48 kHz mono a packet, Opus at 24 kbps; played this far behind, to ride out jitter.
-  // Heard within v.voiceRange metres (as visit-client says: VOICE_RANGE until it has), fading to nothing there. Who
-  // hears whom the room's visit-client decides; a page's voice says where it may go: the room its user is in, their
-  // calls, or both (VOICE_ROOM, VOICE_CALLS: its frame's channel).
-  const VOICE_RATE = 48000, VOICE_FRAME = 960, VOICE_BITRATE = 24000, VOICE_LEAD = 0.06, VOICE_LATE = 0.4, VOICE_RANGE = 45, VOICE_ROOM = 1, VOICE_CALLS = 2, VOICE_CHANNEL = 4;
-  const ROUTE_CALL = 1, ROUTE_VOICE = 2;   // how a voice came (to the page: the frame's first timestamp byte): in person (0), a call, a room voice
+  // Voice (SPEC 8.7): Opus at 24 kbps (VOICE_BITRATE), the browser's own jitter buffer and loss concealment playing
+  // it. Heard within v.voiceRange metres (as visit-client says: VOICE_RANGE until it has), fading to nothing there.
+  // Who hears whom the room's visit-client decides.
+  const VOICE_RATE = 48000, VOICE_BITRATE = 24000, VOICE_RANGE = 45;
+  const ROUTE_NEAR = 0, ROUTE_CALL = 1, ROUTE_VOICE = 2;   // how a voice comes (a slot's label, 8.7): in person, a call, a room voice
+  // Voice goes over WebRTC (8.7, #71): a connection to each office your user speaks to or hears from, as your
+  // visit-client says (rtc_want). Each carries your microphone and RTC_SLOTS voices at once (visit-client's SLOTS);
+  // one that fails is tried again after RTC_RETRY ms; ICE gathering is waited for at most RTC_GATHER ms.
+  const RTC_SLOTS = 12, RTC_RETRY = 3000, RTC_GATHER = 3000, RTC_LOST = 5000, RTC_LINGER = 5000;   // (RTC_LOST: disconnected that long, made again)
+  const SLOT_LIVE = 600;   // ms: a slot whose packets stopped this long ago carries nobody (its label is its last speaker's)
   // A phone (SPEC 8.8) rings this long, unanswered, then stops.
   const CALL_RING_MS = 30000;
   const TALK_RING_MS = 60000;     // 4.0: a knock to talk rings this long (the lobby's knocks wait 60 s)
@@ -105,18 +109,6 @@
   // Someone is looking at the chat window while its page is shown and focused, and they used a key, a click or the
   // pointer this recently (ms): what comes meanwhile is seen, not in the mailbox (8.9).
   const LOOKING = 120000, STIRS = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"];
-  // The microphone's side: 20 ms at a time, to the page (an AudioWorklet, from a blob: as the ticker's Worker is).
-  const MIC_WORKLET = `registerProcessor("visit-mic", class extends AudioWorkletProcessor {
-    constructor() { super(); this.b = new Float32Array(${VOICE_FRAME}); this.n = 0; }
-    process(inputs) {
-      const ch = inputs[0] && inputs[0][0];
-      if (ch) for (let i = 0; i < ch.length; i++) {
-        this.b[this.n++] = ch[i];
-        if (this.n === ${VOICE_FRAME}) { this.port.postMessage(this.b, [this.b.buffer]); this.b = new Float32Array(${VOICE_FRAME}); this.n = 0; }
-      }
-      return true;
-    }
-  });`;
   // A binary frame to visit-client (SPEC 5.4): a channel, flags, the page's clock, and what it carries.
   const frameOf = (ch, flags, data) => {
     const buf = new Uint8Array(11 + data.byteLength), dv = new DataView(buf.buffer);
@@ -1004,8 +996,11 @@
       this._fetchQ = [];          // and those waiting their turn
       this._mediaWait = new Map();   // id -> its promise's resolve, while the visit-client fetches it
       this.voiceRange = VOICE_RANGE;   // metres: farther, nobody is heard (visit-client's, from ready)
-      this._voices = new Map();   // their key -> a decoder, its panner, and where its next moment plays
-      this._voiceTo = 0;          // where your voice may go: VOICE_ROOM, VOICE_CALLS, both, or nowhere (nothing encoded)
+      this._voices = new Map();   // their key -> where they are heard from: a panner, a telephone's filter, or flat
+      this._rtc = new Map();      // the WebRTC connections (8.7): "own" (your office) or a link's channel -> { pc, mic, slots, ... }
+      this._rtcWant = [];         // what your visit-client says to connect to: [{ to, room, call, voice }]
+      this._voiceTo = 0;          // the ways your voice goes now (_rtcGate)
+      this._ice = [];             // and the STUN and TURN servers to connect by
       this._chats = new Map();    // lines said in the rooms you are in or host (8.9), still showing, by who said them
       this._bodies = new Map();   // channel -> how the room on it draws your user: { look, eyes, problem } (8.6)
       this.chatLog = [];       // the last CHAT_LOG lines of chat, of every scope (8.9), as "chat" gave them, with `at` (ms);
@@ -1117,9 +1112,10 @@
       });
     }
     _send(m) { if (this._ws && this._ws.readyState === 1) this._ws.send(JSON.stringify(m)); }
-    close() { this._closed = true; this._loop.stop(); this._micStop(); for (const k of [...this._calls.keys()]) this.hangUp(k); this._dropAll(); if (this._ws) this._ws.close(); }
+    close() { this._closed = true; this._loop.stop(); this._micStop(); for (const c of [...this._rtc.values()]) this._rtcClose(c); for (const k of [...this._calls.keys()]) this.hangUp(k); this._dropAll(); if (this._ws) this._ws.close(); }
 
     _ready(m) {
+      for (const c of [...this._rtc.values()]) this._rtcClose(c, false);   // (8.7: its visit-client closed them as the page went; made again)
       this.state = m.away ? "away" : m.online ? "online" : "offline";
       this.role = m.role === "host" || m.role === "user" ? m.role : null;
       this.home = isObj(m.home) ? { id: String(m.home.id), channel: Number(m.home.channel), paused: m.home.paused === true } : null;
@@ -1161,6 +1157,7 @@
       this._phoneOn.clear();
       for (const v of m.visits || []) if (v.voice) this._talkStarted(v); else this._started(v);
       if (this._phone) this._send({ type: "phone", on: true });   // a visit-client that came back: this room's phone again
+      if (this.role !== "host") this._send({ type: "mic", on: this.mic });   // (8.7: heard in person only while it is on)
       if (!this._mic && !this._micAsked) {   // the microphone on last time, its permission given: on again
         this._micAsked = true;
         let want = false;
@@ -1276,6 +1273,9 @@
           this._emit("banned", b); this._changed(); break;
         }
         case "room_voice": this._roomVoiceFrom(m.key == null ? null : m, m.out); break;   // the room voice you are in, who is in it; or none
+        case "rtc_want": this._rtcWant = (Array.isArray(m.want) ? m.want : []).filter(isObj); this._ice = Array.isArray(m.ice) ? m.ice.filter(isObj) : []; this._rtcSync(); break;
+        case "rtc_answer": this._rtcAnswer(m); break;
+        case "rtc_failed": { const c = this._rtc.get(m.to == null ? "own" : Number(m.to)); if (c) { console.warn("visit: a voice connection was refused:", m.reason); this._rtcFailed(c); } break; }
         case "voice_members": this.voiceMembers = membersFrom(m.members); this._changed(); break;   // who is in your room's voice
         case "chat_log": {   // the chat your user had, kept by the visit-client (8.9): all of it, for a page that comes back
           // (a reload); after a blip, what came meanwhile
@@ -2093,6 +2093,7 @@
     async setMic(on) {
       try { localStorage.setItem("visit:mic", on ? "on" : "off"); } catch (e) { /* not kept */ }
       this.mic = !!on;
+      this._send({ type: "mic", on: this.mic });   // (heard in person only while it is on: a call or a huddle runs it too)
       if (on) await this._micStart(); else this._micMaybeStop();
       this._changed();
     }
@@ -2110,29 +2111,15 @@
       }
       return ctx;
     }
-    // The microphone runs while it is on, or a call is: what it hears goes where _voiceTo says (nobody: nothing).
+    // The microphone runs while it is on, a call is, or a huddle: each connection sends it where someone hears it
+    // (_rtcGate), as your visit-client says.
     async _micStart() {
       if (this._mic || this._micStarting) return this._micStarting;
-      if (typeof AudioEncoder === "undefined" || typeof AudioDecoder === "undefined") throw new Error("visit: this browser cannot encode voice (WebCodecs)");
+      if (typeof RTCPeerConnection === "undefined") throw new Error("visit: this browser has no WebRTC");
       this._micStarting = (async () => {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
-        const ctx = this._audio();
-        if (!this._micModule) {
-          this._micModule = URL.createObjectURL(new Blob([MIC_WORKLET], { type: "text/javascript" }));
-          await ctx.audioWorklet.addModule(this._micModule);
-        }
-        const src = ctx.createMediaStreamSource(stream), node = new AudioWorkletNode(ctx, "visit-mic"), hush = ctx.createGain();
-        hush.gain.value = 0; src.connect(node); node.connect(hush); hush.connect(ctx.destination);   // pulled by the graph, heard by nobody here
-        const enc = new AudioEncoder({ output: c => this._voiceOut(c), error: e => console.warn("visit: the voice encoder failed", e) });
-        enc.configure({ codec: "opus", sampleRate: VOICE_RATE, numberOfChannels: 1, bitrate: VOICE_BITRATE });
-        const mic = this._mic = { stream, src, node, hush, enc, t: 0, level: 0 };
-        node.port.onmessage = e => {
-          const pcm = e.data;
-          mic.level = rms(pcm);
-          if (!this._voiceTo || enc.state !== "configured") return;   // nobody to hear it: nothing encoded, nothing sent
-          enc.encode(new AudioData({ format: "f32-planar", sampleRate: VOICE_RATE, numberOfFrames: pcm.length, numberOfChannels: 1, timestamp: mic.t, data: pcm }));
-          mic.t += pcm.length * 1e6 / VOICE_RATE;
-        };
+        this._mic = { stream, track: stream.getAudioTracks()[0] };
+        this._rtcGate();
       })().finally(() => { this._micStarting = null; });
       return this._micStarting;
     }
@@ -2141,17 +2128,172 @@
       const m = this._mic;
       if (!m) return;
       this._mic = null;
-      m.node.port.onmessage = null;
+      this._rtcGate();
       for (const t of m.stream.getTracks()) t.stop();
-      try { m.src.disconnect(); m.node.disconnect(); m.hush.disconnect(); } catch (e) { /* gone */ }
-      if (m.enc.state !== "closed") m.enc.close();
     }
-    // A packet of your voice, once, to your visit-client: it sends it to those who hear it (where _voiceTo allows).
-    _voiceOut(chunk) {
-      if (!this._ws || this._ws.readyState !== 1 || !this._voiceTo) return;
-      const data = new Uint8Array(chunk.byteLength);
-      chunk.copyTo(data);
-      this._ws.send(frameOf(this._voiceTo, AUDIO, data));
+
+    // ---------- the WebRTC connections (8.7, #71) ----------
+    // Connect to what your visit-client says, and no more: a connection missing (or failed, RTC_RETRY ago) made; one
+    // no longer wanted silent, and closed RTC_LINGER on unless it is wanted again meanwhile (a call that rings again,
+    // answered: no gap to connect again); your microphone on each where someone hears you.
+    _rtcSync() {
+      if (typeof RTCPeerConnection === "undefined" || this.role === "host") return;
+      const want = new Map(this._rtcWant.map(w => [w.to == null ? "own" : Number(w.to), w])), now = performance.now();
+      for (const [k, c] of [...this._rtc]) {
+        if (want.has(k)) { c.unwanted = 0; continue; }
+        if (!c.unwanted) { c.unwanted = now; c.want = {}; setTimeout(() => { if (!this._closed) this._rtcSync(); }, RTC_LINGER + 50); }
+        else if (now - c.unwanted >= RTC_LINGER) this._rtcClose(c, true);
+      }
+      for (const [k, w] of want) {
+        const c = this._rtc.get(k);
+        if (!c) this._rtcOpen(k, w);
+        else { c.want = w; if (c.failed && now - c.failed >= RTC_RETRY) { this._rtcClose(c, false); this._rtcOpen(k, w); } }
+      }
+      this._rtcGate();
+    }
+    // Your microphone on a connection while someone hears you there, by the ways they do: in person while it is on;
+    // on a call always (it runs for one); in a room voice while it is on, or for a huddle.
+    _rtcGate() {
+      let to = 0;   // the ways your voice goes now (for a test, and the ⏱ report): 1 in person, 2 a call, 4 a room voice
+      for (const c of this._rtc.values()) {
+        const w = c.want || {}, ways = (w.room && this.mic ? 1 : 0) | (w.call ? 2 : 0) | (w.voice && (this.mic || this.inHuddle) ? 4 : 0);
+        const track = ways && this._mic ? this._mic.track : null;
+        if (track) to |= ways;
+        if (c.sending !== track) { c.sending = track; c.mic.sender.replaceTrack(track).catch(() => {}); }
+      }
+      this._voiceTo = to;
+    }
+    async _rtcOpen(k, w) {
+      const pc = new RTCPeerConnection({ iceServers: this._ice, bundlePolicy: "max-bundle", rtcpMuxPolicy: "require" });
+      const c = { key: k, to: k === "own" ? null : k, pc, want: w, slots: new Map(), sending: null, failed: 0, answered: false };
+      this._rtc.set(k, c);
+      c.mic = pc.addTransceiver("audio", { direction: "sendonly" });
+      for (let i = 0; i < RTC_SLOTS; i++) pc.addTransceiver("audio", { direction: "recvonly" });
+      const dc = pc.createDataChannel("visit");
+      dc.onmessage = e => { let l = null; try { l = JSON.parse(e.data); } catch (x) { return; } if (isObj(l)) this._rtcLabel(c, l); };
+      pc.ontrack = e => this._rtcTrack(c, e.transceiver);
+      pc.onconnectionstatechange = () => {
+        if (this._rtc.get(k) !== c) return;
+        if (pc.connectionState === "failed") this._rtcFailed(c);
+        if (pc.connectionState === "disconnected") setTimeout(() => { if (this._rtc.get(k) === c && pc.connectionState === "disconnected") this._rtcFailed(c); }, RTC_LOST);
+        if (pc.connectionState === "connected") {   // your voice at VOICE_BITRATE (low bandwidth matters), its loss covered (Opus FEC)
+          const p = c.mic.sender.getParameters();
+          if (p.encodings && p.encodings[0] && p.encodings[0].maxBitrate !== VOICE_BITRATE) { p.encodings[0].maxBitrate = VOICE_BITRATE; c.mic.sender.setParameters(p).catch(() => {}); }
+        }
+      };
+      try {
+        await pc.setLocalDescription(await pc.createOffer());
+        await new Promise(done => {   // every candidate in the offer (no trickle): its gathering done, or RTC_GATHER past
+          if (pc.iceGatheringState === "complete") return done();
+          const t = setTimeout(done, RTC_GATHER);
+          pc.addEventListener("icegatheringstatechange", () => { if (pc.iceGatheringState === "complete") { clearTimeout(t); done(); } });
+        });
+        if (this._rtc.get(k) !== c) return;
+        this._send({ type: "rtc_offer", to: c.to, sdp: pc.localDescription.sdp });
+      } catch (e) { console.warn("visit: a voice connection could not be offered", e); this._rtcFailed(c); }
+      this._rtcGate();
+    }
+    async _rtcAnswer(m) {
+      const c = this._rtc.get(m.to == null ? "own" : Number(m.to));
+      if (!c || c.answered || c.pc.signalingState !== "have-local-offer" || typeof m.sdp !== "string") return;
+      c.answered = true;
+      try { await c.pc.setRemoteDescription({ type: "answer", sdp: m.sdp }); } catch (e) { console.warn("visit: a voice connection's answer was refused", e); this._rtcFailed(c); }
+    }
+    // A connection failed (or was refused): tried again RTC_RETRY on, while it is still wanted.
+    _rtcFailed(c) {
+      if (c.failed) return;
+      c.failed = performance.now();
+      setTimeout(() => { if (this._rtc.get(c.key) === c && !this._closed) this._rtcSync(); }, RTC_RETRY + 50);
+    }
+    _rtcClose(c, tell) {
+      if (this._rtc.get(c.key) === c) this._rtc.delete(c.key);
+      for (const sl of c.slots.values()) this._slotDrop(sl);
+      try { c.pc.close(); } catch (e) { /* closed */ }
+      if (tell) this._send({ type: "rtc_close", to: c.to });
+    }
+    // A slot (one of a connection's recvonly m-lines): its track, played through Web Audio (a muted <audio> holds it,
+    // as Chrome wants), measured for who is speaking, and fed to the voice its label says.
+    _rtcTrack(c, tr) {
+      if (!tr || !tr.mid || tr === c.mic || c.slots.has(tr.mid)) return;
+      const ctx = this._audio(), stream = new MediaStream([tr.receiver.track]), el = new Audio();
+      el.srcObject = stream; el.muted = true; el.play().catch(() => {});
+      const src = ctx.createMediaStreamSource(stream), meter = ctx.createAnalyser();
+      meter.fftSize = 512; src.connect(meter);
+      const sl = { mid: tr.mid, tr, conn: c, el, src, meter, buf: new Float32Array(meter.fftSize), label: null, voice: null, out: null, ts: null };
+      c.slots.set(tr.mid, sl);
+      if (c.labels && c.labels.has(tr.mid)) this._rtcLabel(c, c.labels.get(tr.mid));
+    }
+    // Who a slot carries now, as the office that forwards it says: { mid, ch (your own office's), relay, name, route,
+    // key }; heard as such a packet was (_voiceKey).
+    _rtcLabel(c, l) {
+      const mid = String(l.mid || "");
+      (c.labels || (c.labels = new Map())).set(mid, l);
+      const sl = c.slots.get(mid);
+      if (!sl) return;
+      sl.label = { ch: c.to != null ? c.to : Number(l.ch), relay: typeof l.relay === "string" ? l.relay : null, name: String(l.name || ""), route: Number(l.route) || 0, key: String(l.key || "") };
+      sl.voice = null;   // (found again by _voiceTick)
+    }
+    _slotDrop(sl) {
+      try { sl.src.disconnect(); } catch (e) { /* gone */ }
+      sl.el.srcObject = null;
+      sl.voice = null; sl.out = null;
+    }
+    // A slot's voice, by its label, as a packet of it was heard before WebRTC (8.7): a room voice's by who spoke, not
+    // from anywhere; a call's, theirs or (passed on) someone's near their phone on speaker; passed on by the room your
+    // user is in, from where its scene has them; another office's own, from where it is. Null: not to be heard now.
+    _voiceKey(l) {
+      const p = this._peerOf(l.ch), call = p && p.key && this._calls.get(p.key);
+      if (l.route === ROUTE_VOICE) {
+        if (!l.relay || !this.roomVoice) return null;
+        const s = this._voiceOf("room:" + l.relay); s.room = true; s.name = l.name;
+        return s;
+      }
+      if (l.route === ROUTE_CALL) {
+        if (!call || call.state !== "on") return null;
+        const s = this._voiceOf("call:" + (l.relay ? l.relay : p.key)); s.callKey = call.key; s.name = l.relay ? l.name : p.name || "";
+        return s;
+      }
+      if (l.relay) {
+        const r = this._voiceRoom;
+        if (!r || r.kind === "home" || r.w.channel !== l.ch) return null;
+        (r.s.relayed || (r.s.relayed = new Map())).set(l.relay, { name: l.name, at: performance.now() });
+        return this._voiceOf("relay:" + l.relay);   // where they are, and whether near: _voiceTick
+      }
+      return p && p.key ? this._voiceOf(p.key) : null;
+    }
+    // Each slot to the voice it carries (one way a speaker: in person first, then a call, then a room voice), into
+    // where that voice is heard from now; who is speaking, by what each slot carries.
+    _slotsTick(now) {
+      const best = new Map(), slots = [];
+      for (const c of this._rtc.values()) for (const sl of c.slots.values()) {
+        const ss = sl.tr.receiver.getSynchronizationSources()[0];
+        sl.fresh = 0;
+        if (ss && ss.rtpTimestamp !== sl.ts) {   // 20 ms frames come (as their RTP timestamps say: 960 each)
+          if (sl.ts != null) sl.fresh = Math.min(50, ((ss.rtpTimestamp - sl.ts) >>> 0) / 960);
+          sl.ts = ss.rtpTimestamp; sl.liveAt = now;
+        }
+        slots.push(sl);
+        if (!sl.label || !(now - (sl.liveAt || 0) < SLOT_LIVE)) continue;   // (a slot keeps its last label after its speaker stops)
+        const b = best.get(sl.label.key);
+        if (!b || sl.label.route < b.label.route) best.set(sl.label.key, sl);
+      }
+      for (const sl of slots) {
+        const v = sl.label && best.get(sl.label.key) === sl ? this._voiceKey(sl.label) : null;
+        sl.meter.getFloatTimeDomainData(sl.buf);
+        const level = rms(sl.buf);
+        if (v) {
+          v.frames += sl.fresh; v.level = level;
+          if (level > 0.01) { v.heardAt = now; const r = sl.label.relay && this._voiceRoom; if (r && r.s && r.s.relayed && r.s.relayed.has(sl.label.relay)) r.s.relayed.get(sl.label.relay).at = now; }
+        }
+        const c2 = v && v.callKey && this._calls.get(v.callKey);
+        const out = !v ? null : v.room ? v.flat : c2 && c2.state === "on" ? (c2.voice ? v.flat : c2.speaker ? (v.near ? v.gain : null) : v.phone) : v.near ? v.gain : null;
+        if (out !== sl.out) {
+          if (sl.out) try { sl.src.disconnect(sl.out); } catch (e) { /* gone */ }
+          sl.out = out;
+          if (out) sl.src.connect(out);
+        }
+        sl.voice = v;
+      }
     }
 
     // Which room your user is in: their own (at home), one they went to (a visit, a link gone there), or a plot they
@@ -2235,9 +2377,8 @@
         ? told.map(n => { const key = r.kind === "home" ? n.key : n.phone ? "relay:phone" : n.id ? "relay:" + n.id : n.key;
             return { key, name: n.name, distance: n.distance, speaking: n.phone ? [...this._voices.keys()].some(k => k.startsWith("relay:phone") && speaking(k)) : speaking(key) }; })
         : [...near.values()].filter(p => p.distance <= range).map(p => ({ key: p.key, name: p.name, distance: Math.round(p.distance * 10) / 10, speaking: speaking(p.key) }));
-      const room = this.mic && !!r.ears && (this.voices.length > 0 || (r.kind !== "home" && !told)), calls = [...this._calls.values()].some(c => c.state === "on");
-      const rv = this.roomVoice, chan = (this.mic || !!this.inHuddle) && !!rv && !rv.joining && rv.members.some(x => x.key !== this.key);   // (4.0: a huddle runs the microphone, as a call does)
-      this._voiceTo = (room ? VOICE_ROOM : 0) | (calls ? VOICE_CALLS : 0) | (chan ? VOICE_CHANNEL : 0);
+      const rv = this.roomVoice;
+      this._slotsTick(now);
       for (const c of this._calls.values()) c.speaking = speaking("call:" + c.key);
       const heard = x => { const was = x.speaking; x.speaking = x.key !== this.key && (speaking("room:" + x.key) || speaking(x.key) || speaking("call:" + x.key)); return was !== x.speaking; };   // however you hear them
       let flip = false;
@@ -2283,44 +2424,8 @@
       Object.assign(this._whereTold, { sig, at: now });
       this._send(Object.assign({ type: "voice_where" }, where));
     }
-    // A packet of someone's voice, sent here because your visit-client has you hear it, one way only (8.7: in person
-    // first, then a call, then a room voice; its route says which). A room voice's: who spoke (their key), heard as
-    // they are, not from anywhere. A call's: theirs, or (passed on) someone near their phone on speaker, heard as a
-    // call is (_callVoice). In person, passed on by the room your user is in: from where its scene has them. Another
-    // office's own: from where it is (in your room, the one you are in, or across your plot's side).
-    _voiceIn(ch, data, relayed, route) {
-      let id = null, name = "";
-      if (relayed) {
-        if (data.length < 3) return;
-        const n = data[0];
-        id = new TextDecoder().decode(data.subarray(1, 1 + n));
-        const m = data[1 + n];
-        name = new TextDecoder().decode(data.subarray(2 + n, 2 + n + m)); data = data.subarray(2 + n + m);
-      }
-      const p = this._peerOf(ch), call = p && p.key && this._calls.get(p.key);
-      if (route === ROUTE_VOICE) {
-        if (!relayed || !id || !this.roomVoice) return;
-        const s = this._voiceOf("room:" + id);
-        s.room = true; s.name = name;
-        return this._voiceDecode(s, data);
-      }
-      if (route === ROUTE_CALL) return call && call.state === "on" ? this._callVoice(call, "call:" + (relayed ? id : p.key), relayed ? name : p.name || "", data) : undefined;
-      if (relayed) {
-        const r = this._voiceRoom;
-        if (!r || r.kind === "home" || r.w.channel !== ch) return;
-        (r.s.relayed || (r.s.relayed = new Map())).set(id, { name, at: performance.now() });
-        return this._voiceDecode(this._voiceOf("relay:" + id), data);   // where they are, and whether near: _voiceTick
-      }
-      if (p && p.key) this._voiceDecode(this._voiceOf(p.key), data);
-    }
-    // A call's voice: on the handset, to your ear; on speaker, from your phone (to you, by where you are in your
-    // room; your visit-client passes it on to your visitors near the phone, as the phone's).
-    _callVoice(c, key, name, data) {
-      const s = this._voiceOf(key);
-      s.callKey = c.key; s.name = name;
-      this._voiceDecode(s, data);
-    }
-    // Someone's voice: a decoder of its own, played by distance (a panner), or as a telephone (a filter).
+    // Someone's voice: played by distance (a panner), as a telephone (a filter), or flat (a room voice, a call's
+    // speaker on a voice visit); its slots feed one of them (_slotsTick).
     _voiceOf(key) {
       let s = this._voices.get(key);
       if (s) return s;
@@ -2328,32 +2433,15 @@
       Object.assign(panner, { panningModel: "HRTF", distanceModel: "linear", refDistance: 1, maxDistance: VOICE_RANGE, rolloffFactor: 1 });
       phone.type = "bandpass"; phone.frequency.value = 1400; phone.Q.value = 0.7;   // a call to your ear sounds as a telephone does
       gain.connect(panner); panner.connect(ctx.destination); phone.connect(ctx.destination); flat.connect(ctx.destination);
-      s = { key, gain, panner, phone, flat, next: 0, ts: 0, level: 0, heardAt: 0, frames: 0, near: false, callKey: null, room: false, dec: null };
-      s.dec = new AudioDecoder({ output: d => this._voicePlay(s, d), error: e => { console.warn("visit: a voice could not be decoded", e); this._voiceDrop(key); } });
-      s.dec.configure({ codec: "opus", sampleRate: VOICE_RATE, numberOfChannels: 1 });
+      s = { key, gain, panner, phone, flat, level: 0, heardAt: 0, frames: 0, near: false, callKey: null, room: false };
       this._voices.set(key, s);
       return s;
-    }
-    _voiceDecode(s, data) { if (s.dec.state === "configured") s.dec.decode(new EncodedAudioChunk({ type: "key", timestamp: (s.ts += 20000), data })); }
-    _voicePlay(s, d) {
-      const ctx = this._ctx, n = d.numberOfFrames, buf = ctx.createBuffer(1, n, d.sampleRate), pcm = buf.getChannelData(0);
-      try { d.copyTo(pcm, { planeIndex: 0, format: "f32-planar" }); } catch (e) { d.close(); return; }
-      d.close();
-      s.level = rms(pcm); s.frames++;
-      if (s.level > 0.01) s.heardAt = performance.now();
-      const c = s.callKey && this._calls.get(s.callKey), out = s.room ? s.flat : c && c.state === "on" ? (c.voice ? s.flat : c.speaker ? (s.near ? s.gain : null) : s.phone) : s.near ? s.gain : null;
-      if (!out) return;
-      const src = ctx.createBufferSource(), now = ctx.currentTime;
-      src.buffer = buf; src.connect(out);
-      if (s.next < now || s.next > now + VOICE_LATE) s.next = now + VOICE_LEAD;
-      src.start(s.next);
-      s.next += buf.duration;
     }
     _voiceDrop(key) {
       const s = this._voices.get(key);
       if (!s) return;
       this._voices.delete(key);
-      if (s.dec.state !== "closed") s.dec.close();
+      for (const c of this._rtc.values()) for (const sl of c.slots.values()) if (sl.voice === s) { if (sl.out) try { sl.src.disconnect(sl.out); } catch (e) { /* gone */ } sl.out = null; sl.voice = null; }
       for (const n of [s.gain, s.panner, s.phone, s.flat]) n.disconnect();
     }
     _peerOf(ch) {
@@ -4345,7 +4433,6 @@
       const fl = new DataView(buf).getUint8(2);
       if (fl === MEDIA) return this._mediaIn(new Uint8Array(buf, 11));
       if (fl === ASSET) return this._assetIn(new Uint8Array(buf, 11));
-      if (fl === AUDIO || fl === RELAY) return this._voiceIn(new DataView(buf).getUint16(0), new Uint8Array(buf, 11), fl === RELAY, new DataView(buf).getUint8(3));
       const dv = new DataView(buf), w = this._viewing(dv.getUint16(0));
       if (w) this._sceneDelta(w, dv, (dv.getUint8(2) & KEY) !== 0);
     }

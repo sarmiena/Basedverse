@@ -45,6 +45,8 @@ UDP), and these open to the internet:
 | 22 | TCP | ssh (your address only) |
 | 80, 443 | TCP | Caddy: the certificate's challenge, then `wss://` and the page |
 | 7842 | UDP | the relay's address discovery: how two workrooms find a direct path to each other |
+| 3478 | UDP | 4.2: STUN and TURN, for Visit's voice (WebRTC): how a page finds its way to an office, and the way when none goes directly |
+| 49152–65535 | UDP | 4.2: TURN's relays (one a relayed connection) |
 
 From your machine, in this repository (nothing to install, here or on the server):
 
@@ -96,10 +98,14 @@ keeps (its worlds, linked browsers and bans) is in `/var/lib/basedverse-lobby/da
 **Without bin/deploy-lobby** (another init system, a proxy of your own): run `lobby` behind any TLS proxy that
 passes WebSockets, with `--hosts <your name>` (what hellos sign), `--trust-proxy` (the proxy's `X-Forwarded-For`),
 `--data-dir`, and, for its relay, `--relay-port` (route `/relay`, `/ping` and `/generate_204` to it) and
-`--relay-cert`/`--relay-key` (your name's certificate, for UDP 7842).
+`--relay-cert`/`--relay-key` (your name's certificate, for UDP 7842); and, for voice, `--turn-ip` (the server's public
+IPv4: TURN relays are given at it) and `--turn-host` (your name), UDP 3478 and 49152–65535 open (`--turn-port`,
+`--turn-relay-ports`).
 
 **What it costs.** The server, and its traffic. Links go directly between workrooms whenever their networks allow;
-only when they cannot does the relay carry them (at most 4 MiB a second each way, for a workroom in the lobby).
+only when they cannot does the relay carry them (at most 4 MiB a second each way, for a workroom in the lobby). Voice
+likewise: TURN carries a page's only when no direct way goes (a phone's mobile network, a strict NAT), about 3 kB a
+second a voice.
 
 ## Trust
 

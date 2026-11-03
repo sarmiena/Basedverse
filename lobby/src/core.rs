@@ -139,6 +139,16 @@ pub struct Config {
     pub motd: Option<String>,
     /// The members a world takes.
     pub world_size: usize,
+    /// 4.2 (#71): its STUN and TURN server (none: not run), and its logins.
+    pub ice: Option<IceCfg>,
+}
+
+pub struct IceCfg {
+    pub host: Option<String>,
+    pub port: u16,
+    /// Relays to be had (--turn-ip given): each office gets a login.
+    pub turn: bool,
+    pub users: std::sync::Arc<crate::turn::Users>,
 }
 
 /// A password's work, done off the core's task: hashed (none: it could not be), or checked (against this hash).
@@ -257,6 +267,8 @@ struct Session {
     holding: bool,
     /// 3.1: its linked browsers in the lobby now (the lobby's page, as this office).
     web: Vec<Conn>,
+    /// 4.2 (#71): its TURN login, while it is here.
+    turn_user: Option<String>,
 }
 
 struct Knock {
@@ -671,7 +683,7 @@ impl Core {
             whisper: flag("whisper"), voice: m.get("voice") == Some(&Value::Bool(true)), about, admin,
             said: VecDeque::new(), visiting: None, hosting: HashSet::new(), watching: HashSet::new(), watched: HashSet::new(), talking: HashSet::new(),
             knocked: VecDeque::new(), knocked_watch: VecDeque::new(), made: VecDeque::new(), passwords: VecDeque::new(), codes: VecDeque::new(),
-            held: 0, holding: false, web: Vec::new(),
+            held: 0, holding: false, web: Vec::new(), turn_user: None,
         };
         self.by_name.insert(name.to_ascii_lowercase(), id.clone());
         if let Some(k) = &key {
@@ -699,10 +711,23 @@ impl Core {
         let knocking = self.knock_order.iter().filter_map(|k| self.knocks.get(k)).filter(|k| k.from == oid)
             .map(|k| Knocking { id: k.id.clone(), to: k.to.clone() }).collect();
         let v4 = o.proto == Proto::V4;
+        // 4.2 (#71): a TURN login of its own, new each welcome (the last one good a while longer, for calls going on).
+        let ice = match (&self.cfg.ice, v4) {
+            (Some(c), true) => {
+                let login = c.turn.then(|| c.users.issue(oid));
+                let o = self.offices.get_mut(oid).expect("welcomed");
+                if let Some(old) = std::mem::replace(&mut o.turn_user, login.as_ref().map(|l| l.0.clone())) {
+                    c.users.left(&old);
+                }
+                Some(lobby_proto::Ice { host: c.host.clone(), port: c.port, username: login.as_ref().map(|l| l.0.clone()), credential: login.map(|l| l.1) })
+            }
+            _ => None,
+        };
+        let o = &self.offices[oid];
         let w = FromLobby::Welcome {
             proto: o.proto.name().into(), id: o.id.clone(), name: o.name.clone(), key: if v4 { o.key.clone() } else { None },
             relays: self.cfg.relays.clone(), resume: fresh, resumed, visits, knocking, limits: self.limits(o.proto).clone(), chat: true,
-            admin: o.admin, title: if v4 { self.cfg.title.clone() } else { None }, motd: if v4 { self.cfg.motd.clone() } else { None }, voice: true,
+            admin: o.admin, title: if v4 { self.cfg.title.clone() } else { None }, motd: if v4 { self.cfg.motd.clone() } else { None }, voice: true, ice,
         };
         self.tell(oid, &w);
     }
@@ -710,6 +735,9 @@ impl Core {
     /// A session ends for good: its knocks are withdrawn, its visits end `gone`.
     fn depart(&mut self, oid: &str) {
         let Some(me) = self.offices.remove(oid) else { return };
+        if let (Some(u), Some(c)) = (&me.turn_user, &self.cfg.ice) {
+            c.users.left(u);
+        }
         for c in &me.web {   // its browsers: it is gone, and so are they (they come back with it)
             c.send(&FromLobby::error("office_gone", format!("{} has left the lobby: this page comes back in when it does", me.name), None));
             c.close(4410, "its office left the lobby");

@@ -10,6 +10,36 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v4.2.0 — unreleased — voice over WebRTC: each page to the office that passes it on, TURN in the lobby (#71)
+
+**Every workroom upgrades, and the lobby is deployed again** (voice between a 4.2 office and an older one is gone:
+4.2 sends none over links and takes none from them; everything else meets as before).
+
+- **Voice sounds right** ([visit/SPEC.md](visit/SPEC.md) 8.7; [#71](https://github.com/sarmiena/Basedverse/issues/71)).
+  It was choppy: a page played what came 60 ms behind, as it came, with no idea a packet was lost or late (so it
+  clicked, skipped, and overlapped itself), and where two offices could not reach each other directly their link
+  went over the relay's TCP, where one lost packet holds up everything behind it. Now each page connects by WebRTC to
+  every office it speaks to or hears from: its own; the room its user is in; a call's other side; a friend across a
+  plot's side; the room voice it joined. The browser's own jitter buffer, loss concealment, echo cancellation and
+  Opus FEC play it, at 24 kbps. Each office still decides who hears whom, as before (by distance, calls, phones on
+  speaker, room voices, bans), and passes each voice on to the pages connected to it that hear it: a forwarder (str0m,
+  in Rust), all of an office's connections on one UDP port. Nothing of voice goes over a link any more: links carry the
+  offers and answers, their keys proving whose page connects.
+- **The lobby runs STUN and TURN** ([LOBBY.md](LOBBY.md) 1): UDP 3478, its relays on UDP 49152-65535, built in (no
+  coturn). Its welcome names it (`ice`), with a TURN login for each office, good while it is in the lobby (so a long
+  call never loses its relay to an expiry). A page reaches its office from anywhere, a phone on mobile data too, and
+  TURN carries it only when no direct way goes.
+- **The protocol**: to and from the page, `rtc_offer`, `rtc_answer`, `rtc_failed`, `rtc_close`, `rtc_want` (what to
+  connect to, and the ways the user's voice is heard there), and `mic`; on a link, `rtc_offer`, `rtc_answer`,
+  `rtc_failed`, `rtc_close`. Gone: the voice frames (bits 3 and 4) and the link's voice datagrams (0xA0 to 0xA3).
+  visit-client takes `--media-port` (`VISIT_MEDIA_PORT`, default any free one).
+- **One change you may hear**: a call on speaker on both sides. Those near each phone hear the other side's caller,
+  not those near the other side's phone.
+
+**What an integration does:** nothing in your page (Visit's own voice code changed under the same API: `setMic`,
+`voices`, calls, talk, huddles). A workroom behind a strict firewall opens the media port (`--media-port`), or lets
+TURN carry it. The lobby's host opens UDP 3478 and 49152-65535 (lobby/README.md); `bin/deploy-lobby` sets the rest.
+
 ## v4.1.0 — 2026-11-02 — a scene's big pictures and meshes by name, once (#67, follows #37)
 
 - **Heavy rooms join** ([visit/SPEC.md](visit/SPEC.md) 8.14; [#67](https://github.com/sarmiena/Basedverse/issues/67)).

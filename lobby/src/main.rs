@@ -9,6 +9,7 @@ mod conn;
 mod core;
 mod groups;
 mod relay;
+mod turn;
 mod web;
 
 use std::{
@@ -73,6 +74,19 @@ struct Args {
     relay_key: Option<PathBuf>,
     #[arg(long, env = "LOBBY_RELAY_QUIC_PORT", default_value_t = 7842)]
     relay_quic_port: u16,
+    /// Its STUN and TURN server's UDP port (4.2, #71: Visit's voice over WebRTC), for its offices' pages; 0: none.
+    #[arg(long, env = "LOBBY_TURN_PORT", default_value_t = 3478)]
+    turn_port: u16,
+    /// The lobby machine's public IPv4 address: TURN relays are given at it. None: STUN only.
+    #[arg(long, env = "LOBBY_TURN_IP")]
+    turn_ip: Option<IpAddr>,
+    /// The UDP ports TURN relays are made on, first-last (each relayed connection takes one).
+    #[arg(long, env = "LOBBY_TURN_RELAY_PORTS", default_value = "49152-65535")]
+    turn_relay_ports: String,
+    /// The name pages reach STUN and TURN at. Default: the first of --hosts; else the lobby's, as each visit-client
+    /// reached it.
+    #[arg(long, env = "LOBBY_TURN_HOST")]
+    turn_host: Option<String>,
     /// Take a connection's address from X-Forwarded-For (its last entry): only behind a proxy that sets it.
     #[arg(long, env = "LOBBY_TRUST_PROXY", action = clap::ArgAction::SetTrue, value_parser = clap::builder::FalseyValueParser::new())]
     trust_proxy: bool,
@@ -195,7 +209,25 @@ async fn main() -> ExitCode {
     if !(2..=1000).contains(&a.world_size) {
         return bad("--world-size is 2 to 1000".into());
     }
-    let cfg = core::Config { knock_ttl: a.knock_ttl, resume: a.resume, relays, admins, title: a.title.clone(), motd: a.motd.clone(), world_size: a.world_size };
+    let (ice, _turn) = if a.turn_port == 0 {
+        (None, None)
+    } else {
+        let Some((lo, hi)) = a.turn_relay_ports.split_once('-').and_then(|(l, h)| Some((l.trim().parse::<u16>().ok()?, h.trim().parse::<u16>().ok()?))).filter(|(l, h)| *l > 0 && l <= h) else {
+            return bad(format!("--turn-relay-ports {}: first-last, like 49152-65535", a.turn_relay_ports));
+        };
+        match turn::start(turn::Settings { port: a.turn_port, public_ip: a.turn_ip, relay_ports: (lo, hi) }).await {
+            Ok(t) => {
+                let host = a.turn_host.clone().or_else(|| hosts.first().map(|h| h.rsplit_once(':').map_or(h.as_str(), |(h, _)| h).to_string()));
+                let users = t.users.clone();
+                (Some(core::IceCfg { host, port: a.turn_port, turn: a.turn_ip.is_some(), users }), Some(t))   // (it runs as long as the lobby does)
+            }
+            Err(e) => {
+                eprintln!("lobby: STUN and TURN on UDP {}: {e:#}", a.turn_port);
+                return ExitCode::from(1);
+            }
+        }
+    };
+    let cfg = core::Config { knock_ttl: a.knock_ttl, resume: a.resume, relays, admins, title: a.title.clone(), motd: a.motd.clone(), world_size: a.world_size, ice };
     tokio::spawn(core::Core::new(cfg, tx.clone(), bans, groups, links).run(rx));
     let _relay = match a.relay_port {
         Some(port) => {

@@ -461,9 +461,11 @@ visit.host({
   from a click: browsers ask for the microphone only then); it stays on across reloads. Who hears whom is decided by
   each room's visit-client, the same for every room: your page only says where everyone in your room stands, which
   Visit does for you. It needs to know where your user stands: with a world (step 9) it knows; without one, call
-  `visit.listener({ x, y, z, yaw })` each frame. Your visitors it takes from where your room has them. A
-  page's Content-Security-Policy needs `blob:` for worklets too (as for the ticker's Worker), and the browser
-  WebCodecs (Chrome, Edge, Safari, recent Firefox). Headphones keep your user's speakers out of their microphone.
+  `visit.listener({ x, y, z, yaw })` each frame. Your visitors it takes from where your room has them. It
+  goes over WebRTC (4.2, ../CHANGELOG.md), which every current browser has: your user's page connects to your
+  workroom's visit-client and to those of the rooms they speak to, on UDP (`--media-port`, any free port by default;
+  give one to open it on a firewall), with the lobby's STUN and TURN for the ways that cannot go direct. Headphones
+  keep your user's speakers out of their microphone.
 - **Your landscape** (recommended, the bigger your room the more): mark what never changes, its ground, walls,
   trees and furniture, with `obj.userData.visitStatic = true` (everything under it goes with it). Visit then sends
   it to each visitor once, who keeps it (by its hash: the same landscape is never sent twice, across visits and

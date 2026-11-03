@@ -507,6 +507,19 @@ pub struct Ban {
     pub reason: String,
 }
 
+/// The lobby's STUN and TURN server (4.2, #71): at `host` (none: the lobby's own, as the visit-client reached it), UDP
+/// `port`; and this office's own TURN login (none: STUN only), good while it is in the lobby.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Ice {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub host: Option<String>,
+    pub port: u16,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub credential: Option<String>,
+}
+
 /// The lobby's message to a visit-client.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -537,6 +550,9 @@ pub enum FromLobby {
         /// 4.0: this lobby carries voice knocks and huddles (an older one would pass a voice knock on as a knock).
         #[serde(skip_serializing_if = "is_false", default)]
         voice: bool,
+        /// 4.2 (#71): its STUN and TURN server, for voice over WebRTC (../../visit/SPEC.md 8.7).
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        ice: Option<Ice>,
     },
     Lobby { offices: Vec<Office> },
     Knock {

@@ -22,12 +22,15 @@ import urllib.request
 
 from websockets.asyncio.client import connect  # noqa: E402
 from websockets.exceptions import ConnectionClosed  # noqa: E402
+from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription  # noqa: E402
+from aiortc.mediastreams import AudioStreamTrack  # noqa: E402
 
 BIN = sys.argv[1]
 LOBBY_BIN = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(BIN), "lobby")
 PASSWORD = "correct horse battery staple"
 VERSION = re.search(r'^version = "(.*)"', open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Cargo.toml")).read(), re.M).group(1)
 TMP = tempfile.mkdtemp()
+LOGS = os.environ.get("E2E_LOGS") or TMP   # where the visit-clients' logs go (a folder outside, to keep them)
 fails = 0
 
 
@@ -49,6 +52,7 @@ class Page:
         bare."""
         self.ws = await connect("ws://127.0.0.1:%d/ws" % self.port, max_size=4 << 20, origin=origin)
         self.texts, self.frames = asyncio.Queue(), asyncio.Queue()
+        self.voice = Voice(self)
         if relay is not None:
             await self.send(type="relay", token=relay, role=relay_role)
         hello = {"type": "hello", "proto": "basedverse-visit-local/2", "sim": {"name": "e2e", "version": "1"}}
@@ -63,6 +67,9 @@ class Page:
     async def _pump(self):
         try:
             async for m in self.ws:
+                if not isinstance(m, bytes) and json.loads(m).get("type") in ("rtc_want", "rtc_answer", "rtc_failed"):
+                    self.voice.handle(json.loads(m))   # (8.7: its WebRTC side's, apart from the page's messages)
+                    continue
                 await (self.frames if isinstance(m, bytes) else self.texts).put(m if isinstance(m, bytes) else json.loads(m))
         except ConnectionClosed:
             pass
@@ -99,8 +106,140 @@ class Page:
             self.texts.get_nowait()
 
     async def close(self):
+        await self.voice.close()
         await self.ws.close()
         self.pump.cancel()
+
+
+class Voice:
+    """A stand-in page's voice (../../SPEC.md 8.7, #71), as a browser's is: a WebRTC connection (aiortc) to each office
+    its visit-client names (rtc_want), each offering its microphone and SLOTS slots; the microphone a stand-in (frames
+    of silence), sent by the ways the test lets it (speak); and every frame heard, with its slot's label (who, how)."""
+    SLOTS = 12
+
+    def __init__(self, page):
+        self.page, self.want, self.ice, self.conns, self.ways, self.track, self.got = page, [], [], {}, set(), None, []
+        self.lock = asyncio.Lock()   # (one sync at a time: each takes the latest want)
+
+    def handle(self, m):
+        if m["type"] == "rtc_want":
+            self.want, self.ice = m["want"], m["ice"]
+            asyncio.ensure_future(self.sync())
+        elif m["type"] == "rtc_answer" and m.get("to") in self.conns:
+            asyncio.ensure_future(self.conns[m["to"]].answer(m["sdp"]))
+        elif m["type"] == "rtc_failed" and m.get("to") in self.conns:
+            self.conns[m["to"]].failed = m.get("reason") or True
+
+    async def sync(self):
+        async with self.lock:
+            want, now = {w["to"]: w for w in self.want}, time.monotonic()
+            for to in [t for t in self.conns if t not in want]:   # (silent, and closed 5 s on unless wanted again: as visit.js)
+                c = self.conns[to]
+                if not c.unwanted:
+                    c.unwanted, c.want = now, {}
+                    asyncio.get_running_loop().call_later(5.05, lambda: asyncio.ensure_future(self.sync()))
+                elif now - c.unwanted >= 5:
+                    await self.conns.pop(to).close(tell=True)
+            for to in want:
+                if to in self.conns:
+                    self.conns[to].unwanted = 0
+            for to, w in want.items():
+                if to not in self.conns:
+                    c = self.conns[to] = Conn(self, to)
+                    c.want = w
+                    try:
+                        await c.open()
+                    except ConnectionClosed:   # (the page closed meanwhile)
+                        return
+                self.conns[to].want = {w2["to"]: w2 for w2 in self.want}.get(to, w)
+            self.gate()
+
+    def gate(self):
+        for c in self.conns.values():
+            on = any(c.want.get(k) and k in self.ways for k in ("room", "call", "voice"))
+            c.mic.sender.replaceTrack(self.track if on else None)
+
+    async def speak(self, *ways):
+        """Its microphone on, by these ways only ("room": in person, "call", "voice": a room voice); none: off. (Its
+        visit-client told whether it is on for the room, as a page's microphone button tells it.)"""
+        self.ways = set(ways)
+        if ways:   # a new one each time: aiortc's stand-in, left unread a while, would catch up as fast as it can
+            self.track = AudioStreamTrack()
+        await self.page.send(type="mic", on="room" in self.ways)
+        self.gate()
+
+    async def ready(self, timeout=10):
+        """Every connection its visit-client names up (each office answered, ICE and DTLS done)."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if self.want and all(w["to"] in self.conns and self.conns[w["to"]].pc.connectionState == "connected" and not self.conns[w["to"]].unwanted for w in self.want):
+                return True
+            await asyncio.sleep(0.05)
+        return False
+
+    def heard(self, since):
+        """Who it heard since then, once each: (the channel it came on, who, how: 0 in person, 1 a call, 2 a room voice,
+        and passed on as whom: "" the office's own, or its link's page's; a visitor's id in that room; "phone", a call
+        on speaker; a room voice's speaker's key)."""
+        out = set()
+        for at, to, l in self.got:
+            if at >= since and l:
+                r = l.get("relay")
+                out.add((l.get("ch", to), l.get("name"), l.get("route"), "" if r is None else r))
+        return sorted(out, key=repr)
+
+    async def close(self):
+        for c in list(self.conns.values()):
+            await c.close()
+        self.conns.clear()
+
+
+class Conn:
+    """One of a stand-in page's WebRTC connections: to its own office (`to` None) or the one at the other end of the
+    link on that channel."""
+
+    def __init__(self, voice, to):
+        self.voice, self.to, self.want, self.labels, self.failed, self.unwanted = voice, to, {}, {}, None, 0
+
+    async def open(self):
+        ice = [RTCIceServer(urls=s["urls"], username=s.get("username"), credential=s.get("credential")) for s in self.voice.ice]
+        self.pc = RTCPeerConnection(RTCConfiguration(iceServers=ice))
+        self.mic = self.pc.addTransceiver("audio", direction="sendonly")
+        for _ in range(Voice.SLOTS):
+            self.pc.addTransceiver("audio", direction="recvonly")
+        dc = self.pc.createDataChannel("visit")
+
+        @dc.on("message")
+        def label(msg):
+            lab = json.loads(msg)
+            self.labels[str(lab.get("mid"))] = lab
+
+        @self.pc.on("track")
+        def track(t):
+            asyncio.ensure_future(self.listen(t))
+        await self.pc.setLocalDescription(await self.pc.createOffer())
+        await self.voice.page.send(type="rtc_offer", to=self.to, sdp=self.pc.localDescription.sdp)
+
+    async def answer(self, sdp):
+        if self.pc.signalingState == "have-local-offer":
+            await self.pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="answer"))
+
+    async def listen(self, t):
+        mid = next((x.mid for x in self.pc.getTransceivers() if x.receiver.track is t), None)
+        while True:
+            try:
+                await t.recv()
+            except Exception:
+                return
+            self.voice.got.append((time.monotonic(), self.to, self.labels.get(str(mid))))
+
+    async def close(self, tell=False):
+        if tell:
+            try:
+                await self.voice.page.send(type="rtc_close", to=self.to)
+            except Exception:
+                pass
+        await self.pc.close()
 
 
 # The Postgres inside visit (V2.md 4) is unpacked once into the user's data folder, for every workroom: here, one for
@@ -206,7 +345,7 @@ async def start_client(name, port, url, *extra, binary=None, user_token=False, s
         os.write(fd, utoken.encode())
         os.close(fd)
         extra = extra + ("--user-token-file", upath)
-    log = open(os.path.join(TMP, name + ".log"), "w")
+    log = open(os.path.join(LOGS, name + ".log"), "w")
     p = await asyncio.create_subprocess_exec(binary or BIN, "--lobby", url, "--name", name, "--sim", "e2e/1", "--port", str(port),
                                              "--token-file", path, "--relays", "none", *extra,
                                              stdout=asyncio.subprocess.PIPE, stderr=log,
@@ -962,19 +1101,21 @@ async def main():
         await a.send(type="possessions", list=[{"id": "visit:horse"}])
         check("an id that is not one (no `:`): refused", (await a.until(lambda m: m["type"] == "error"))["ref"], "possessions")
 
-        print("\nvoice: the room's visit-client decides who hears whom, by where its page has everyone (C visits B too)")
-        voice = lambda to, n: struct.pack(">HBQ", to, 8, 0) + bytes([0xFC, n]) + b"opus"   # a stand-in Opus packet, to the room (1) or calls (2)
-        opus = lambda n: bytes([0xFC, n]) + b"opus"
-        said = lambda who, name, n: bytes([len(who)]) + who.encode() + bytes([len(name.encode())]) + name.encode() + opus(n)   # who spoke, then the voice
+        print("\nvoice: the room's visit-client decides who hears whom, by where its page has everyone (C visits B too); over WebRTC (8.7, #71)")
         drain_frames = lambda pg: [pg.frames.get_nowait() for _ in range(pg.frames.qsize())]
-        async def next_voice(pg, fl):
-            while True:   # (deltas of the room may come first)
-                f = await asyncio.wait_for(pg.frames.get(), 5)
-                if f[2] == fl:
-                    return struct.unpack(">H", f[:2])[0], f[11:]
-        async def no_voice(*pgs):
-            await asyncio.sleep(0.5)
-            return [[(f[2], f[11:]) for f in drain_frames(pg) if f[2] in (8, 16)] for pg in pgs]
+        async def speaking(spk, ways, *pgs, secs=1.0):
+            """What each page hears while `spk` speaks by these ways (its microphone on for them), and nobody else does."""
+            for pg in (spk, *pgs):
+                await pg.voice.ready()
+            await asyncio.sleep(0.3)
+            t0 = time.monotonic()
+            await spk.voice.speak(*ways)
+            await asyncio.sleep(secs)
+            got = [pg.voice.heard(t0) for pg in pgs]
+            await spk.voice.speak()
+            await asyncio.sleep(0.5)   # (what is on its way, through)
+            return got
+        who = lambda heard: [[x[1:] for x in h] for h in heard]   # (who, how, passed on as whom), whatever channel
         near = lambda m: sorted((n["name"], n["distance"], "id" in n) for n in m["near"])
         pc, tc = await start_client("C", 7413, url)
         c = await Page(7413, tc).open()
@@ -994,20 +1135,15 @@ async def main():
         na, nc = await a.until(lambda m: m["type"] == "voice_near"), await c.until(lambda m: m["type"] == "voice_near")
         check("and A and C, each in B's room, who is near them, from B: its owner, and the other visitor (by its visit there)",
               ((na["channel"], near(na)), (nc["channel"], near(nc))), ((va["channel"], [("B", 10, False), ("C", 10, True)]), (vc["channel"], [("A", 10, True), ("B", 20, False)])))
-        drain_frames(a); drain_frames(b); drain_frames(c)
-        await a.ws.send(voice(1, 1))
-        check("A speaks, its page sending it once: B's page has it, on B's channel for A", await next_voice(b, 8), (vb["channel"], opus(1)))
-        check("and C's, passed on by B's visit-client: who spoke (A's visit there, and A), then the voice", await next_voice(c, 16), (vc["channel"], said(va["id"], "A", 1)))
-        await b.ws.send(voice(1, 2))
-        check("B speaks: A and C both have it, from B", (await next_voice(a, 8), await next_voice(c, 8)), ((va["channel"], opus(2)), (vc["channel"], opus(2))))
+        got = await speaking(a, ["room"], b, c)
+        check("A speaks, its page sending it once (to B's office): B's page has it, on B's channel for A", got[0], [(vb["channel"], "A", 0, "")])
+        check("and C's, passed on by B's visit-client: who spoke (A's visit there, and A)", got[1], [(vc["channel"], "A", 0, va["id"])])
+        check("B speaks: A and C both have it, from B", await speaking(b, ["room"], a, c), [[(va["channel"], "B", 0, "")], [(vc["channel"], "B", 0, "")]])
         await b.send(type="voice_where", me=[0, 1.6, 0], phone=None, visitors=[[vb["channel"], 10, 0, 0], [vbc["channel"], 100, 0, 0]])
         check("C walks 100 m off (as B's room has it): C told nobody is near", (await c.until(lambda m: m["type"] == "voice_near"))["near"], [])
-        drain_frames(a); drain_frames(b); drain_frames(c)
-        await a.ws.send(voice(1, 3))
-        await c.ws.send(voice(1, 4))
-        check("A speaks: B hears it, C (too far) does not; C speaks: nobody hears it", await no_voice(a, b, c), [[], [(8, opus(3))], []])
-        await a.ws.send(voice(2, 5))
-        check("A's voice for its calls only, with no call on: nowhere", await no_voice(b, c), [[], []])
+        check("A speaks: B hears it, C (too far) does not; C speaks: nobody hears it",
+              (await speaking(a, ["room"], b, c), await speaking(c, ["room"], a, b)), ([[(vb["channel"], "A", 0, "")], []], [[], []]))
+        check("A's voice for its calls only, with no call on: nowhere", await speaking(a, ["call"], b, c), [[], []])
 
         print("\nchat: a line said, to everyone in the same room")
         await b.send(type="voice_where", me=[0, 1.6, 0], phone=None, visitors=[[vb["channel"], 10, 0, 0], [vbc["channel"], 20, 0, 0]])   # (3.4.2: said is heard within 45 m: all near)
@@ -1220,8 +1356,7 @@ async def main():
         await a.drain(); await b.drain(); await c.drain()
         await b.send(type="voice_where", me=None, phone=None, visitors=[[vb["channel"], 10, 0, 0]])
         await a.until(lambda m: m["type"] == "voice_near" and m["near"] == [])
-        await a.ws.send(voice(1, 6))
-        check("B's user away from its room (its page says so): nobody there to hear A", await no_voice(b), [[]])
+        check("B's user away from its room (its page says so): nobody there to hear A", await speaking(a, ["room"], b), [[]])
         await a.send(type="phone", on=True)
         ph = await b.until(lambda m: m["type"] == "phone")
         check("A's room has a phone: B's page hears it, on its channel", (ph["channel"], ph["on"]), (vb["channel"], True))
@@ -1307,45 +1442,33 @@ async def main():
         await b.send(type="speaker", channel=lb["channel"], on=True)
         nc = await c.until(lambda m: m["type"] == "voice_near" and any(n.get("phone") for n in m["near"]))
         check("B puts the call on speaker: C, by B's phone, has the caller near it, as the phone", [(n["name"], n["distance"]) for n in nc["near"] if n.get("phone")], [("A", 2)])
-        drain_frames(a); drain_frames(b); drain_frames(c)
-        await a.ws.send(voice(2, 7))   # A, on the call
-        check("A speaks on the call: B's page has it, on the call's channel", await next_voice(b, 8), (lb["channel"], opus(7)))
-        check("and C, near B's phone, has it from the phone", await next_voice(c, 16), (vc["channel"], said("phone", "A", 7)))
-        await c.ws.send(voice(1, 8))
-        check("C speaks near B's phone: A has it in the call, passed on (who spoke, C)", await next_voice(a, 16), (la["channel"], said(vbc["id"], "C", 8)))
-        check("and B, near C, has it too", await next_voice(b, 8), (vbc["channel"], opus(8)))
+        got = await speaking(a, ["call"], b, c)   # A, on the call
+        check("A speaks on the call: B's page has it, on the call's channel", got[0], [(lb["channel"], "A", 1, "")])
+        check("and C, near B's phone, has it from the phone", got[1], [(vc["channel"], "A", 0, "phone")])
+        got = await speaking(c, ["room"], a, b)
+        check("C speaks near B's phone: A has it in the call, passed on (who spoke, C), from B's office", got[0], [(la["channel"], "C", 1, vbc["id"])])
+        check("and B, near C, has it too", got[1], [(vbc["channel"], "C", 0, "")])
         await b.send(type="speaker", channel=lb["channel"], on=False)
         await c.until(lambda m: m["type"] == "voice_near" and not any(n.get("phone") for n in m["near"]))
-        drain_frames(a); drain_frames(b); drain_frames(c)
-        await a.ws.send(voice(2, 9))
-        await c.ws.send(voice(1, 10))
-        check("back to B's ear: A to B only; C heard by B, not in the call", [sorted(x) for x in await no_voice(a, b, c)], [[], sorted([(8, opus(9)), (8, opus(10))]), []])
+        check("back to B's ear: A to B only; C heard by B, not in the call", (await speaking(a, ["call"], b, c), await speaking(c, ["room"], a, b)),
+              ([[(lb["channel"], "A", 1, "")], []], [[], [(vbc["channel"], "C", 0, "")]]))
         await b.send(type="speaker", channel=999, on=True)
         check("a speaker for no call: refused", (await b.until(lambda m: m["type"] == "error"))["code"], "no_call")
 
         print("\nvoice across a plot's side (both at home, each near the other in its own world); one way a person, in person first; a room's voice; keeping people out")
-        route = lambda f: (f[2], f[3], f[11:])   # its flag (8 voice, 16 passed on), how it came (0 in person, 1 a call, 2 a room voice), the rest
-        async def heard(*pgs):
-            await asyncio.sleep(0.5)
-            return [[route(f) for f in drain_frames(pg) if f[2] in (8, 16)] for pg in pgs]
         world_near = lambda m: m["type"] == "voice_near" and m.get("channel") is None
         b_where = dict(me=[0, 1.6, 0], phone=None, visitors=[[vbc["channel"], 2, 0, 5]])
         await b.send(type="voice_where", world=[[ka, 30, 0, 0], ["not a key", 1, 0, 0]], **b_where)
         await a.send(type="voice_where", me=[0, 1.6, 0], phone=None, visitors=[], world=[[kb, 100, 0, 0]])
         await asyncio.sleep(0.3)
-        drain_frames(a); drain_frames(b); drain_frames(c)
-        await a.ws.send(voice(3, 11))
-        check("A on a call with B, far off in A's world (B's has A near): B has A on the call only", await heard(b), [[(8, 1, opus(11))]])
+        check("A on a call with B, far off in A's world (B's has A near): B has A on the call only", who(await speaking(a, ["room", "call"], b)), [[("A", 1, "")]])
         await a.send(type="voice_where", me=[0, 1.6, 0], phone=None, visitors=[], world=[[kb, 20, 0, 0]])
         nb = await b.until(lambda m: world_near(m) and any(n.get("world") for n in m["near"]))
         na = await a.until(lambda m: world_near(m) and any(n.get("world") for n in m["near"]))
         check("near in both worlds: each told the other is near, by its own world's measure (B: A 30 m off; A: B 20 m)",
               ([(n["name"], n["distance"]) for n in nb["near"] if n.get("world")], [(n["name"], n["distance"]) for n in na["near"] if n.get("world")]), ([("A", 30)], [("B", 20)]))
-        drain_frames(a); drain_frames(b); drain_frames(c)
-        await a.ws.send(voice(3, 12))
-        check("A speaks, on the call and near B across the side: B has it once, in person (the call quiet for A); not C", await heard(b, c), [[(8, 0, opus(12))], []])
-        await b.ws.send(voice(1, 13))
-        check("and B, in person, near A: A has it (B speaking to the room only)", await heard(a), [[(8, 0, opus(13))]])
+        check("A speaks, on the call and near B across the side: B has it once, in person (the call quiet for A); not C", who(await speaking(a, ["room", "call"], b, c)), [[("A", 0, "")], []])
+        check("and B, in person, near A: A has it (B speaking to the room only)", who(await speaking(b, ["room"], a)), [[("B", 0, "")]])
         await asyncio.sleep(max(0, 10.5 - (time.monotonic() - a_said)))   # A's lines in 10 s (above): that window past
         await a.drain()
         await a.send(type="say", text="across the side")
@@ -1354,9 +1477,7 @@ async def main():
               (x["text"], x["key"], x.get("owner"), x["conversation"]), ("across the side", ka, True, "room:" + ka))
         await b.send(type="voice_where", world=[[ka, 50, 0, 0]], **b_where)
         await b.until(lambda m: world_near(m) and not any(n.get("world") for n in m["near"]))
-        drain_frames(a); drain_frames(b)
-        await a.ws.send(voice(3, 14))
-        check("B's world has A 50 m off now (past hearing, fading in): B has A on the call again", await heard(b), [[(8, 1, opus(14))]])
+        check("B's world has A 50 m off now (past hearing, fading in): B has A on the call again", who(await speaking(a, ["room", "call"], b)), [[("A", 1, "")]])
         await b.drain()
         await a.send(type="say", text="too far across")
         await asyncio.sleep(0.6)
@@ -1366,9 +1487,7 @@ async def main():
         await b.until(lambda m: m["type"] == "call")
         await a.send(type="voice_where", me=[0, 1.6, 0], phone=None, visitors=[], world=[[kb, 100, 0, 0]])
         await b.until(lambda m: world_near(m) and not any(n.get("world") for n in m["near"]))
-        drain_frames(a); drain_frames(b)
-        await a.ws.send(voice(3, 15))
-        check("no call, and A's world has B far off: B hears nothing of A, whatever B's world says", await heard(b), [[]])
+        check("no call, and A's world has B far off: B hears nothing of A, whatever B's world says", await speaking(a, ["room", "call"], b), [[]])
 
         await b.send(type="voice_join", key=kb)
         vm = await b.until(lambda m: m["type"] == "room_voice")
@@ -1383,19 +1502,15 @@ async def main():
         await b.until(lambda m: m["type"] == "call")
         await b.send(type="call", channel=lb["channel"], act="answer")
         await a.until(lambda m: m["type"] == "call")
-        drain_frames(a); drain_frames(b); drain_frames(c)
-        await a.ws.send(voice(4, 16))
-        check("A speaks in it: C has it (who spoke: A's key), as a room voice; B, on a call with A, does not (the call first)",
-              await heard(a, b, c), [[], [], [(16, 2, said(ka, "A", 16))]])
-        await c.ws.send(voice(5, 17))
+        check("A speaks in it: C has it (who spoke: A's key), as a room voice; B, on a call with A, has it on the call only (the call first)",
+              who(await speaking(a, ["voice"], a, b, c)), [[], [("A", 1, "")], [("A", 2, ka)]])
         check("C speaks (to the room near it, and the voice): A has it in the voice; B, next to C, in person only",
-              await heard(a, b, c), [[(16, 2, said(kc, "C", 17))], [(8, 0, opus(17))], []])
-        await b.ws.send(voice(4, 18))
-        check("B speaks in its voice: A (on a call with B) and C (next to B) hear B their own way only, so nothing more", await heard(a, b, c), [[], [], []])
+              who(await speaking(c, ["room", "voice"], a, b, c)), [[("C", 2, kc)], [("C", 0, "")], []])
+        check("B speaks in its voice only (its microphone off for the room): C, next to B, has it in the voice; A, on a call with B, not (the call first)",
+              who(await speaking(b, ["voice"], a, b, c)), [[], [], [("B", 2, kb)]])
         await a.send(type="call", channel=la["channel"], act="hangup")
         await b.until(lambda m: m["type"] == "call")
-        await b.ws.send(voice(4, 19))
-        check("the call over: A has B in the voice", await heard(a), [[(16, 2, said(kb, "B", 19))]])
+        check("the call over: A has B in the voice", who(await speaking(b, ["voice"], a)), [[("B", 2, kb)]])
         await b.send(type="voice_kick", key=kc)
         out = await c.until(lambda m: m["type"] == "room_voice")
         bm = await b.until(lambda m: m["type"] == "voice_members")
@@ -1408,13 +1523,10 @@ async def main():
         await c.send(type="say", text="into B's chat", to={"key": kb})
         check("C into B's voice again, or a line into B's chat: refused by C's own visit-client",
               [(await c.until(lambda m: m["type"] == "error"))["code"] for _ in range(2)], ["banned", "banned"])
-        drain_frames(a); drain_frames(b)
         await c.send(type="say", text="let me in")
-        await c.ws.send(voice(1, 20))
-        await asyncio.sleep(0.5)
-        check("C, in B's room, says a line and speaks: B has neither", ([t for t in quiet_types(b) if t == "chat"], [route(f) for f in drain_frames(b) if f[2] in (8, 16)]), ([], []))
-        await b.ws.send(voice(1, 21))
-        check("and C hears none of B's room", await heard(c), [[]])
+        heard_c = await speaking(c, ["room"], b)
+        check("C, in B's room, says a line and speaks: B has neither", ([t for t in quiet_types(b) if t == "chat"], heard_c), ([], [[]]))
+        check("and C hears none of B's room", await speaking(b, ["room"], c), [[]])
         await b.send(type="ban", key=kc)
         bn = await c.until(lambda m: m["type"] == "banned")
         check("B lifts it: C told", (bn["voice"], bn["chat"]), (False, False))
@@ -1441,20 +1553,15 @@ async def main():
               (sa["role"], sb["role"], sa["peer"]["name"], sb["peer"]["name"], sa["id"] == sb["id"], "state" in sb, "watch" in sb, sb.get("huddle")),
               ("visitor", "host", "B", "A", True, False, False, None))
         await asyncio.sleep(0.3)
-        drain_frames(a); drain_frames(b); drain_frames(c)
-        await a.ws.send(voice(2, 30))
-        check("A speaks to its calls: B has it, as a call; C nothing", await heard(b, c), [[(8, 1, opus(30))], []])
-        await b.ws.send(voice(2, 31))
-        check("and B to A, the same way", await heard(a), [[(8, 1, opus(31))]])
+        check("A speaks to its calls: B has it, as a call; C nothing", await speaking(a, ["call"], b, c), [[(sb["channel"], "A", 1, "")], []])
+        check("and B to A, the same way", await speaking(b, ["call"], a), [[(sa["channel"], "B", 1, "")]])
         await b.send(type="call", channel=sb["channel"], act="ring")
         check("a voice visit is a call already: ringing on it, refused", (await b.until(lambda m: m["type"] == "error"))["code"], "bad_message")
         await a.send(type="call", channel=sa["channel"], act="hangup")
         ea = await a.until(lambda m: m["type"] == "visit_ended")
         eb = await b.until(lambda m: m["type"] == "visit_ended")
         check("A hangs up: the voice visit ends on both pages", (ea["id"], eb["id"], ea.get("voice"), eb.get("voice")), (sa["id"], sa["id"], True, True))
-        drain_frames(b)
-        await a.ws.send(voice(2, 32))
-        check("and A's voice for calls goes nowhere now", await heard(b), [[]])
+        check("and A's voice for calls goes nowhere now", await speaking(a, ["call"], b), [[]])
         await b.send(type="knock", to=ids["A"], voice=True)
         sent = await b.until(lambda m: m["type"] == "knock_sent")
         k = await a.until(lambda m: m["type"] == "knock")
@@ -1488,11 +1595,8 @@ async def main():
         got = await gathered(a, 0.5)
         check("A's page was never asked (no knock), and hears B in its voice",
               ([m["type"] for m in got if m["type"] == "knock"], [sorted(x["name"] for x in m["members"]) for m in got if m["type"] == "voice_members"][-1:]), ([], [["A", "B"]]))
-        drain_frames(a); drain_frames(b)
-        await b.ws.send(voice(4, 33))
-        check("B speaks in the huddle: A has it, as a room voice (who spoke: B)", await heard(a), [[(16, 2, said(kb, "B", 33))]])
-        await a.ws.send(voice(4, 34))
-        check("and A: B has it", await heard(b), [[(16, 2, said(ka, "A", 34))]])
+        check("B speaks in the huddle: A has it, as a room voice (who spoke: B)", who(await speaking(b, ["voice"], a)), [[("B", 2, kb)]])
+        check("and A: B has it", who(await speaking(a, ["voice"], b)), [[("A", 2, ka)]])
         await c.send(type="knock", to=ids["A"], voice=True, huddle="Camp")
         check("C, not in Camp, cannot join it", (await c.until(lambda m: m["type"] == "error"))["code"], "not_found")
         await b.send(type="voice_join", key=None)
@@ -1725,7 +1829,7 @@ async def main():
         land1 = {"metadata": {"version": 4.5, "type": "Object"}, "object": {"uuid": "landscape", "type": "Group", "children": [{"uuid": "L1", "type": "Group", "name": "hill"}]}}
         land2 = {"metadata": {"version": 4.5, "type": "Object"}, "object": {"uuid": "landscape", "type": "Group", "children": [{"uuid": "L1", "type": "Group", "name": "hills"}]}}
         packed = lambda j: gzip.compress(json.dumps(j).encode(), mtime=0)
-        sends = lambda: open(os.path.join(TMP, "A.log")).read().count("this room's landscape sent")
+        sends = lambda: open(os.path.join(LOGS, "A.log")).read().count("this room's landscape sent")
         kept_dir = os.path.join(TMP, "B.lands", ka)
         kept = lambda: [open(os.path.join(kept_dir, f), "rb").read() for f in os.listdir(kept_dir)] if os.path.isdir(kept_dir) else []
         started = lambda m: m["type"] == "visit_started"
@@ -2027,7 +2131,7 @@ async def main():
 
 def logs():
     for n in ("A", "B", "D"):
-        path = os.path.join(TMP, n + ".log")
+        path = os.path.join(LOGS, n + ".log")
         if os.path.exists(path):
             print("\n--- %s's log" % n)
             print(open(path).read()[-4000:])

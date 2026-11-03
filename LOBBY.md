@@ -21,11 +21,15 @@ and **a place to meet**, the way a game's lobby was (Battle.net in its Diablo II
   workroom linked (3.1), it is your workroom's lobby: its chat, who is here, its worlds;
 - **its own relay**: the iroh relay for links that cannot go direct runs inside `lobby`, for offices in the lobby
   only, in place of iroh's public relays (and of coturn, which only the browser sims of version 1 used);
+- **STUN and TURN** (4.2, #71): for Visit's voice over WebRTC, inside `lobby` too, on UDP 3478: a page finds its way
+  to an office by it, and TURN carries a page's voice where no direct way goes. Each office in the lobby gets a login
+  of its own in its welcome;
 - **anyone can host one**: one file, a few flags, and Caddy in front for its certificate. A workroom joins the
   lobby its `VISIT_LOBBY` names.
 
 What the offices show each other still never passes through it: scenes, voice and pictures go between
-visit-clients, directly or through the relay, which cannot read them.
+visit-clients and their pages, directly or through the relay or TURN, which cannot read them (both are encrypted end
+to end: QUIC, and SRTP).
 
 ## 2. Decisions
 

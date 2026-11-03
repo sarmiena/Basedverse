@@ -21,6 +21,7 @@ use crate::{
     link::{self, LinkCmd, Links, Relays, Role},
     lobby::LobbyOut,
     media,
+    rtc::{self, Media},
     state::{self, Pick, Place, Saved},
     VERSION,
 };
@@ -78,12 +79,9 @@ pub enum Ev {
     LinkPossession { visit: String, id: String, json: String },
     /// A host's landscape this office asked for, gzipped (../SPEC.md 8.10).
     LinkLand { visit: String, gz: Bytes },
-    /// A packet of the other side's voice (8.7).
-    LinkAudio { visit: String, data: Bytes },
-    /// Someone's voice the other side passed on (8.7, 8.8).
-    LinkRelay { visit: String, data: Bytes },
-    /// A voice in a room voice (8.7): a member's to this office's room (`up`), or the room's to this member.
-    LinkVoice { visit: String, up: bool, data: Bytes },
+    /// A datagram on the media port (voice over WebRTC, 8.7: rtc.rs), and time passing for its connections.
+    Udp { src: std::net::SocketAddr, data: Bytes },
+    MediaTick,
     /// A picture the other side sent, as asked (8.12): checked (its bytes are its id's), its type.
     LinkMedia { visit: String, id: String, mime: String, bytes: Bytes },
     /// One of a host's scene's assets this office asked for (8.14, 4.1): its bytes are its name's (checked).
@@ -239,7 +237,7 @@ const NEAR_EVERY: Duration = Duration::from_secs(1);
 const ACTS: [&str; 7] = ["sit", "lie", "drink", "eat", "throw", "swat", "wave"];
 const PERFORMS: u32 = 10;
 /// 4.0: what a voice visit carries on its control stream (link_ctl): its user's name, a ban, a room's voice.
-const VOICE_CTL: [&str; 5] = ["user", "banned", "voice_join", "voice_members", "voice_out"];
+const VOICE_CTL: [&str; 9] = ["user", "banned", "voice_join", "voice_members", "voice_out", "rtc_offer", "rtc_answer", "rtc_failed", "rtc_close"];
 /// 4.0: how long a knock to talk this office made is waited for (the lobby's knocks wait 60 s).
 const VOICE_ASK: Duration = Duration::from_secs(90);
 /// Chat (8.9): a line said is at most SAY_LEN characters; each office says at most SAYS lines a SAY_WINDOW (its
@@ -418,6 +416,19 @@ pub struct Core {
     huddles: BTreeMap<String, Value>,
     visits: HashMap<String, Visit>,
     next_channel: u16,
+    /// Voice (8.7, #71): the WebRTC connections of this office (none: its media port could not be opened); its own
+    /// page's, and the one made for each link (a page of the office at its other end); what the page was last told to
+    /// connect to; the STUN and TURN servers its pages use (the lobby's).
+    media: Option<Media>,
+    rtc_own: Option<u64>,
+    rtc_links: HashMap<String, u64>,
+    rtc_wanted: Value,
+    /// What each connection's voice went to last (a hash), for the log.
+    rtc_routes: HashMap<u64, u64>,
+    ice: Value,
+    /// The person's microphone on (their page's `mic`): only then is their voice heard in person (a call, or a huddle,
+    /// runs it too, for those alone).
+    mic_on: bool,
     /// The three.js revision of the scene this office's page hosts (`host`): only then is the office in the
     /// lobby to be visited, or knocking (../SPEC.md section 4.2). None while no page hosts.
     hosting: Option<String>,
@@ -426,7 +437,8 @@ pub struct Core {
 
 impl Core {
     pub fn new(lobby_url: Option<String>, lobby: mpsc::UnboundedSender<LobbyOut>, me: mpsc::UnboundedSender<Ev>, relays: Option<Relays>, max_visitors: u8, idle_exit: u64,
-               saved: Saved, fresh: bool, state_file: Option<PathBuf>, lands: Lands, assets: Assets, db: mpsc::UnboundedSender<DbCmd>, loaded: Loaded) -> Core {
+               saved: Saved, fresh: bool, state_file: Option<PathBuf>, lands: Lands, assets: Assets, db: mpsc::UnboundedSender<DbCmd>, loaded: Loaded,
+               media: Option<Media>) -> Core {
         let key = saved.key.public().to_string();
         let core = Core {
             lobby_url,
@@ -501,6 +513,13 @@ impl Core {
             huddles: BTreeMap::new(),
             visits: HashMap::new(),
             next_channel: 1,
+            media,
+            rtc_own: None,
+            rtc_links: HashMap::new(),
+            rtc_wanted: Value::Null,
+            rtc_routes: HashMap::new(),
+            ice: json!([]),
+            mic_on: false,
             hosting: None,
             input_seq: 0,
         };
@@ -544,6 +563,7 @@ impl Core {
                     }
                     self.watch_picks();
                     self.deliver_held();
+                    self.rtc_want();
                     if self.idle_exit > 0 && self.host_page.is_none() && self.user_page.is_none() && self.page_gone.elapsed() >= Duration::from_secs(self.idle_exit) {
                         info!("no page for {} s: exiting", self.idle_exit);
                         break;
@@ -569,7 +589,11 @@ impl Core {
 
     async fn handle(&mut self, ev: Ev) {
         match ev {
-            Ev::PageOpen { id, role, text, frames } => self.page_open(id, role, text, frames),
+            Ev::PageOpen { id, role, text, frames } => {
+                self.page_open(id, role, text, frames);
+                self.rtc_wanted = Value::Null;   // (a page that connects is told, whatever the last one was)
+                self.rtc_want();
+            }
             Ev::PageClosed { id } => {
                 let Some(role) = self.role_of(id) else { return };
                 self.page_gone = Instant::now();
@@ -584,6 +608,7 @@ impl Core {
                 }
                 if role != PageRole::Host {   // the person's page went
                     self.user_page = None;
+                    self.rtc_page_gone();
                     self.attention = false;   // nobody looking: what comes is in the mailbox
                     self.voice.world.clear();
                     self.home_end();          // the owner's visit: nobody to be
@@ -596,6 +621,7 @@ impl Core {
                     let t = msg.get("type").and_then(Value::as_str).unwrap_or("");
                     if role_may(role, t) {
                         self.page_msg(msg);
+                        self.rtc_want();
                     } else {
                         self.page_error("wrong_role", &format!("{t:?} is not the {}'s to send", if role == PageRole::Host { "room" } else { "person" }), Some(t));
                     }
@@ -626,10 +652,19 @@ impl Core {
                 self.link = Some((endpoint, addr));
                 self.publish_link();
             }
-            Ev::LinkUp { visit } => self.link_up(&visit, true),
-            Ev::LinkBack { visit } => self.link_up(&visit, false),
+            Ev::LinkUp { visit } => {
+                self.link_up(&visit, true);
+                self.rtc_want();
+            }
+            Ev::LinkBack { visit } => {
+                self.link_up(&visit, false);
+                self.rtc_want();
+            }
             Ev::LinkLost { visit } => info!(%visit, "link lost"),
-            Ev::LinkCtl { visit, msg } => self.link_ctl(&visit, msg),
+            Ev::LinkCtl { visit, msg } => {
+                self.link_ctl(&visit, msg);
+                self.rtc_want();
+            }
             Ev::LinkInput { visit, msg } => self.link_input(&visit, msg),
             Ev::LinkFrame { visit, frame } => self.link_frame(&visit, frame),
             Ev::LinkFailed { visit } => {
@@ -658,9 +693,14 @@ impl Core {
                 }
             }
             Ev::LinkLand { visit, gz } => self.land_in(&visit, gz),
-            Ev::LinkAudio { visit, data } => self.voice_in(&visit, data, false),
-            Ev::LinkRelay { visit, data } => self.voice_in(&visit, data, true),
-            Ev::LinkVoice { visit, up, data } => self.room_voice_in(&visit, up, data),
+            Ev::Udp { src, data } => {
+                let got = self.media.as_mut().map(|m| m.input(src, &data)).unwrap_or_default();
+                self.media_got(got);
+            }
+            Ev::MediaTick => {
+                let got = self.media.as_mut().map(|m| m.tick()).unwrap_or_default();
+                self.media_got(got);
+            }
             Ev::LinkMedia { visit, id, mime, bytes } => self.media_in(&visit, id, mime, bytes),
             Ev::LinkAsset { visit, id, bytes } => self.asset_in(&visit, &id, bytes),
             Ev::DbMedia { id, to, found } => self.db_media(id, to, found),
@@ -1678,6 +1718,11 @@ impl Core {
             }
             // The room voice this office's user is in (8.7): a linked office's room's (its key), their own (this
             // office's key), or none (null).
+            // Voice (8.7, #71): the page's WebRTC offer for an office it speaks to or hears from (its own: null; another,
+            // over the link on that channel), or that connection closed.
+            "rtc_offer" => self.rtc_offer(&m),
+            "rtc_close" => self.rtc_close(&m),
+            "mic" => self.mic_on = m.get("on") == Some(&json!(true)),
             "voice_join" => {
                 let key = m.get("key").and_then(Value::as_str).map(str::to_string);
                 if let Some(k) = key.as_ref().filter(|k| **k != self.key) {
@@ -1879,9 +1924,6 @@ impl Core {
         }
         if let Some(gz) = frames::land_from_page(data) {   // this room's landscape: kept, and offered by its hash to every visitor
             return self.land_set(gz);
-        }
-        if let Some((to, audio)) = frames::audio_from_page(data) {   // this office's user's voice: this visit-client decides who hears it
-            return self.voice_out(to, audio);
         }
         if let Some((slot, gz)) = frames::possession_from_page(data) {   // a possession's model: to every host that asked for it
             let Some((p, kept)) = self.possessions.get_mut(slot as usize) else { return };
@@ -2301,126 +2343,306 @@ impl Core {
 
     // ---------- voice (8.7) and phones (8.8): who hears whom in this office's room, decided here ----------
 
-    /// This office's user's voice, from its page, where it may go (`allowed`): in person (the room they are in:
-    /// another's, to its owner, whose visit-client decides; their own, to each visitor near them; and across a plot's
-    /// side, to each friend near them in both worlds), to a call (to the ear, always; on speaker, if they are near the
-    /// phone), and to the room voice they are in. It goes each way it may: which way each hears it is theirs to
-    /// choose (8.7: in person first, then a call, then a room voice).
-    fn voice_out(&mut self, allowed: u16, voice: Bytes) {
-        let away = self.visiting().map(|v| v.channel);
-        let me = if away.is_some() { None } else { self.voice.me };
-        let mut to: Vec<u16> = Vec::new();
-        if allowed & frames::VOICE_ROOM != 0 {
-            to.extend(away);
-            if let Some(me) = me {
-                to.extend(self.within(me, VOICE_RANGE + VOICE_MARGIN, None));
-                for key in self.voice.world_told.iter().filter(|k| self.voice.world_heard.contains(*k) && !self.voice_banned(k)) {
-                    to.extend(self.link_with(key));
+    /// A packet of voice on one of this office's WebRTC connections (rtc.rs): its own page's (its user's), or a page's
+    /// of the office at the other end of a link (theirs, sent here because someone here hears it). Each who hears it
+    /// here hears it one way only (8.7: in person first, then a call, then a room voice).
+    fn heard(&mut self, peer: u64, pkt: rtc::Packet) {
+        let Some(from) = self.media.as_ref().and_then(|m| m.from(peer)).cloned() else { return };
+        let mut out: Vec<(u64, String, Value)> = Vec::new();
+        match from {
+            rtc::From::Page if self.rtc_own == Some(peer) => self.own_voice(&mut out),
+            rtc::From::Link(id) => self.their_voice(&id, &mut out),
+            rtc::From::Page => {}
+        }
+        // Who it goes to, said (debug) when that changes for a connection.
+        let sig = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            for (to, who, _) in &out {
+                (to, who).hash(&mut h);
+            }
+            h.finish()
+        };
+        if self.rtc_routes.insert(peer, sig) != Some(sig) {
+            debug!(peer, to = ?out.iter().map(|(p, w, _)| format!("{p}:{w}")).collect::<Vec<_>>(), "voice: a connection's voice now goes");
+        }
+        let mut sent: Vec<(u64, String)> = Vec::new();
+        let Some(m) = self.media.as_mut() else { return };
+        for (to, who, label) in out {
+            let k = (to, label["key"].as_str().unwrap_or("").to_string());
+            if sent.contains(&k) {
+                continue;   // heard on this connection a way before (in person, then a call, then a room voice)
+            }
+            sent.push(k);
+            m.forward(to, peer, &who, &label, &pkt);
+        }
+    }
+
+    /// This office's user's voice, at its own office: to each visitor near them in their own room, and to everyone in
+    /// its room's voice (who hears them no other way). Everywhere else it goes, its page sends it itself (the room
+    /// they are in, a call's other side, a friend across a plot's side, a room voice they joined: rtc_want).
+    fn own_voice(&self, out: &mut Vec<(u64, String, Value)>) {
+        let me = if self.visiting().is_some() { None } else { self.voice.me };
+        let name = self.my_name();
+        if let Some(me) = me.filter(|_| self.mic_on) {
+            for ch in self.within(me, VOICE_RANGE + VOICE_MARGIN, None) {
+                if let Some(p) = self.peer_on(ch) {
+                    out.push((p, "owner".into(), json!({ "relay": null, "name": name, "route": frames::ROUTE_NEAR, "key": self.key })));
                 }
             }
         }
-        if allowed & frames::VOICE_CALLS != 0 {
-            let by_phone = me.zip(self.voice.phone).is_some_and(|(me, p)| flat(me, p) <= VOICE_RANGE);
-            to.extend(self.visits.values().filter(|v| v.up && v.call_on && (!v.speaker || by_phone)).map(|v| v.channel));
-        }
-        to.sort_unstable();
-        to.dedup();
-        for v in self.visits.values().filter(|v| v.up && to.contains(&v.channel)) {
-            let _ = v.cmd.try_send(LinkCmd::Audio(voice.clone()));
-        }
-        if allowed & frames::VOICE_CHANNEL != 0 {
-            let Some(room) = self.room_voice.clone() else { return };
-            let head = frames::relay_head(&self.key, self.my_name().as_str().unwrap_or(""), &voice);
-            if room == self.key {   // this office's own room's voice: to everyone in it
-                for key in self.voice_members.keys() {
-                    self.voice_to(key, false, &head);
+        if self.room_voice.as_deref() == Some(self.key.as_str()) {
+            for k in self.voice_members.keys().filter(|k| !self.on_call(k)) {
+                if let Some(p) = self.peer_of_key(k) {
+                    out.push((p, format!("voice:{}", self.key), json!({ "relay": self.key, "name": name, "route": frames::ROUTE_VOICE, "key": self.key })));
                 }
-            } else {
-                self.voice_to(&room, true, &head);
             }
         }
     }
 
-    /// A packet of voice over a link (`relayed`: someone else's, passed on, with who spoke), heard one way only (8.7):
-    /// in person first, then on a call. In person: the room this office's user is in (its owner, or one passed on); a
-    /// visitor in this room (to the page if this office's user is near them, to the other visitors near them, and to
-    /// a call on speaker if they are near the phone); a friend across a plot's side, near in both worlds. A call's: to
-    /// the page, unless its caller is heard in person; on speaker, also to this room's visitors near the phone, as the
-    /// phone's. Else nowhere.
-    fn voice_in(&mut self, id: &str, data: Bytes, relayed: bool) {
-        let Some(v) = self.visits.get(id).filter(|v| v.up) else { return };
-        let (ch, role, inside, call_on, speaker, visit) = (v.channel, v.role, v.inside, v.call_on, v.speaker, v.id.clone());
+    /// A page's voice of the office at the other end of this link, here. In person: a visitor in this room (to this
+    /// office's page if its user is near them, to the other visitors near them, and to a call on speaker if they are
+    /// near the phone); a friend across a plot's side, near in both worlds. A call's: to the page, unless its caller is
+    /// heard in person; on speaker, also to this room's visitors near the phone, as the phone's. A member of this
+    /// office's room's voice: to everyone else in it, and to the page if its user is in it.
+    fn their_voice(&self, id: &str, out: &mut Vec<(u64, String, Value)>) {
+        let Some(v) = self.visits.get(id).filter(|v| v.up && !v.local) else { return };
+        let (ch, role, inside, call_on, speaker) = (v.channel, v.role, v.inside, v.call_on, v.speaker);
         let name = person(v).as_str().unwrap_or("").to_string();
         let key = v.peer.get("key").and_then(Value::as_str).unwrap_or("").to_string();
-        let near = !relayed && self.in_person(&key);
-        if role == Role::Visitor && inside {   // the room this office's user is in: its owner's voice, or one passed on
-            let route = if call_on && !relayed && !near { frames::ROUTE_CALL } else { frames::ROUTE_NEAR };
-            return self.voice_to_page(ch, route, &data, relayed);
-        }
-        if role == Role::Host && inside && !relayed && !self.voice_banned(&key) {   // a visitor in this room
+        let near = self.in_person(&key);
+        let own = self.rtc_own;
+        let to_page = |route: u8, relay: Value| json!({ "ch": ch, "relay": relay, "name": name, "route": route, "key": key });
+        let banned = self.voice_banned(&key);
+        if role == Role::Host && inside && !banned {   // a visitor in this room
             if let Some(at) = self.voice.visitors.get(&ch).copied() {   // where the room has them: not said yet, nobody hears
                 if (!call_on || near) && self.voice.me.is_some_and(|me| flat(me, at) <= VOICE_RANGE + VOICE_MARGIN) {
-                    self.voice_to_page(ch, frames::ROUTE_NEAR, &data, false);
+                    out.extend(own.map(|o| (o, format!("near:{ch}"), to_page(frames::ROUTE_NEAR, Value::Null))));
                 }
-                let mut to = self.within(at, VOICE_RANGE + VOICE_MARGIN, Some(ch));
+                for c in self.within(at, VOICE_RANGE + VOICE_MARGIN, Some(ch)) {
+                    out.extend(self.peer_on(c).map(|p| (p, format!("near:{id}"), json!({ "relay": id, "name": name, "route": frames::ROUTE_NEAR, "key": key }))));
+                }
                 if self.voice.phone.is_some_and(|p| flat(p, at) <= VOICE_RANGE) {   // a call on speaker hears those near the phone
-                    to.extend(self.visits.values().filter(|c| c.up && c.call_on && c.speaker && c.channel != ch).map(|c| c.channel));
+                    for c in self.visits.values().filter(|c| c.up && c.call_on && c.speaker && c.channel != ch) {
+                        out.extend(self.peer_on(c.channel).map(|p| (p, format!("call:{id}"), json!({ "relay": id, "name": name, "route": frames::ROUTE_CALL, "key": key }))));
+                    }
                 }
-                self.relay_to(&to, frames::relay_head(&visit, &name, &data));
             }
-        } else if !relayed && self.seam(&key) && !self.voice_banned(&key) && (!call_on || near) {   // across a plot's side
-            return self.voice_to_page(ch, frames::ROUTE_NEAR, &data, false);
+        } else if self.seam(&key) && !banned && (!call_on || near) {   // across a plot's side
+            out.extend(own.map(|o| (o, format!("near:{ch}"), to_page(frames::ROUTE_NEAR, Value::Null))));
         }
-        if !call_on || near {   // no call; or its caller heard in person, and the call goes quiet for them
+        if call_on && !near {   // its call (unless its caller is heard in person: then the call goes quiet for them)
+            out.extend(own.map(|o| (o, format!("call:{ch}"), to_page(frames::ROUTE_CALL, Value::Null))));
+            if let Some(phone) = self.voice.phone.filter(|_| speaker) {
+                for c in self.within(phone, VOICE_RANGE + VOICE_MARGIN, Some(ch)) {
+                    out.extend(self.peer_on(c).map(|p| (p, format!("phone:{key}"), json!({ "relay": "phone", "name": name, "route": frames::ROUTE_NEAR, "key": key }))));
+                }
+            }
+        }
+        if self.voice_members.contains_key(&key) && !banned {   // in this office's room's voice
+            for m in self.voice_members.keys().filter(|m| **m != key) {
+                out.extend(self.peer_of_key(m).map(|p| (p, format!("voice:{key}"), json!({ "relay": key, "name": name, "route": frames::ROUTE_VOICE, "key": key }))));
+            }
+            if self.room_voice.as_deref() == Some(self.key.as_str()) && !near && !self.on_call(&key) {
+                out.extend(own.map(|o| (o, format!("voice:{key}"), to_page(frames::ROUTE_VOICE, json!(key)))));
+            }
+        }
+    }
+
+    /// The connection made here for the link on this channel (a page of the office at its other end), if any.
+    fn peer_on(&self, ch: u16) -> Option<u64> {
+        self.visits.values().find(|v| v.channel == ch).and_then(|v| self.rtc_links.get(&v.id).copied())
+    }
+
+    /// The connection made here for a page of the office with this key, over any link with it.
+    fn peer_of_key(&self, key: &str) -> Option<u64> {
+        self.visits.values().filter(|v| v.up && !v.local && v.peer.get("key").and_then(Value::as_str) == Some(key))
+            .find_map(|v| self.rtc_links.get(&v.id).copied())
+    }
+
+    fn media_got(&mut self, got: Vec<rtc::Got>) {
+        for g in got {
+            match g {
+                rtc::Got::Audio { peer, pkt } => self.heard(peer, pkt),
+                rtc::Got::Up { peer } => debug!(peer, "voice: a connection is up"),
+                rtc::Got::Gone { peer } => {
+                    debug!(peer, "voice: a connection is gone");
+                    if self.rtc_own == Some(peer) {
+                        self.rtc_own = None;
+                    }
+                    self.rtc_links.retain(|_, p| *p != peer);
+                    self.rtc_routes.remove(&peer);
+                }
+            }
+        }
+    }
+
+    /// What this office's page is to connect to (8.7), each with the ways its user's voice is heard there (`room`: in
+    /// person; `call`; `voice`: a room voice): its own office always (by visitors near them at home, by its room's
+    /// voice); the room its user is in (someone near them there); a call's other side (on the handset; on speaker,
+    /// while they are near the phone); a friend across a plot's side; the room voice they joined. Told when it
+    /// changes, with the servers to connect by. The page sends its microphone by those ways it allows (8.7: in person
+    /// while it is on).
+    fn rtc_want(&mut self) {
+        if self.media.is_none() || self.user_page.is_none() {
             return;
         }
-        self.voice_to_page(ch, frames::ROUTE_CALL, &data, relayed);
-        if let Some(phone) = self.voice.phone.filter(|_| speaker) {
-            let head = if relayed {
-                let Some((who, said, voice)) = frames::relay_parts(&data) else { return };
-                frames::relay_head(&format!("phone:{who}"), &said, voice)
-            } else {
-                frames::relay_head("phone", &name, &data)
+        let me = if self.visiting().is_some() { None } else { self.voice.me };
+        let by_phone = me.zip(self.voice.phone).is_some_and(|(me, p)| flat(me, p) <= VOICE_RANGE);
+        let in_voice = self.room_voice.as_deref() == Some(self.key.as_str()) && !self.voice_members.is_empty();
+        let near_home = me.is_some_and(|me| !self.within(me, VOICE_RANGE + VOICE_MARGIN, None).is_empty());
+        let mut want = vec![json!({ "to": null, "room": near_home, "call": false, "voice": in_voice })];
+        // The room its user is in, and its calls, by their own links; a friend across a plot's side and the room voice
+        // they joined, by one link with that office (one with a call on, if any): each voice goes once.
+        let mut ways: BTreeMap<u16, (bool, bool, bool)> = BTreeMap::new();
+        for v in self.visits.values().filter(|v| v.up && !v.local) {
+            if v.role == Role::Visitor && v.inside {
+                ways.entry(v.channel).or_default().0 |= !v.near_keys.is_empty();
+            }
+            if v.call_on {
+                ways.entry(v.channel).or_default().1 = !v.speaker || by_phone;
+            }
+        }
+        let keys: HashSet<String> = self.visits.values().filter(|v| v.up && !v.local).filter_map(|v| v.peer.get("key").and_then(Value::as_str)).map(str::to_string).collect();
+        for key in keys {
+            let Some(ch) = self.link_with(&key) else { continue };
+            if self.seam(&key) && !self.voice_banned(&key) {
+                ways.entry(ch).or_default().0 = true;
+            }
+            if key != self.key && self.room_voice.as_deref() == Some(key.as_str()) {
+                ways.entry(ch).or_default().2 = true;
+            }
+        }
+        want.extend(ways.into_iter().map(|(ch, (room, call, voice))| json!({ "to": ch, "room": room, "call": call, "voice": voice })));
+        let msg = json!({ "type": "rtc_want", "want": want, "ice": self.ice });
+        if msg != self.rtc_wanted {
+            debug!(want = %msg["want"], "voice: the page connects to");
+            self.rtc_wanted = msg.clone();
+            self.to_user_page(msg);
+        }
+    }
+
+    /// The lobby's STUN and TURN servers (its welcome's `ice`): this office asks the STUN server where it is seen
+    /// from outside (its pages then reach it from anywhere), and its pages connect by both (TURN where no direct way
+    /// goes: a phone's mobile network, a strict NAT).
+    async fn ice_from(&mut self, ice: Option<&Value>) {
+        // Its host: the one given, else the lobby's own (as this office reached it); IPv4, UDP.
+        let lobby_host = self.lobby_url.as_deref().and_then(|u| u.split("://").nth(1)).and_then(|r| r.split(['/', '?']).next())
+            .map(|a| if a.starts_with('[') { a.split(']').next().unwrap_or("").trim_start_matches('[').to_string() } else { a.rsplit_once(':').map_or(a, |(h, _)| h).to_string() });
+        let host = ice.and_then(|i| i.get("host")).and_then(Value::as_str).map(str::to_string).or(lobby_host).filter(|h| !h.is_empty() && h.len() <= 253);
+        let port = ice.and_then(|i| i.get("port")).and_then(Value::as_u64).filter(|p| (1..=65535).contains(p));
+        let mut servers: Vec<Value> = Vec::new();
+        let mut stun = None;
+        if let (Some(h), Some(p)) = (&host, port) {
+            stun = Some(format!("{h}:{p}"));
+            servers.push(json!({ "urls": [format!("stun:{h}:{p}")] }));
+            let i = ice.expect("given");
+            let (user, cred) = (i.get("username").and_then(Value::as_str).unwrap_or(""), i.get("credential").and_then(Value::as_str).unwrap_or(""));
+            if !user.is_empty() && user.len() <= 128 && cred.len() <= 128 {
+                servers.push(json!({ "urls": [format!("turn:{h}:{p}?transport=udp")], "username": user, "credential": cred }));
+            }
+        }
+        self.ice = json!(servers);
+        let addr = match stun {
+            Some(s) => tokio::net::lookup_host(s.as_str()).await.ok().and_then(|mut a| a.find(|a| a.is_ipv4())),
+            None => None,
+        };
+        if let Some(m) = self.media.as_mut() {
+            m.set_stun(addr);
+        }
+        self.rtc_want();
+    }
+
+    fn to_user_page(&self, v: Value) {
+        if let Some(p) = &self.user_page {
+            let _ = p.text.send(PageOut::Text(v.to_string()));
+        }
+    }
+
+    /// The page's offer (8.7): for its own office, answered here; for the office at the other end of a link (`to`, its
+    /// channel), passed on over it, whose answer comes back the same way.
+    fn rtc_offer(&mut self, m: &Value) {
+        let sdp = m.get("sdp").and_then(Value::as_str).unwrap_or("");
+        match m.get("to").and_then(Value::as_u64) {
+            None => match self.media.as_mut().map(|md| md.answer(rtc::From::Page, sdp)) {
+                Some(Ok((peer, answer))) => {
+                    self.rtc_own = Some(peer);
+                    self.to_user_page(json!({ "type": "rtc_answer", "to": null, "sdp": answer }));
+                }
+                Some(Err(e)) => self.to_user_page(json!({ "type": "rtc_failed", "to": null, "reason": e.to_string() })),
+                None => self.to_user_page(json!({ "type": "rtc_failed", "to": null, "reason": "no voice here: the media port could not be opened" })),
+            },
+            Some(ch) => {
+                let link = self.visits.values().find(|v| u64::from(v.channel) == ch && v.up && !v.local).map(|v| v.cmd.clone());
+                match link {
+                    Some(cmd) if sdp.len() <= rtc::MAX_SDP => {
+                        let _ = cmd.try_send(LinkCmd::Ctl(json!({ "rtc_offer": sdp })));
+                    }
+                    Some(_) => self.to_user_page(json!({ "type": "rtc_failed", "to": ch, "reason": "the offer is too big" })),
+                    None => self.to_user_page(json!({ "type": "rtc_failed", "to": ch, "reason": "no link on that channel" })),
+                }
+            }
+        }
+    }
+
+    fn rtc_close(&mut self, m: &Value) {
+        match m.get("to").and_then(Value::as_u64) {
+            None => {
+                if let (Some(peer), Some(md)) = (self.rtc_own.take(), self.media.as_mut()) {
+                    md.close(peer);
+                }
+            }
+            Some(ch) => {
+                if let Some(v) = self.visits.values().find(|v| u64::from(v.channel) == ch && v.up && !v.local) {
+                    let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "rtc_close": true })));
+                }
+            }
+        }
+    }
+
+    /// Offers and answers over a link (8.7): the other side's page's offer for this office (answered here: a
+    /// connection for that link, its last one replaced); the answer to this office's page's offer, or why there is none
+    /// (to the page); the other side's page's connection here closed.
+    fn rtc_ctl(&mut self, id: &str, ch: u16, m: &Value) {
+        if let Some(sdp) = m.get("rtc_offer").and_then(Value::as_str) {
+            let reply = match self.media.as_mut().map(|md| md.answer(rtc::From::Link(id.to_string()), sdp)) {
+                Some(Ok((peer, answer))) => {
+                    self.rtc_links.insert(id.to_string(), peer);
+                    json!({ "rtc_answer": answer })
+                }
+                Some(Err(e)) => json!({ "rtc_failed": e.to_string() }),
+                None => json!({ "rtc_failed": "no voice there: its media port could not be opened" }),
             };
-            self.relay_to(&self.within(phone, VOICE_RANGE + VOICE_MARGIN, Some(ch)), head);
+            self.to_link(id, reply);
+        } else if let Some(sdp) = m.get("rtc_answer").and_then(Value::as_str) {
+            self.to_user_page(json!({ "type": "rtc_answer", "to": ch, "sdp": sdp }));
+        } else if let Some(why) = m.get("rtc_failed") {
+            self.to_user_page(json!({ "type": "rtc_failed", "to": ch, "reason": media::clip(why.as_str().unwrap_or(""), 200) }));
+        } else if m.get("rtc_close").is_some() {
+            if let (Some(peer), Some(md)) = (self.rtc_links.remove(id), self.media.as_mut()) {
+                md.close(peer);
+            }
         }
     }
 
-    /// A packet of a room voice (8.7). Up, from one in this office's room's voice: to everyone else in it, and to the
-    /// page if this office's user is in it. Down, from the room whose voice this office's user is in: to the page.
-    /// Each unless its speaker is heard another way (in person, or on a call).
-    fn room_voice_in(&mut self, id: &str, up: bool, data: Bytes) {
-        let Some(v) = self.visits.get(id).filter(|v| v.up) else { return };
-        let ch = v.channel;
-        let key = v.peer.get("key").and_then(Value::as_str).unwrap_or("").to_string();
-        let name = person(v).as_str().unwrap_or("").to_string();
-        let Some((who, _, voice)) = frames::relay_parts(&data) else { return };
-        if up {
-            if !self.voice_members.contains_key(&key) || self.voice_banned(&key) {
-                return;
-            }
-            let head = frames::relay_head(&key, &name, voice);
-            for m in self.voice_members.keys().filter(|m| **m != key) {
-                self.voice_to(m, false, &head);
-            }
-            if self.room_voice.as_deref() == Some(self.key.as_str()) && !self.in_person(&key) && !self.on_call(&key) {
-                self.voice_to_page(ch, frames::ROUTE_VOICE, &head, true);
-            }
-        } else if self.room_voice.as_deref() == Some(key.as_str()) && who != self.key && !self.in_person(&who) && !self.on_call(&who) {
-            self.voice_to_page(ch, frames::ROUTE_VOICE, &data, true);
+    fn to_link(&self, id: &str, m: Value) {
+        if let Some(v) = self.visits.get(id) {
+            let _ = v.cmd.try_send(LinkCmd::Ctl(m));
         }
     }
 
-    /// A room voice's packet (who spoke, and the voice) to the office with this key, over one link up with it: to its
-    /// room (`up`), or from this office's.
-    fn voice_to(&self, key: &str, up: bool, head: &Bytes) {
-        if let Some(v) = self.visits.values().find(|v| v.up && !v.local && v.peer.get("key").and_then(Value::as_str) == Some(key)) {
-            let _ = v.cmd.try_send(LinkCmd::Voice { up, data: head.clone() });
+    /// The person's page gone: its connections here and elsewhere closed (a new page connects again).
+    fn rtc_page_gone(&mut self) {
+        if let (Some(peer), Some(md)) = (self.rtc_own.take(), self.media.as_mut()) {
+            md.close(peer);
         }
+        for v in self.visits.values().filter(|v| v.up && !v.local) {
+            let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "rtc_close": true })));
+        }
+        self.rtc_wanted = Value::Null;
     }
 
-    /// The channel of a link up with the office with this key: one with a call on, if there is one (a packet then
-    /// goes once, for both).
+    /// The channel of a link up with the office with this key: one with a call on, if there is one.
     fn link_with(&self, key: &str) -> Option<u16> {
         let links = || self.visits.values().filter(move |v| v.up && !v.local && v.peer.get("key").and_then(Value::as_str) == Some(key));
         links().find(|v| v.call_on).or_else(|| links().next()).map(|v| v.channel)
@@ -2553,18 +2775,6 @@ impl Core {
 
     fn banned_by_json(&self) -> Value {
         json!(self.banned_by.iter().map(|(k, (name, voice, chat))| json!({ "key": k, "name": name, "voice": voice, "chat": chat })).collect::<Vec<_>>())
-    }
-
-    fn voice_to_page(&self, ch: u16, route: u8, data: &[u8], relayed: bool) {
-        if let Some(p) = &self.user_page {   // a page behind loses some: late is lost
-            let _ = p.frames.try_send(if relayed { frames::relay_to_page(ch, route, data) } else { frames::audio_to_page(ch, route, data) });
-        }
-    }
-
-    fn relay_to(&self, channels: &[u16], head: Bytes) {
-        for v in self.visits.values().filter(|v| v.up && channels.contains(&v.channel)) {
-            let _ = v.cmd.try_send(LinkCmd::Relay(head.clone()));
-        }
     }
 
     /// The channels of this room's visitors within `reach` metres of a spot (as the room has them), but one.
@@ -2942,6 +3152,7 @@ impl Core {
                     self.huddles.clear();
                 }
                 self.lobby_info = json!({ "title": m.get("title"), "motd": m.get("motd"), "admin": m.get("admin") == Some(&json!(true)) });
+                self.ice_from(m.get("ice")).await;
                 // Each comes again, whole, after the welcome: the ones it had count meanwhile.
                 let had = std::mem::take(&mut self.groups);
                 self.groups_before.extend(had);
@@ -3284,6 +3495,11 @@ impl Core {
     fn end_visit(&mut self, id: &str, reason: &str) {
         let Some(v) = self.visits.remove(id) else { return };
         let _ = v.cmd.try_send(LinkCmd::Close(reason.to_string()));
+        if let Some(peer) = self.rtc_links.remove(id) {   // its page's connection here (8.7)
+            if let Some(m) = self.media.as_mut() {
+                m.close(peer);
+            }
+        }
         if let Some(links) = &self.links {
             links.forget(id);
         }
@@ -3583,6 +3799,9 @@ impl Core {
             return;
         }
         let ch = v.channel;
+        if m.get("rtc_offer").is_some() || m.get("rtc_answer").is_some() || m.get("rtc_failed").is_some() || m.get("rtc_close").is_some() {
+            return self.rtc_ctl(id, ch, &m);
+        }
         // 4.0: a voice visit carries who is talking (their name, a ban) and a room's voice (a huddle's): nothing of a room.
         if v.voice && !VOICE_CTL.iter().any(|k| m.get(*k).is_some()) {
             return debug!(visit = id, "a control message a voice visit does not carry: dropped");
@@ -4095,7 +4314,7 @@ fn role_may(role: PageRole, t: &str) -> bool {
         "unhold", "media_get", "preview", "history", "shared", "voice_join", "call", "speaker", "world", "enter", "exit", "pick", "unpick", "place", "unplace", "ignore", "unignore", "ignore_clear", "act",
         "seen", "plot_keep", "plot_load", "plot_forget", "knock", "answer", "leave_lobby", "join_lobby", "status", "rename",
         "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set", "group_owner", "group_delete", "groups", "admin",
-        "lobby_pass", "browser_code", "browser_allow", "browsers", "browser_revoke", "huddle", "knock_cancel", "asset_want"];
+        "lobby_pass", "browser_code", "browser_allow", "browsers", "browser_revoke", "huddle", "knock_cancel", "asset_want", "rtc_offer", "rtc_close", "mic"];
     match role {
         PageRole::Both => true,
         PageRole::Host => !USER.contains(&t),
@@ -4107,7 +4326,7 @@ fn role_may(role: PageRole, t: &str) -> bool {
 /// and landscape are the host's; the person's avatar, possessions, voice and pictures are the user's.
 fn frame_may(role: PageRole, b: &[u8]) -> bool {
     let Some(flags) = b.get(2) else { return true };   // (malformed: refused later, as such)
-    let users = flags & (frames::AVATAR | frames::AUDIO | frames::POSSESSION) != 0;
+    let users = flags & (frames::AVATAR | frames::POSSESSION) != 0;
     if flags & frames::MEDIA != 0 {
         return true;   // a picture or voice message (the user's), or a room's sound (3.4: its page's)
     }

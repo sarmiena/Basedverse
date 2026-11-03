@@ -194,6 +194,7 @@ visit --lobby wss://lobby.example/ --name "Magic Room" --sim my-sim/1.0 \
 | `--idle-exit` | `VISIT_IDLE_EXIT` | 0 | exit after this many seconds with no page connected (0: never) |
 | `--origins` | `VISIT_ORIGINS` | none | the page origins allowed to connect (`http://localhost:3000`, comma-separated); none: any page with the token (section 3, point 4) |
 | `--relays` | `VISIT_RELAYS` | the lobby's | the relays for links: `none`, `default` (iroh's own), or URLs, comma-separated |
+| `--media-port` | `VISIT_MEDIA_PORT` | 0: any free one | the UDP port voice comes and goes on (8.7: WebRTC, to this office's page and the pages of the offices it links with). Give one to open it on a firewall, or forward it on a router. Not to be had: the office runs without voice |
 | `--data-dir` | `VISIT_DATA_DIR` | `basedverse/<the name>` in the user's data folder (4.4) | where the workroom keeps everything (4.4): its database, its state file, friends' landscapes. A launcher SHOULD give one, so a renamed office keeps its data |
 | `--state-file` | `VISIT_STATE_FILE` | `state.json` in the data directory | a file where it keeps what outlasts a run: whether the office is away (`leave_lobby`, 5.2), so a restart stays away; its key (section 2), so it is the same office to its guests' hosts; its door; whose plots its world shows (its picks, 3.3) and its layout (8.4); whose look its visitors have (8.6). Readable by its owner only (section 3, point 10) |
 | `--cache-dir` | `VISIT_CACHE_DIR` | `landscapes/` in the data directory | where it keeps friends' landscapes (8.10), each by its office's key and hash, at most 256 MiB (the oldest go first), and the plots it keeps to draw while their offices are away |
@@ -430,6 +431,9 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `say_as` | `id` (1 to 40 letters, digits, `_` `.` `-`), `name` (what it goes by, 1 to 24 characters), `text` (1 to 200 characters) | a line one of this office's room's own figures says (8.9: a receptionist, a guide; never a person): in this office's room, to those in it within 45 m of the figure (`at`? (4.0.1): where it is, [x, y, z] in metres as `voice_where` has everyone; none: everyone in the room), and in its chat (`far` when its user is not near), as `said` with `npc`; never to a world member watching the plot from outside it. Never as this office's user: control characters become spaces; trimmed; at most 5 every 10 s from each figure, apart from the user's own (`rate_limited`); a bad `id` or empty `name` or `text`: `bad_message`. `to`? (3.3, #48): to one person alone, a whisper from the figure (no bubble, nobody else): `"owner"` (this office's user) or the id of a visit in its room (`not_found` otherwise) |
 | `act` | `figure`, `action` | 3.3 (#48), the user's: one of the actions of a figure in the room its user is in (from their target's card): to that room's page (`act`), which runs it as a point at the figure would be, by that type's own rules (8.9, "Targets") |
 | `speaker` | `channel`, `on` (bool) | a call on this office's phone's speaker (8.8), or back to the ear (`no_call` if none is on there) |
+| `rtc_offer` | `to`: null \| a channel, `sdp` (at most 32 KiB) | 4.2, the person's (8.7): the page's WebRTC offer, for its own office (null), or for the one at the other end of the link on that channel (passed on over it). Answered with `rtc_answer` (or `rtc_failed`); an earlier connection for the same one goes |
+| `rtc_close` | `to`: null \| a channel | 4.2, the person's (8.7): that connection closed (no longer wanted) |
+| `mic` | `on` (bool) | 4.2, the person's (8.7): their microphone on or off. Off, their voice is not heard in person (a call, or a huddle, runs the microphone for those alone) |
 | `voice_where` | `me` [x, y, z] \| null, `phone` [x, y, z] \| null, `visitors` [[`channel`, x, y, z], …], `world` [[`key`, x, y, z], …] (metres, this room's terms) | where everyone in this office's room is (8.7): its own user (null: not in it), its phone, each visitor in it; and where its world has each friend at home in their own room, a plot in it (by their key; Visit 0.20). Who hears whom in the room, and across its plot's sides, goes by it. Sent when it changes, at most 10 a second |
 | `media_get` | `id`, `channel`? | a picture or a voice message (8.12) this page would show or play: sent as a binary message (5.4, bit 7) once this office has it (it asks the link the line came by, if it has not), or `media_none`. `channel` (3.4): a room's sound, from the room on that channel (8.13): asked of its host if this office does not have it |
 | `asset_want` | `id` (64 hex), `channel` (of the visit or watch whose scene named it), `at` (from where, bytes; 0 first) | 4.1: a piece of an asset (8.14): from what this visit-client keeps, else (`at` 0) asked of that room; its pieces come as binary frames (5.4, `ASSET`), one per ask; `asset_none` if not to be had |
@@ -493,6 +497,9 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `preview` | `req`, `url`, `title`, `description`, `site`, `image` ({`id`, `mime`, `size`} \| null); or `none: true` | a link's preview (8.12), as made here; its picture kept |
 | `history` | `req`, `lines`, `more` | the chat asked for (8.12), newest last, each as `chat_log`'s; `more`: there is more before |
 | `shared` | `req`, `conversation`, `kind`, `items`, `more` | what was shared there (8.12), newest first: a picture's or a voice message's {`id`, `mime`, `size`, `at`, `key`, `name`, `mine`}, a link's {`url`, `title`, `description`, `site`, `image`, `at`, `key`, `name`, `mine`} |
+| `rtc_want` | `want`: [{`to`: null \| a channel, `room`, `call`, `voice` (bools)}], `ice`: [RTCIceServer] | 4.2, to the person's page (8.7): the offices to connect to (its own: null), each with the ways its user's voice is heard there (in person, a call, a room voice), and the STUN and TURN servers to connect by. When it changes, and to a page that connects |
+| `rtc_answer` | `to`, `sdp` | 4.2 (8.7): the answer to its offer for that one |
+| `rtc_failed` | `to`, `reason` | 4.2 (8.7): no answer to its offer (no link on that channel, the offer refused, no media port): tried again a while on |
 | `voice_near` | `channel`?, `near`: [{`key`, `name`, `distance` (m), `id`?, `phone`?, `world`?}] | who is near this office's user (8.7), within `voice_range`: in its own room (no `channel`: as its visit-client has it), or in the room it is in (that visit's `channel`: as its owner's says). `id`: a visitor's, by its visit there; `phone`: a call on that room's speaker; `world`: a friend across a plot's side, near in both worlds (by this office's world's measure). When it changes; distances at most every second. `ready` has `voice_range` (45) |
 | `room_voice` | `key` \| null, `name`, `members` [{`key`, `name`}], `out`? {`key`, `name`, `why`} | the room voice this office's user is in (8.7), and who is in it, when that changes; null: none (`out`: they were taken out, `why` "kicked", "banned" or "gone"). `ready` has `room_voice` (its `members` null until its room says again) |
 | `voice_members` | `members` [{`key`, `name`}] | who is in this office's own room's voice (8.7), its own user first if they are. `ready` has `voice_members` |
@@ -531,7 +538,7 @@ Both directions, one scene delta (or, from the host's page, one scene edit) per 
 | bytes | field |
 |---|---|
 | 0–1 | `channel`, u16 big-endian |
-| 2 | flags: bit 0 = a key delta (everything that has moved, 8.1); bit 1 = a scene edit (host page to visit-client only, alone); bit 2 = this office's avatar (8.6: page to visit-client only, alone, its channel 0); bit 3 = a packet of voice (8.7: from the page, its own user's, its channel saying where it may go, added: 1 in person, 2 their calls, 4 the room voice they are in; to it, another office's, on the visit's channel); bit 4 = someone else's voice passed on (8.7, 8.8: to the page only, on the visit's channel it came by: who spoke, an id or an office's key, then the packet); bit 5 = this room's landscape (8.10: page to visit-client only, alone, its channel 0; gzipped JSON, at most 16 MiB); bit 6 = one of this office's possessions' models (8.11: page to visit-client only, alone, its channel its slot in the `possessions` list; gzipped JSON, at most 4 MiB); bit 7 = a picture shared in chat, or (3.4) a room's sound (8.12, 8.13: from the page, one to keep, alone, its channel a slot the page picks, answered by `media_ready`; to it, one it asked for, its channel 0: who it is (a length byte, its id), its type (a length byte, its MIME type), then its bytes; never dropped, unlike a frame) |
+| 2 | flags: bit 0 = a key delta (everything that has moved, 8.1); bit 1 = a scene edit (host page to visit-client only, alone); bit 2 = this office's avatar (8.6: page to visit-client only, alone, its channel 0); bits 3 and 4 = none (voice before 4.2: it goes over WebRTC now, 8.7); bit 5 = this room's landscape (8.10: page to visit-client only, alone, its channel 0; gzipped JSON, at most 16 MiB); bit 6 = one of this office's possessions' models (8.11: page to visit-client only, alone, its channel its slot in the `possessions` list; gzipped JSON, at most 4 MiB); bit 7 = a picture shared in chat, or (3.4) a room's sound (8.12, 8.13: from the page, one to keep, alone, its channel a slot the page picks, answered by `media_ready`; to it, one it asked for, its channel 0: who it is (a length byte, its id), its type (a length byte, its MIME type), then its bytes; never dropped, unlike a frame) |
 | 3–10 | timestamp, u64 big-endian, microseconds: the host page's clock when it took the delta (unused for an edit). Voice to the page: byte 3 says how it came (8.7: 0 in person, 1 a call, 2 a room voice), the rest 0 |
 | 11… | the delta (8.1), or the edit, gzipped JSON |
 
@@ -651,7 +658,7 @@ nobody has taken it meanwhile. Who someone is, is their key.
 | `browser_code` | `code` (8), `pictures` (3 emoji), `expires_in` (s) | to a browser not linked: the code its office types in its room (6.11) |
 | `browser_confirming` | `office` (its name), `expires_in` (s) | 3.2, to a waiting browser: that office would link it, once it shows its room's confirmation |
 | `browser_confirmed` | `office`, `agent`, `pictures` | 3.2.2, to a device that scanned a room's QR code for another browser: that browser is linked now; this one is not (closed 1000) |
-| `welcome` | `proto`, `id`, `name`, `key`, `relays`: [url], `resume` (32 hex), `resumed` (bool), `visits`: [id], `knocking`: [{`id`, `to`}], `limits` (6.10), `chat`: true, `admin`? (true: this key is one of the lobby's operators), `title`?, `motd`?, `voice`? (4.0, true: this lobby carries knocks to talk and huddles; an older one would pass a knock to talk on as a knock to visit, so a visit-client sends none to it) | after a good `hello` and `prove` |
+| `welcome` | `proto`, `id`, `name`, `key`, `relays`: [url], `resume` (32 hex), `resumed` (bool), `visits`: [id], `knocking`: [{`id`, `to`}], `limits` (6.10), `chat`: true, `admin`? (true: this key is one of the lobby's operators), `title`?, `motd`?, `voice`? (4.0, true: this lobby carries knocks to talk and huddles; an older one would pass a knock to talk on as a knock to visit, so a visit-client sends none to it), `ice`? (4.2, #71: its STUN and TURN server, for voice over WebRTC, 8.7: {`host`? (none: the lobby's own, as the visit-client reached it), `port` (UDP), `username`?, `credential`?: this office's own TURN login, good while it is in the lobby and ten minutes after; none: STUN only}) | after a good `hello` and `prove` |
 | `lobby` | `offices`: [{`id`, `name`, `status`, `sim`, `max_visitors`, `visitors` (count), `visiting` (version 4: always `null`, nobody's whereabouts being everyone's; version 3: the host's office id, or `null`), `ready`, `key`, `watchers` (count), `world`, `links`, `whisper` (true), `voice`? (4.0: its hello said `voice`), `about` ({`text`, `tags`} or null)}], you included | on any change (3.4.3: at most every 250 ms, what changed meanwhile together; a `status`, `max_visitors` or `about` that changes nothing, to the office that sent it alone) |
 | `knock` | `id`, `from` {`id`, `name`, `sim`, `key`}, `message`, `expires_in`, `watch`?, `link`?, `voice`?, `huddle`? | someone knocked (to watch, with `watch`; to link, with `link`; to talk, with `voice`, and to join your huddle in a world, with `huddle`) |
 | `knock_sent` | `id`, `to`, `watch`?, `link`?, `voice`? | your knock reached the door (a knock to link with a door that does not take links is an ordinary knock: no `link`) |
@@ -888,6 +895,8 @@ Messages are JSON, each prefixed by its length (u32 big-endian). In order, relia
 | either | `{"media_want": "<id>"}` | a picture a line over this link named (8.12): the other side sends it (stream 5), or says `{"media_none": "<id>"}`. A visit-client answers for any picture it has (its id, a hash of it, is what is needed to ask); one passing a line on has its pictures, or is getting them. 3.4.3: at most 30 asked a minute a link (as many as a visit-client takes from it); at most 16 MB of pictures on their way to one link, and 64 MB to all, one picture not twice at once; each given 60 s to go. Past those, an ask is dropped (no `media_none`: it may ask again) |
 | either | `{"whisper": {"text", "media"?, "links"?}}` | a whisper with pictures or links (8.12), over a link rather than through the lobby: passed to the page as `chat` (`scope: "whisper"`) |
 | either | `{"user": {"name"}}` | the name this side's user goes by (8.9; null: none), sent when it changes and on each link that comes up: checked (1–24 characters), passed to the page as `user`; the other side names this side's user by it (their lines, their voice, a room voice, near lists) |
+| either | `{"rtc_offer": sdp}` | 4.2 (8.7): this side's page's WebRTC offer for the other side's office: answered with `{"rtc_answer": sdp}`, or `{"rtc_failed": why}`. A voice visit carries these too |
+| either | `{"rtc_close": true}` | 4.2 (8.7): this side's page's connection there closed (no longer wanted, or the page gone) |
 | either | `{"world_near": true}` / `false` | this side's world has the other side's user within reach of its own (8.7: 45 m and the 15 m margin), both at home: sent when it changes, and on each link that comes up. Both sides saying so, they hear each other across a plot's side |
 | either | `{"voice_join": true}` / `false` | into the other side's room's voice, or out of it (8.7); refused with `voice_out` |
 | either | `{"voice_members": [{"key", "name"}]}` | who is in this side's room's voice, to each in it, when that changes: checked, passed to the page as `room_voice` |
@@ -964,12 +973,8 @@ And host to visitor, once the visitor asked (`landscape_want`):
   its bytes hash to its name (SHA-256) and are of a kind kept (a PNG, JPEG or WebP picture, or gzipped JSON); at most
   2000 a minute from a link. A host sends at most 48 MiB of them at once to one visitor.
 
-Datagrams (unreliable): the visitor's input (7.3), JSON, so starting with `{`; either side's own user's voice (8.7),
-one byte 0xA0 then one Opus packet (at most 100 a second taken, each at most 1 000 bytes); and someone else's voice
-passed on by a room's visit-client (8.7, 8.8), one byte 0xA1 then who spoke and the packet (at most 400 a second);
-and a room voice's (8.7), who spoke (an office's key) and the packet: a member's to the room's owner, one byte 0xA2,
-and the owner's (its own, or a member's passed on) to a member, 0xA3 (at most 400 a second; an older Visit ignores
-them).
+Datagrams (unreliable): the visitor's input (7.3), JSON, so starting with `{`. (Voice went as datagrams before 4.2,
+0xA0 to 0xA3; it goes over WebRTC now, 8.7: a link carries only its offers and answers.)
 
 ### 7.5 Blips
 
@@ -1225,8 +1230,8 @@ chat, everyone in it hears everyone else, wherever they are.
   knows (who is near, as the room says; its calls; its room voice); a voice comes to the page saying which (5.4).
   So no voice is heard twice, behind itself.
 - **A room's voice.** Every room has one; whoever is in its chat (8.9: in it, or linked with it) may join it
-  (`v.joinVoice`, the chat window's 🎧), one room voice at a time. Its owner's visit-client carries it: a member
-  sends its voice there (0xA2), and it passes each on to everyone else in it (0xA3), as its owner's own. In it,
+  (`v.joinVoice`, the chat window's 🎧), one room voice at a time. Its owner's visit-client carries it: a member's
+  page sends its voice there, and it passes each on to everyone else in it, as its owner's own. In it,
   everyone hears everyone else, not by distance, while their microphones are on. Its owner may take one out
   (`v.voiceKick`), or keep them out (8.9). The page hears who is in it (`room_voice`, `voice_members`).
 - **Talking** (4.0, `v.talk`; the chat window's 🎧 with its box on a whisper). Two users, voice alone, wherever each
@@ -1254,21 +1259,46 @@ chat, everyone in it hears everyone else, wherever they are.
   the room has them: it moves them, so it is the room's word, not the visitor's). It also keeps an empty object
   named `visit:me` in its scene where its own user stands at home (hidden while they are away), and marks each
   visitor's body (`userData.visitor`), so that a visitor's page knows where each voice comes from.
-- **Who hears whom is decided by the room's visit-client**, the same for every room, not by its page. A page sends
-  its user's voice once, to its own visit-client (where it may go: the room, calls). Their visit-client sends it to
-  the room they are in: another's (that room's owner's visit-client decides) or their own. There, the room's
-  visit-client sends a voice on to whoever is within 45 m of the speaker, plus a 15 m margin (so it fades in rather
-  than starts): its own page, if its user is; and each visitor, the owner's as it is, another visitor's passed on
-  (`relay`: who spoke, by their visit's id there, and their name). It tells each in the room who is near them
-  (`voice_near`, `near`), so a page with nobody near encodes nothing.
+- **Who hears whom is decided by the room's visit-client**, the same for every room, not by its page: each office
+  decides for those connected to it. The room's visit-client passes a voice on to whoever is within 45 m of the
+  speaker, plus a 15 m margin (so it fades in rather than starts): its own page, if its user is; and each visitor,
+  the owner's as it is, another visitor's passed on (as the visitor's, by their visit's id there, and their name). It
+  tells each in the room who is near them (`voice_near`, `near`), so a page with nobody near sends nothing.
+- **Over WebRTC** (4.2, #71). Each page connects to every office it speaks to or hears from, as its visit-client says
+  (`rtc_want`): its own office, always; the room its user is in; a call's other side (both ways: on speaker, those
+  near that phone are heard from there); a friend across a plot's side (one link with them, one with a call on
+  first); the room voice it joined. One RTCPeerConnection each (`rtc_offer`, answered by that office: its own over the
+  page's WebSocket, another's over the link with it, `{"rtc_offer"}`, whose key the link has proved), all of an
+  office's on one UDP port (`--media-port`). One no longer named goes silent, and is closed 5 s on unless it is named
+  again meanwhile (a call that rings again: no gap to connect again); one that fails is made again 3 s on. Nothing of
+  voice goes over a link. A page sends its microphone on a
+  connection only by the ways its user is heard there (`room`, `call`, `voice`): in person while it is on (`mic`), on
+  a call always, in a room voice while it is on or for a huddle; each office passes it on to the pages connected to
+  it that hear it, as above, and as it would any other.
+  - **A connection** offers the microphone (one sendonly audio m-line) and 12 slots (recvonly audio m-lines), and a
+    data channel, `visit`. A slot carries one speaker at a time; the office says who on the data channel, as the slot
+    is given: `{mid, ch?, relay, name, route, key}`: the speaker's office's key (`key`), their name, how they are heard
+    (`route`: 0 in person, 1 a call, 2 a room voice), passed on as whom (`relay`: null, the office's own or its link's
+    page's; a visitor's id in that room; `"phone"`, a call on that room's speaker; a room voice's speaker's key), and,
+    from the page's own office, the channel it came by (`ch`). A slot is its speaker's while its packets come (600 ms).
+    Packets are forwarded as they come (nothing held back or reordered there), each slot's sequence numbers and
+    timestamps its own, carried on across a change of speaker, every loss on the way still a gap: the browser's own
+    jitter buffer and loss concealment play it, and decode Opus's in-band FEC.
+  - **One way a person**, as above: each office passes one speaker on once to each connection (in person first); a
+    page plays one speaker by one slot only (in person first, then a call, then a room voice).
+  - **Its servers**: the lobby's STUN and TURN (6, `ice` in its welcome). An office asks its STUN server where it is
+    seen from outside, so a page reaches it from anywhere (its main interface's address, and that); a page connects
+    by both, and by TURN where no direct way goes (a phone's mobile network, a strict NAT). Its TURN login is its
+    office's, good while that office is in the lobby (and ten minutes after).
+  - **A call on speaker on both sides**: those near each phone hear the other side's caller, not those near the other
+    side's phone (before 4.2, they did).
 - **Hearing.** A page plays each voice from where the speaker is (Web Audio's HRTF panner, linear to nothing at 45
   m): at home, its visitors where it has them; in another's room, its owner from `visit:me` and the voices passed on
   from their bodies. Visit marks each one heard speaking with a 🔊 over them (Visit 0.13), in the views it draws: a
   world (`speaking: false`, for a page drawing its own from `v.voices`) and another's room.
-- **The voice**: 48 kHz mono, 20 ms a packet, Opus at about 24 kbps (WebCodecs), as a binary frame (5.4, bit 3) to
-  the visit-client, sent on as a QUIC datagram (7.4: unreliable, so late is lost); the page decodes each speaker's
-  in order and plays it a little behind now (60 ms, to ride out the network's unevenness; past 400 ms behind, it
-  catches up).
+- **The voice**: Opus over WebRTC, 48 kHz mono, at most 24 kbps (`maxBitrate`), with its in-band FEC; the browser's
+  own jitter buffer and loss concealment play it (before 4.2: WebCodecs, sent over the link as datagrams, played
+  60 ms behind).
 - **Older offices** (Visit 0.9) decided in their pages, by 15 m: a 0.9 room's visitor on 0.10 sends to it and hears
   what it sends, and a 0.9 visitor in a 0.10 room is heard and hears as the 0.10 room decides.
 
@@ -1284,14 +1314,14 @@ carries calls, and the room shows the phone (where it stands, its ringing, picki
   handset off its cradle while its user has it to their ear, its lamp lit on speaker. `model: false`: the room draws
   its own. The panel calls (📞 call, a button for each of `v.phones`), picks up, and hangs up.
 - **A call**: `ring` (`v.call`), `answer` (`v.pickUp`), `hangup` (`v.hangUp`), as control messages on the visit
-  between them; unanswered, it stops ringing after 30 s. While on, each sends its voice on that visit (the
-  microphone runs for the call, on or off otherwise).
+  between them; unanswered, it stops ringing after 30 s. While on, each page sends its voice to the other's office
+  (8.7: over WebRTC), which passes it to its user (the microphone runs for the call, on or off otherwise).
 - **The handset** (as a call starts): only the user, to their ear, sounding as a telephone does.
 - **Speaker** (`v.speaker(key, true)`, each side its own; the page tells its visit-client, `speaker`): the call's
   voice comes from the phone, heard by everyone within 45 m of it in that room by distance (the room's visit-client
-  passes it on to its visitors near the phone, as the phone's, `relay` id `phone`), and everyone that near the
-  phone is heard on the call (the room's visit-client passes its visitors' voices there); the user, only while
-  near it. The other side hears them all, each apart.
+  passes it on to its visitors near the phone, as the phone's, `relay` `phone`), and everyone that near the phone is
+  heard on the call (the room's visit-client passes its visitors' voices to the other side's page, connected to it
+  for the call); the user, only while near it. The other side hears them all, each apart.
 
 ### 8.9 Chat
 
@@ -1886,6 +1916,7 @@ slowly while its tab is hidden.
 | points | one every 200 ms from a visitor's page; at most 5 a second accepted |
 | link send window | 64 KiB sent and not yet acknowledged |
 | control messages on a link | at most 20 a second from either side; more are dropped |
+| voice (4.2, 8.7) | a WebRTC connection a page (its own office's) and one a link; at most 256 at once; an offer at most 32 KiB; 12 voices at once on one; from each, at most 100 packets a second, each at most 1 000 bytes (more are dropped) |
 | key delta requests | passed to the host's page at most every 500 ms |
 | scene resync requests | passed to the host's page at most every 2 s (one sooner waits) |
 | lobby silence | a minute: then the connection is made again |
