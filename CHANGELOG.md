@@ -10,35 +10,6 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
-## Unreleased — planned: voice, video calls and screen share over WebRTC (#71)
-
-Not released yet: written down so it is done when offices next upgrade.
-
-- **Voice moves to WebRTC** ([#71](https://github.com/sarmiena/Basedverse/issues/71)). Each page makes an
-  `RTCPeerConnection` to its own visit-client over loopback (webrtc-rs in `visit`; offer and answer over the page's
-  existing WebSocket; no STUN or TURN), and visit-clients carry the RTP over the iroh link as voice goes today. The
-  room's owner's visit-client still decides who hears whom and forwards, as now. The browser then plays voice with its
-  own WebRTC stack: jitter buffer and loss concealment (NetEQ), Opus FEC actually decoded, echo cancellation. Video
-  calls and screen share come over the same connection.
-- **Why** ([#70](https://github.com/sarmiena/Basedverse/issues/70), closed for this): voice quality has been poor, and
-  the cause is mostly the page's own playback, not the transport:
-  - packets carry no sequence number, so a lost one goes unnoticed (the speech skips and clicks) and a late one plays
-    out of order;
-  - playback runs a fixed 60 ms behind, and resets badly: a gap, then a click, or speech played over itself after a
-    burst;
-  - a lost packet can't be recovered.
-
-  A hand-built fix (numbered packets, a copy of the previous packet in each, an adaptive playout buffer) was written
-  and dropped in favour of the browser's WebRTC stack, which does all of it better and is the base for video.
-- **One way, no backward compatibility.** The current voice path (AudioWorklet capture, WebCodecs Opus, raw datagrams)
-  goes away entirely. Every office upgrades together: an office on the old voice and one on WebRTC will not hear each
-  other.
-- **Open before it ships:**
-  - A person's page on another device (the engine's page through a workroom's HTTPS relay) has no loopback, so it
-    needs TURN on the lobby's box, or gets no voice.
-  - For video and screen share, visit-client must report the iroh link's capacity back to the browser (REMB or
-    transport-cc). The browser can only see its loopback, so otherwise it will not lower its bitrate on a thin link.
-
 ## v4.1.0 — 2026-11-02 — a scene's big pictures and meshes by name, once (#67, follows #37)
 
 - **Heavy rooms join** ([visit/SPEC.md](visit/SPEC.md) 8.14; [#67](https://github.com/sarmiena/Basedverse/issues/67)).
