@@ -122,18 +122,6 @@ impl Drop for MediaOut {
 /// host asked for it, once), but not more than POSSESSIONS_QUEUED of them.
 const POSSESSION_EVERY: Duration = Duration::from_millis(500);
 const POSSESSIONS_QUEUED: u32 = 8;
-/// What a datagram of voice starts with (8.7), and of a visitor's voice a room passes on; an input's is JSON, and
-/// starts with `{`.
-const DATAGRAM_AUDIO: u8 = 0xA0;
-const DATAGRAM_RELAY: u8 = 0xA1;
-/// A room voice's (8.7): a member's to the room's owner, and the owner's (theirs, or a member's passed on) to a
-/// member; each who spoke, then the voice. An older Visit ignores them.
-const DATAGRAM_VOICE_UP: u8 = 0xA2;
-const DATAGRAM_VOICE_DOWN: u8 = 0xA3;
-/// The most datagrams of voice taken from the other side a second (one every 20 ms, and some to spare); and of
-/// voices passed on by a room (one each of several visitors).
-const AUDIO_PER_SECOND: u32 = 100;
-const RELAY_PER_SECOND: u32 = 400;
 /// The least time between two avatars a host takes from one visitor.
 const AVATAR_EVERY: Duration = Duration::from_secs(2);
 /// The most of a scene's edits (gzipped) that may wait to go: past it, a link is far slower than the room
@@ -159,13 +147,6 @@ pub enum LinkCmd {
     Land(Bytes),
     /// One of this office's possessions' models (its id), gzipped JSON, for the host who asked for it (8.11).
     Possession(String, Bytes),
-    /// A packet of this office's voice, for the other side, near it (sent as a datagram: late is lost, 8.7).
-    Audio(Bytes),
-    /// Someone's voice this office passes to the other side (8.7, 8.8).
-    Relay(Bytes),
-    /// A voice in a room voice (8.7), who spoke and the voice: this office's user's to the room's owner (`up`), or
-    /// the owner's to a member.
-    Voice { up: bool, data: Bytes },
     /// A picture (its id and type) the other side asked for (8.12).
     Media { id: String, mime: String, bytes: Bytes },
     /// One of this office's scene's assets (its name), for the visitor who asked for it (8.14, 4.1).
@@ -204,9 +185,6 @@ async fn local_host_side(mut rx: mpsc::Receiver<LinkCmd>, to: String, core: mpsc
                 _ => core.send(Ev::SceneLost { visit: to.clone() }),
             },
             LinkCmd::Land(gz) => core.send(Ev::LinkLand { visit: to.clone(), gz }),
-            LinkCmd::Audio(data) => core.send(Ev::LinkAudio { visit: to.clone(), data }),
-            LinkCmd::Relay(data) => core.send(Ev::LinkRelay { visit: to.clone(), data }),
-            LinkCmd::Voice { up, data } => core.send(Ev::LinkVoice { visit: to.clone(), up, data }),
             LinkCmd::Media { id, mime, bytes } => core.send(Ev::LinkMedia { visit: to.clone(), id, mime, bytes }),
             LinkCmd::Asset { id, bytes } => core.send(Ev::LinkAsset { visit: to.clone(), id, bytes }),   // (this office's own: as kept)
             LinkCmd::Input(_) | LinkCmd::Avatar(_) | LinkCmd::Possession(..) => Ok(()),   // not a host's to send
@@ -244,9 +222,6 @@ async fn local_user_side(mut rx: mpsc::Receiver<LinkCmd>, to: String, own: Strin
                     Ok(Err(e)) => { warn!("one of the owner's possessions is not what it should be: {e:#}"); Ok(()) }
                     Err(e) => { warn!("{e}"); Ok(()) }
                 },
-                Some(LinkCmd::Audio(data)) => core.send(Ev::LinkAudio { visit: to.clone(), data }),
-                Some(LinkCmd::Relay(data)) => core.send(Ev::LinkRelay { visit: to.clone(), data }),
-                Some(LinkCmd::Voice { up, data }) => core.send(Ev::LinkVoice { visit: to.clone(), up, data }),
                 Some(LinkCmd::Media { id, mime, bytes }) => core.send(Ev::LinkMedia { visit: to.clone(), id, mime, bytes }),
                 Some(LinkCmd::Frame(_)) | Some(LinkCmd::Scene(_)) | Some(LinkCmd::Land(_)) | Some(LinkCmd::Asset { .. }) => Ok(()),   // not a visitor's to send
                 Some(LinkCmd::Close(_)) | None => break,
@@ -559,7 +534,6 @@ async fn run(role: Role, visit: &str, est: Established, cmds: &mut mpsc::Receive
         (tx, q)
     });
     let (mut tick, mut path) = (tokio::time::interval(Duration::from_secs(1)), None::<bool>);
-    let (mut audio_in, mut relay_in, mut voice_in) = ((Instant::now(), 0u32), (Instant::now(), 0u32), (Instant::now(), 0u32));
     let ended = loop {
         tokio::select! {
             msg = ctl_rx.recv() => match msg {
@@ -568,35 +542,8 @@ async fn run(role: Role, visit: &str, est: Established, cmds: &mut mpsc::Receive
                 // The other side's control stream ended: its connection is closing (say how), or should be.
                 None => { let _ = tokio::time::timeout(Duration::from_secs(2), conn.closed()).await; break ending(&conn) }
             },
-            // Datagrams: the visitor's input (to the host), and either side's voice (8.7).
+            // Datagrams: the visitor's input (to the host). (Voice goes over WebRTC, 8.7: rtc.rs.)
             d = conn.read_datagram() => match d {
-                Ok(b) if b.first() == Some(&DATAGRAM_AUDIO) => {
-                    if audio_in.0.elapsed() >= Duration::from_secs(1) {
-                        audio_in = (Instant::now(), 0);
-                    }
-                    audio_in.1 += 1;
-                    if audio_in.1 <= AUDIO_PER_SECOND && b.len() <= 1 + frames::MAX_AUDIO {
-                        let _ = core.send(Ev::LinkAudio { visit: visit.to_string(), data: b.slice(1..) });
-                    }
-                }
-                Ok(b) if b.first() == Some(&DATAGRAM_RELAY) => {
-                    if relay_in.0.elapsed() >= Duration::from_secs(1) {
-                        relay_in = (Instant::now(), 0);
-                    }
-                    relay_in.1 += 1;
-                    if relay_in.1 <= RELAY_PER_SECOND && b.len() <= 1 + frames::MAX_AUDIO + 128 {
-                        let _ = core.send(Ev::LinkRelay { visit: visit.to_string(), data: b.slice(1..) });
-                    }
-                }
-                Ok(b) if b.first() == Some(&DATAGRAM_VOICE_UP) || b.first() == Some(&DATAGRAM_VOICE_DOWN) => {
-                    if voice_in.0.elapsed() >= Duration::from_secs(1) {
-                        voice_in = (Instant::now(), 0);
-                    }
-                    voice_in.1 += 1;
-                    if voice_in.1 <= RELAY_PER_SECOND && b.len() <= 1 + frames::MAX_AUDIO + 256 {
-                        let _ = core.send(Ev::LinkVoice { visit: visit.to_string(), up: b[0] == DATAGRAM_VOICE_UP, data: b.slice(1..) });
-                    }
-                }
                 Ok(b) => if role == Role::Host {
                     if let Ok(v) = serde_json::from_slice::<Value>(&b) { let _ = core.send(Ev::LinkInput { visit: visit.to_string(), msg: v }); }
                 },
@@ -622,12 +569,6 @@ async fn run(role: Role, visit: &str, est: Established, cmds: &mut mpsc::Receive
                         let _ = tx.send((q.gen.load(Ordering::SeqCst), gz));
                     }
                 },
-                Some(LinkCmd::Relay(data)) => {
-                    let mut d = Vec::with_capacity(1 + data.len());
-                    d.push(DATAGRAM_RELAY);
-                    d.extend_from_slice(&data);
-                    let _ = conn.send_datagram(Bytes::from(d));
-                }
                 Some(LinkCmd::Media { id, mime, bytes }) => match MediaOut::take(&media_out, &id, bytes.len()) {
                     Some(out) => tasks.push(tokio::spawn(write_media(conn.clone(), id, mime, bytes, visit.to_string(), out))),
                     None => debug!(%visit, "a picture asked for while too much is on its way (or it is): not sent"),
@@ -638,18 +579,6 @@ async fn run(role: Role, visit: &str, est: Established, cmds: &mut mpsc::Receive
                         None => debug!(%visit, "an asset asked for while too much is on its way (or it is): not sent"),
                     }
                 },
-                Some(LinkCmd::Voice { up, data }) => {
-                    let mut d = Vec::with_capacity(1 + data.len());
-                    d.push(if up { DATAGRAM_VOICE_UP } else { DATAGRAM_VOICE_DOWN });
-                    d.extend_from_slice(&data);
-                    let _ = conn.send_datagram(Bytes::from(d));
-                }
-                Some(LinkCmd::Audio(data)) => {
-                    let mut d = Vec::with_capacity(1 + data.len());
-                    d.push(DATAGRAM_AUDIO);
-                    d.extend_from_slice(&data);
-                    let _ = conn.send_datagram(Bytes::from(d));
-                }
                 Some(LinkCmd::Avatar(gz)) => if role == Role::Visitor {
                     tasks.push(tokio::spawn(write_blob(conn.clone(), STREAM_AVATAR, gz, visit.to_string())));
                 },

@@ -40,7 +40,8 @@ class Lobby:
 
     async def start(self):
         self.log = open(os.path.join(TMP, "lobby-%d.log" % id(self)), "w")
-        self.p = await asyncio.create_subprocess_exec(BIN, "--listen", "127.0.0.1", "--port", "0", "--debug", *self.args,
+        turn = [] if any(a.startswith("--turn") for a in self.args) else ["--turn-port", "0"]   # (several lobbies at once: STUN and TURN where a test asks)
+        self.p = await asyncio.create_subprocess_exec(BIN, "--listen", "127.0.0.1", "--port", "0", "--debug", *turn, *self.args,
                                                       stdout=asyncio.subprocess.PIPE, stderr=self.log)
         ready = json.loads(await asyncio.wait_for(self.p.stdout.readline(), 10))
         self.port = ready["port"]
@@ -1322,6 +1323,44 @@ async def t_no_v3():
         await K.stop()
 
 
+async def t_ice():
+    """4.2 (#71): STUN and TURN for Visit's voice over WebRTC: its port in every version-4 welcome, and each office a TURN
+    login of its own (with --turn-ip); a STUN question answered with where the asker is."""
+    import socket
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    K = await Lobby("--turn-port", str(port), "--turn-ip", "127.0.0.1", "--turn-relay-ports", "50100-50110").start()
+    N = await Lobby().start()
+    try:
+        a, b = await join(K, "Ice", proto=P4), await join(K, "Cream", proto=P4)
+        ia, ib = a.welcome.get("ice") or {}, b.welcome.get("ice") or {}
+        check("each welcome names the STUN and TURN port (its host: the lobby's own, none named)", (ia.get("port"), "host" in ia), (port, False))
+        check("and gives each office a login of its own", (bool(ia.get("username")) and bool(ia.get("credential")), ia.get("username") != ib.get("username")), (True, True))
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(3)
+        tx = os.urandom(12)
+        s.sendto(bytes([0, 1, 0, 0, 0x21, 0x12, 0xA4, 0x42]) + tx, ("127.0.0.1", port))
+        r = s.recv(512)
+        at, mine = 20, None
+        while at + 4 <= len(r):
+            t, n = int.from_bytes(r[at:at + 2], "big"), int.from_bytes(r[at + 2:at + 4], "big")
+            v = r[at + 4:at + 4 + n]
+            if t == 0x20:
+                mine = (".".join(str(x ^ y) for x, y in zip(v[4:8], (0x21, 0x12, 0xA4, 0x42))), int.from_bytes(v[2:4], "big") ^ 0x2112)
+            at += 4 + (n + 3) // 4 * 4
+        check("a STUN question: answered with where the asker is", (r[:2], r[8:20] == tx, mine), (b"\x01\x01", True, ("127.0.0.1", s.getsockname()[1])))
+        s.close()
+        c = await join(N, "Plain", proto=P4)
+        check("a lobby with none (--turn-port 0): no ice in its welcome", "ice" in c.welcome, False)
+        for x in (a, b, c):
+            await x.close()
+    finally:
+        await K.stop()
+        await N.stop()
+
+
 async def main():
     admin_sk, admin_key = keypair()
     L = await Lobby("--v3", "--admin", admin_key, "--title", "Test lobby").start()
@@ -1345,7 +1384,7 @@ async def main():
         print("\nv4_bans")
         await t_v4_bans(L, admin_sk)
         await L.reset()
-        for t in (t_v4_groups_kept, t_no_v3):
+        for t in (t_v4_groups_kept, t_no_v3, t_ice):
             print("\n" + t.__name__[2:])
             await t()
         st = await L.state()

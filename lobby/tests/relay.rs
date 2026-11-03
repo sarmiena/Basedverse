@@ -24,7 +24,7 @@ fn free_port() -> u16 {
 
 fn lobby(relay_port: u16) -> Lobby {
     let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_lobby"))
-        .args(["--listen", "127.0.0.1", "--port", "0", "--relay-port", &relay_port.to_string(), "--relay-url", &format!("http://127.0.0.1:{relay_port}/")])
+        .args(["--listen", "127.0.0.1", "--port", "0", "--turn-port", "0", "--relay-port", &relay_port.to_string(), "--relay-url", &format!("http://127.0.0.1:{relay_port}/")])
         .stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("lobby runs");
     let mut line = String::new();
     std::io::BufReader::new(c.stdout.take().unwrap()).read_line(&mut line).unwrap();
@@ -108,7 +108,7 @@ async fn the_relay_answers_quic_address_discovery_given_a_certificate() {
     std::fs::write(dir.join("key.pem"), cert.signing_key.serialize_pem()).unwrap();
     let (relay_port, quic_port) = (free_port(), free_port());
     let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_lobby"))
-        .args(["--listen", "127.0.0.1", "--port", "0", "--relay-port", &relay_port.to_string(), "--relay-url", &format!("http://127.0.0.1:{relay_port}/"),
+        .args(["--listen", "127.0.0.1", "--port", "0", "--turn-port", "0", "--relay-port", &relay_port.to_string(), "--relay-url", &format!("http://127.0.0.1:{relay_port}/"),
                "--relay-quic-port", &quic_port.to_string()])
         .arg("--relay-cert").arg(dir.join("cert.pem")).arg("--relay-key").arg(dir.join("key.pem"))
         .stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();

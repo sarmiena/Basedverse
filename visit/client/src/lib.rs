@@ -15,6 +15,7 @@ mod lobby;
 mod media;
 mod page;
 pub mod pg;
+mod rtc;
 mod runtime;
 mod state;
 
@@ -23,7 +24,7 @@ use std::{path::PathBuf, process::ExitCode, time::Duration};
 use clap::Parser;
 use serde_json::json;
 use tokio::{net::TcpListener, sync::mpsc};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -92,6 +93,10 @@ pub struct Args {
     /// its own room's, and those of rooms it visits. Default: assets/ in the data directory.
     #[arg(long, env = "VISIT_ASSET_DIR")]
     pub asset_dir: Option<PathBuf>,
+    /// The UDP port voice comes and goes on (../SPEC.md 8.7: WebRTC, to this office's page and the pages of offices it
+    /// links with). Default: any free one. Give one to open it on a firewall or forward it on a router.
+    #[arg(long, env = "VISIT_MEDIA_PORT", default_value_t = 0)]
+    pub media_port: u16,
     /// The sign-in API (auth/SPEC.md 3), served by this program for the workroom's server: on when given the
     /// service token's file (at least 32 characters, new each run, readable by the user only).
     #[arg(long, env = "AUTH_TOKEN_FILE")]
@@ -536,7 +541,29 @@ pub async fn run_with(a: Args, stop: impl std::future::Future<Output = ()> + Sen
     println!("{}", json!({ "ready": true, "port": a.port, "version": VERSION, "proto": page::PROTO }));
     let lands = land::Lands::open(Some(cache));
     let assets = assets::Assets::open(Some(asset_dir));
-    let code = core::Core::new(a.lobby.clone(), lobby_tx, core_tx, relays, a.max_visitors, a.idle_exit, saved, fresh, Some(state_file), lands, assets, db_tx, loaded).run(core_rx).await;
+    // Voice (../SPEC.md 8.7, #71): WebRTC to this office's pages and those of the offices it links with, on one UDP
+    // port (VISIT_MEDIA_PORT; any free one by default). Not to be had: the office runs without voice.
+    let media = match rtc::Media::start(a.media_port, core_tx.clone()).await {
+        Ok(m) => {
+            let ticker = core_tx.clone();
+            tokio::spawn(async move {
+                let mut every = tokio::time::interval(Duration::from_millis(20));
+                every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    every.tick().await;
+                    if ticker.send(core::Ev::MediaTick).is_err() {
+                        return;
+                    }
+                }
+            });
+            Some(m)
+        }
+        Err(e) => {
+            warn!("voice: the media port (UDP {}) could not be opened, so no voice: {e:#}", a.media_port);
+            None
+        }
+    };
+    let code = core::Core::new(a.lobby.clone(), lobby_tx, core_tx, relays, a.max_visitors, a.idle_exit, saved, fresh, Some(state_file), lands, assets, db_tx, loaded, media).run(core_rx).await;
     let _ = engine_stop.send(true);
     if let Some(t) = engine_task {
         let _ = t.await;

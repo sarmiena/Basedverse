@@ -46,6 +46,30 @@ def free_ports(n):
 
 
 LOBBY_PORT, WEB_PORT, PORT_A, PORT_B, PORT_C, AUTH_A, AUTH_B, AUTH_C = free_ports(8)
+
+
+def udp_port():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("0.0.0.0", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+def lan_ip():
+    """This machine's main address (TURN's relays are given at it: a browser takes none at 127.0.0.1)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("192.0.2.1", 9))
+    ip = s.getsockname()[0]
+    s.close()
+    return ip
+
+
+# 4.2 (#71): the lobby's STUN and TURN, and A's page made to connect through TURN alone (as a phone on a mobile
+# network, or behind a strict NAT, does): every voice of A's goes through the lobby's relays, B's directly.
+TURN_PORT = udp_port()
+RELAY_ONLY = """(() => { const P = window.RTCPeerConnection; window.RTCPeerConnection = function (c) { return new P(Object.assign({}, c, { iceTransportPolicy: "relay" })); };
+  window.RTCPeerConnection.prototype = P.prototype; })();"""
 AUTH = {"A": AUTH_A, "B": AUTH_B, "C": AUTH_C}
 TMP = tempfile.mkdtemp()
 fails = 0
@@ -260,7 +284,8 @@ async def main():
     handler = functools.partial(Handler, directory=HERE)
     web = http.server.ThreadingHTTPServer(("127.0.0.1", WEB_PORT), handler)
     threading.Thread(target=web.serve_forever, daemon=True).start()
-    lobby = await asyncio.create_subprocess_exec(LOBBY_BIN, "--listen", "127.0.0.1", "--port", str(LOBBY_PORT),
+    lobby = await asyncio.create_subprocess_exec(LOBBY_BIN, "--listen", "127.0.0.1", "--port", str(LOBBY_PORT), "--turn-port", str(TURN_PORT), "--turn-ip", lan_ip(), "--turn-host", lan_ip(),   # (Chrome takes no TURN server at 127.0.0.1)
+                                                 "--turn-relay-ports", "50300-50399",
                                                  stdout=asyncio.subprocess.PIPE, stderr=open(os.path.join(OUT, "lobby.log"), "w"))
     await asyncio.wait_for(lobby.stdout.readline(), 10)
     try:
@@ -277,6 +302,7 @@ async def run(a, b, url):
         # A's room is made with three.js r128, B's with r160: each draws the other's with its own (a world), or with
         # the other's very release (a visit).
         room = "http://127.0.0.1:%d/room.html%s#port=%d&token=%s"
+        await a.call("Page.addScriptToEvaluateOnNewDocument", source=RELAY_ONLY)
         await a.goto(room % (WEB_PORT, "", PORT_A, ta))
         await b.goto(room % (WEB_PORT, "?three=160", PORT_B, tb))
 
@@ -752,6 +778,13 @@ async def run(a, b, url):
         check("A hears B: B's voice decoded and played at A, from where B stands (the fake microphone's tone)", await a.until(
             "(s => !!s && s.frames > 50 && s.level > 0.01 && s.near)(v._voices.get(v.voices[0].key))"), True)
         check("and B hears A, from where B has A in its room", await b.until("(s => !!s && s.frames > 50 && s.level > 0.01 && s.near)(v._voices.get(v.voices[0].key))"), True)
+        PATHS = """(async () => { const out = []; for (const c of v._rtc.values()) { const st = await c.pc.getStats(); let pair = null, kinds = {};
+          st.forEach(r => { if (r.type === "transport" && r.selectedCandidatePairId) pair = st.get(r.selectedCandidatePairId); if (r.type === "local-candidate") kinds[r.id] = r.candidateType; });
+          out.push(pair ? kinds[pair.localCandidateId] : "none"); } return out.join(); })()"""
+        check("4.2 (#71): every connection of A's goes through the lobby's TURN (A's page allows no other way); B's directly",
+              (await a.until(f"(async () => {{ const p = await {PATHS}; return !!p && p.split(',').every(x => x === 'relay'); }})()"),
+               await b.until(f"(async () => {{ const p = await {PATHS}; return !!p && p.split(',').every(x => x === 'host' || x === 'srflx' || x === 'prflx'); }})()")),
+              (True, True))
         await a.js("v.setName('Ann')")
         check("A gives the name its user goes by: B's panel row and who is near B say it", (await b.until(
             "[...document.querySelectorAll('.visit-panel button.who')].some(b => b.textContent.includes('Ann (A)'))"), await b.until("v.voices.some(x => x.name === 'Ann')")), (True, True))
