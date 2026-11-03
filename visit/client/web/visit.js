@@ -13,7 +13,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "4.2.0", PROTO = "basedverse-visit-local/2";
+  const VERSION = "4.3.0", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -1152,6 +1152,7 @@
       this.seen = (Array.isArray(m.seen) ? m.seen : []).filter(x => isObj(x) && isObj(x.at)).map(x => ({ key: String(x.key), name: String(x.name || ""), at: x.at }));
       this.bans = bansFrom(m.bans); this.bannedBy = bansFrom(m.banned_by); this.voiceMembers = membersFrom(m.voice_members);
       this._users = new Map((Array.isArray(m.users) ? m.users : []).filter(u => isObj(u) && typeof u.key === "string" && typeof u.name === "string").map(u => [u.key, u.name]));
+      for (const h of this._hosted.values()) if (h.visitor) this._named(h.visitor);   // (4.3.0: anyone here already, by these names)
       this._roomVoiceFrom(m.room_voice);
       this._avatarsFrom(m.avatars);
       this._phoneOn.clear();
@@ -1265,7 +1266,9 @@
         case "media_none": { const w = this._mediaWait.get(m.id); this._mediaWait.delete(m.id); this._media.delete(m.id); if (w) w(null); break; }
         case "preview": case "history": case "shared": case "lobby_pass": { const a = this._asks.get(m.req); if (a) { this._asks.delete(m.req); a.resolve(m); } break; }
         case "bans": this.bans = bansFrom(m.bans); this._changed(); break;
-        case "user": if (typeof m.name === "string" && m.name) this._users.set(String(m.key), m.name); else this._users.delete(String(m.key)); this._changed(); break;
+        case "user":
+          if (typeof m.name === "string" && m.name) this._users.set(String(m.key), m.name); else this._users.delete(String(m.key));
+          this._renamed(String(m.key)); this._changed(); break;
         case "banned": {   // a room that keeps your user out of its voice or its chat (8.9), or no longer
           const b = bansFrom([m])[0];
           if (!b) break;
@@ -2022,7 +2025,7 @@
         // the room spawns and walks as it does anyone (who.owner says who). To a user page, the room's visits are to
         // see (the panel's rows), never to serve: a mirror, with nothing sent for it.
         const owner = m.owner === true, mirror = this.role === "user";
-        const h = { id: m.id, channel: m.channel, visitor: Object.assign({}, m.peer || {}, owner ? { owner: true } : {}), owner, mirror, guest: m.guest === true, watch: m.watch === true,
+        const h = { id: m.id, channel: m.channel, visitor: this._named(Object.assign({}, m.peer || {}, owner ? { owner: true } : {})), owner, mirror, guest: m.guest === true, watch: m.watch === true,
           inside: m.watch !== true || m.inside === true,
           pose: null, yaw0: 0, input: null, inputAt: 0, keyNext: true, fails: 0, sceneSent: false, posed: null, sharedAdds: m.shared_adds === true,
           landscapes: m.landscapes === true, assets: m.assets === true, since: performance.now(), possessions: possessionsFrom(m.possessions), models: new Map(), wanted: new Set(), ride: null };
@@ -2076,6 +2079,19 @@
       this._visitorsList();
     }
 
+    // A person (8.6, 8.9; 4.3.0): `name`, the name their user goes by, else their office's till theirs is known;
+    // `office`, their office's name (the room they are from). In place: your room keeps hold of it (spawn, move, its
+    // points and interactions, `visitors`), and sees a new name on it as it comes.
+    _named(vis) {
+      if (typeof vis.office !== "string") vis.office = String(vis.name || "");
+      vis.name = (vis.key && this.userOf(vis.key)) || vis.office;
+      return vis;
+    }
+    _renamed(key) {
+      let any = false;
+      for (const h of this._hosted.values()) if (h.visitor && h.visitor.key === key) { this._named(h.visitor); any = true; }
+      if (any) this._visitorsList();
+    }
     _visitorsList() {
       const hs = [...this._hosted.values()];
       this.visitors = hs.filter(h => h.inside).map(h => ({ id: h.id, visitor: h.visitor, guest: h.guest, pose: h.pose, owner: !!h.owner,
@@ -5664,7 +5680,7 @@
           ${talkBtn(o.key, who)}${pickBtn(o.key, who)}</div>`);
       }
       // Picked, and not in the lobby now: their room stays in your world (from its last landscape), to take out here.
-      for (const x of v.picks) if (!people.some(p => p.key === x.key)) {
+      for (const x of v.picks) if (x.key !== v.key && !people.some(p => p.key === x.key)) {   // (4.3.0: never your own room: it is your world's middle)
         const name = v.userOf(x.key) || x.name || (v.guests.find(g => g.key === x.key) || {}).name || x.key.slice(0, 8);
         rows.push(`<div class="row"><span class="dot"></span><span class="grow">${esc(name)} <span class="muted">· away${v.isGuest(x.key) ? "" : " · in none of your worlds now"}</span></span>${pickBtn(x.key, name)}</div>`);
       }

@@ -10,6 +10,31 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v4.3.0 — 2026-11-03 — people named by the name they go by, in the rooms they are in; your own room never round yours
+
+Nothing changes a protocol's name: offices on 4.2 and 4.3 meet and visit each other as before.
+
+- **A room names the people in it as chat does** ([visit/SPEC.md](visit/SPEC.md) 8.9). A host's `v.visitors`
+  (and `v.watchers`, and the visitor its hooks are given: `spawn`, `move`, points, interactions) had each person's
+  `visitor.name` as their office's, so a room labelled a visitor "Bo's Office" while its chat called them "Bo";
+  and its owner too (its own page never heard its owner's name). Now `visitor.name` is the name that person goes
+  by (their `user`), their office's until theirs is known, and anew whenever they change it; `visitor.office` is their
+  office's name. A room's own page hears its owner's name (visit-client tells its pages by its own key, and `ready`'s
+  `users` has it first), so its owner is named in it as anyone is.
+- **Your own room is never one of those round it** (8.4). Your room is your world's middle; a Map that placed it
+  (before this release, `place` took this office's own key) left it among the rooms round yours from 3.3 on (3.3 made
+  every placed room a pick), listed in the panel as someone "away, in none of your worlds now". `place` now refuses
+  this office's own key, as `pick` already did; a state file holding it as a pick or a place drops it as it is read;
+  and the panel never lists it.
+
+**What an integration does:**
+1. Upgrade (`VISIT_VERSION=4.3.0`).
+2. If your room labels the people in it, label them by `entry.visitor.name` (it is what they go by now; nothing to
+   change if you already do), and make the label again when it changes (compare it each frame, or on `visitors`). If
+   you made anything per visitor from `visitor.name` (a colour, a random look), make it from `visitor.key`, which
+   stays: their name may change while they are in your room.
+3. If you want the room a visitor comes from too, it is `entry.visitor.office`.
+
 ## v4.2.0 — 2026-11-03 — voice over WebRTC: each page to the office that passes it on, TURN in the lobby (#71)
 
 **Every workroom upgrades, and the lobby is deployed again** (voice between a 4.2 office and an older one is gone:

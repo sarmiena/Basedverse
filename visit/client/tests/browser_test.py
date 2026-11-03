@@ -788,11 +788,14 @@ async def run(a, b, url):
         await a.js("v.setName('Ann')")
         check("A gives the name its user goes by: B's panel row and who is near B say it", (await b.until(
             "[...document.querySelectorAll('.visit-panel button.who')].some(b => b.textContent.includes('Ann (A)'))"), await b.until("v.voices.some(x => x.name === 'Ann')")), (True, True))
+        check("4.3.0: and B's room has its visitor A by that name, A's office beside it (v.visitors: visitor.name, visitor.office)",
+              await b.until("(x => !!x && x.name === 'Ann' && x.office === 'A' && x.name)((v.visitors[0] || {}).visitor)"), "Ann")
         await a.js("v.say('named')")
         check("and A's own line, in A's chat window, by that name too (as B has it)", await a.until(
             "(t => t.endsWith('named') && t)(document.querySelector('.visit-chat .log').lastChild.textContent)"), "[Ann] says: named")
         await a.js("v.setName(null)")
         await b.until("v.voices.some(x => x.name === 'A')")
+        check("4.3.0: none again: B's room has A by its office's name", await b.until("(x => !!x && x.name === 'A' && x.name)((v.visitors[0] || {}).visitor)"), "A")
         check("B's panel shows A near, speaking", await b.until("document.querySelector('.visit-panel').textContent.includes('🔊 A')"), True)
         check("A's world draws a 🔊 over B, in B's room, as A hears B (Visit's own, by default)", await a.until(
             "!!room.world.bubbles && [...room.world.bubbles.by.keys()].some(k => k.startsWith('speak:'))"), True)

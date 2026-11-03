@@ -96,14 +96,18 @@ impl Saved {
                 Some(Pick { key: key.to_string(), name: clip_name(g.get("name").and_then(Value::as_str).unwrap_or("")) })
             }).collect()
         };
-        let layout: Vec<Place> = list("layout").iter().filter_map(place_from).take(MAX_PLACES).collect();
+        // Never this office's own room among the rooms round it (4.3.0): a file from before kept it if its Map ever
+        // placed it, and 3.3 made every placed room a pick.
+        let own = key.as_ref().map(|k| k.public().to_string());
+        let mine = |k: &str| own.as_deref() == Some(k);
+        let layout: Vec<Place> = list("layout").iter().filter_map(place_from).filter(|p| !mine(&p.key)).take(MAX_PLACES).collect();
         let mut picks: Vec<Pick> = Vec::new();
         let older = if v.get("picks").is_some() { people("picks") } else {
             let guests = people("guests");
             layout.iter().map(|p| Pick { key: p.key.clone(), name: guests.iter().find(|g| g.key == p.key).map(|g| g.name.clone()).unwrap_or_default() }).collect()
         };
         for p in older {
-            if picks.len() < MAX_PICKS && !picks.iter().any(|x| x.key == p.key) {
+            if picks.len() < MAX_PICKS && !mine(&p.key) && !picks.iter().any(|x| x.key == p.key) {
                 picks.push(p);
             }
         }
@@ -309,6 +313,16 @@ mod tests {
         assert_eq!(s.picks.iter().map(|p| p.key.clone()).collect::<Vec<_>>(), keys[..MAX_PICKS].to_vec());
         assert_eq!((s.picks[0].name.as_str(), s.picks[1].name.as_str(), s.layout.len()), ("Ada", "", 9));
         assert!(s.to_json().get("guests").is_none());
+        // 4.3.0: its own room, picked or placed (a file from before), is neither; the others are kept.
+        let me = SecretKey::generate();
+        let own = me.public().to_string();
+        std::fs::write(&path, json!({ "key": hex(&me.to_bytes()), "picks": [{ "key": own, "name": "" }, { "key": keys[1], "name": "Bo" }],
+            "layout": [{ "key": own, "x": -78.5, "z": 9.0, "turn": 0 }, { "key": keys[1], "x": 1.0, "z": 2.0, "turn": 3 }] }).to_string()).unwrap();
+        let (s, _) = Saved::load(Some(&path));
+        assert_eq!((s.picks.iter().map(|p| p.key.clone()).collect::<Vec<_>>(), s.layout.iter().map(|p| p.key.clone()).collect::<Vec<_>>()),
+                   (vec![keys[1].clone()], vec![keys[1].clone()]));
+        std::fs::write(&path, json!({ "key": hex(&me.to_bytes()), "layout": [{ "key": own, "x": 1.0, "z": 2.0, "turn": 0 }] }).to_string()).unwrap();
+        assert!(Saved::load(Some(&path)).0.picks.is_empty());   // (and 3.3's: a file from before picks)
         // 3.3: whom its user ignores: kept, a person by key, a room's figure by its key and id; at most MAX_IGNORED.
         let many: Vec<Value> = (0..60).map(|i| json!({ "key": keys[i % 10], "npc": format!("f{i}"), "name": "x" })).collect();
         std::fs::write(&path, json!({ "ignored": [{ "key": keys[0], "name": "Ada" }, { "key": keys[0], "name": "Ada again" }, { "key": "nope" }] }).to_string()).unwrap();
