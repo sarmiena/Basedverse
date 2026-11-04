@@ -27,6 +27,9 @@ listener's: whoever upgrades hears the others again, whatever version those othe
   has them, within 45 m, else by the huddle or the call (it used to play the first way that came, heard or not).
 - **In person, someone in your huddle or on a call with you is heard from where they stand, as loud as the huddle**:
   not fading out with distance as they walk off, then loud again at 45 m by the huddle.
+- **Your 🎙 takes effect at once while a huddle or a call runs your microphone.** Turned on, your voice went in person
+  only once something else made your page look again at where it sends; turned off, it went on in person (to whoever
+  stood near you) until then.
 - **A huddle's voice no longer goes in person.** In its starter's room, a member's page could send its huddle voice
   on the same connection as its voice in person there: the room's visit-client then passed it on to everyone near
   them, their microphone off. It goes by the voice visit that joined the huddle now, apart.
