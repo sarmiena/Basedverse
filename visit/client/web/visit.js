@@ -2111,6 +2111,7 @@
       this.mic = !!on;
       this._send({ type: "mic", on: this.mic });   // (heard in person only while it is on: a call or a huddle runs it too)
       if (on) await this._micStart(); else this._micMaybeStop();
+      this._rtcGate();   // 4.3.2: the ways it goes again, now: with a call or a huddle running it, it neither starts nor stops
       this._changed();
     }
     // Where your user stands and looks in your room, for a room that draws no world (a world says it itself, each

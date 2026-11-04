@@ -1324,15 +1324,20 @@ async def run(a, b, url):
               (await a.until(heard_by(kb, 2), 10), await growing_of(a, kb), await b.until(heard_by(ka, 2), 10), await growing_of(b, ka)), (True, True, True, True))
         check("B's huddle voice goes by the voice visit that joined it, not with B in person to A's room (where whoever is near B would hear it, its microphone off)",
               await b.js("[...v._rtc.values()].filter(c => c.to != null).every(c => !(c.want && c.want.room && c.want.voice)) && [...v._rtc.values()].some(c => c.to != null && c.want && c.want.voice)"), True)
+        check("B, microphone off: its voice to the huddle only, not in person", await b.js("v._voiceTo"), 4)
         await b.js("v.setMic(true)")
+        check("4.3.2: B's microphone on, its huddle running it already: in person too, at once (before, only once something else made its page look again)",
+              await b.until("(v._voiceTo & 1) === 1", 2), True)
         check("B's microphone on: A hears B in person, from where B stands, as loud as the huddle (no fading: B is in it)", await a.until(
             heard_by(kb, 0) + " && (s => !!s && s.near && s.panner.rolloffFactor === 0)(v._voices.get(%s))" % json.dumps(kb), 10), True)
         await asyncio.sleep(1.0)
         check("and B's huddle voice no longer comes to A as well (one way a person, by what A's visit-client passes on)", await a.js(
             "![...v._rtc.values()].flatMap(c => [...c.slots.values()]).some(sl => !!sl.label && sl.label.key === %s && sl.label.route === 2 && performance.now() - (sl.liveAt || 0) < 600)" % json.dumps(kb)), True)
         await b.js("v.setMic(false)")
+        check("4.3.2: off again: B's voice no longer in person, at once (before, it went on so while the huddle ran its microphone)",
+              await b.until("v._voiceTo === 4", 2), True)
         await asyncio.sleep(1.0)
-        check("off again: A hears B still (by the huddle again)", (await a.until(heard_by(kb), 10), await growing_of(a, kb)), (True, True))
+        check("and A hears B still, by the huddle again", (await a.until(heard_by(kb, 2), 10), await growing_of(a, kb)), (True, True))
         await step_out(b, "A")
         await a.until("v.visitors.length === 0")
         await a.js(f"{cw}.querySelector('.voice button[data-v=leave]').click()")
