@@ -10,6 +10,37 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v4.3.2 — 2026-11-04 — voices heard near each other in a huddle, and as soon as someone steps in
+
+Nothing changes a protocol's name: offices on 4.2 and 4.3 meet and visit each other as before. Each fix is the
+listener's: whoever upgrades hears the others again, whatever version those others run.
+
+- **Someone who steps into your room is heard at once**, on an office with the room and the person on pages of their
+  own (engine/SPEC.md 3): a watcher stepping in (or out) was told to the room's page alone, so the person's page had
+  them outside, never heard them in person, and left them out of its panel's rows, until it loaded again. Both pages
+  hear `enter` and `exit` now (engine/SPEC.md 3.4).
+- **Near someone you share a huddle (or a call) with, you still hear them.** Your visit-client held their huddle's
+  voice back while they stood near you, for their voice in person; but a page sends its voice in person only while
+  its microphone is on, and a huddle (or a call) runs it with it off: near each other, then, nothing came, until one
+  walked off. It holds that voice back now only while their voice really comes to you in person, and passes it on
+  again 200 ms after it stops. And a page plays someone the first way it hears them now: in person only from where it
+  has them, within 45 m, else by the huddle or the call (it used to play the first way that came, heard or not).
+- **In person, someone in your huddle or on a call with you is heard from where they stand, as loud as the huddle**:
+  not fading out with distance as they walk off, then loud again at 45 m by the huddle.
+- **A huddle's voice no longer goes in person.** In its starter's room, a member's page could send its huddle voice
+  on the same connection as its voice in person there: the room's visit-client then passed it on to everyone near
+  them, their microphone off. It goes by the voice visit that joined the huddle now, apart.
+
+**What an integration does:**
+
+1. Nothing for these fixes: upgrade (visit-client and its visit.js together, as always).
+2. From v4.3.1's time (#79, no code of Visit's): **a workroom's `/visit/ws` relay buffers 64 MiB toward the browser,
+   and past it hangs up both ends with no close frame** (engine/SPEC.md 6.3, engine/INTEGRATING.md "The relay"). Before
+   2026-11-03 the guide said 1 MiB and a 4408 close; a room whose scene outgrew it never drew on its person's page
+   ("Could not decode a text frame as UTF-8", a page connected and gone every 2 s), and the close frame itself was the
+   fault (the relay does not read where a frame ends). A workroom whose relay was built to the old numbers changes
+   both: the buffer to 64 MiB, and the overflow to a plain hang-up.
+
 ## v4.3.1 — 2026-11-03 — the sky drawn for less; ⏱ counts draw calls, shadows apart
 
 Nothing changes a protocol's name: offices on 4.2 and 4.3 meet and visit each other as before.

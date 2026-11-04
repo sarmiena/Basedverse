@@ -233,6 +233,9 @@ const INPUTS_PER_SECOND: u32 = 120;
 const VOICE_RANGE: f64 = 45.0;
 const VOICE_MARGIN: f64 = 15.0;
 const NEAR_EVERY: Duration = Duration::from_secs(1);
+/// 4.3.2: a speaker passed on to a connection in person this lately is heard there so: their call or room voice waits.
+/// Past it (their microphone off, out of reach), it goes again. Some 20 ms packets lost in a row, well short of a gap.
+const IN_PERSON_FRESH: Duration = Duration::from_millis(200);
 /// 4.0 (#59): what a room may have a visitor's own model do (MODELS.md, "Clips"), and how often it may change it.
 const ACTS: [&str; 7] = ["sit", "lie", "drink", "eat", "throw", "swat", "wave"];
 const PERFORMS: u32 = 10;
@@ -425,6 +428,9 @@ pub struct Core {
     rtc_wanted: Value,
     /// What each connection's voice went to last (a hash), for the log.
     rtc_routes: HashMap<u64, u64>,
+    /// 4.3.2: when each connection was last passed a speaker in person, by (connection, speaker's key): while that
+    /// comes (IN_PERSON_FRESH), their call or room voice is not passed to it too (8.7: one way a person).
+    in_person_to: HashMap<(u64, String), Instant>,
     ice: Value,
     /// The person's microphone on (their page's `mic`): only then is their voice heard in person (a call, or a huddle,
     /// runs it too, for those alone).
@@ -518,6 +524,7 @@ impl Core {
             rtc_links: HashMap::new(),
             rtc_wanted: Value::Null,
             rtc_routes: HashMap::new(),
+            in_person_to: HashMap::new(),
             ice: json!([]),
             mic_on: false,
             hosting: None,
@@ -2350,7 +2357,11 @@ impl Core {
 
     /// A packet of voice on one of this office's WebRTC connections (rtc.rs): its own page's (its user's), or a page's
     /// of the office at the other end of a link (theirs, sent here because someone here hears it). Each who hears it
-    /// here hears it one way only (8.7: in person first, then a call, then a room voice).
+    /// here hears it one way only (8.7: in person first, then a call, then a room voice): by what goes to them, not by
+    /// where everyone stands. A speaker's page may send to more than one connection here (in person to the room they
+    /// are in, their huddle's voice by another link), and sends in person only while its microphone is on (a huddle or
+    /// a call runs it with it off): so their call or room voice stops for a connection only while their voice goes to
+    /// it in person (4.3.2; before, by where they stood, and then nothing went while their microphone was off).
     fn heard(&mut self, peer: u64, pkt: rtc::Packet) {
         let Some(from) = self.media.as_ref().and_then(|m| m.from(peer)).cloned() else { return };
         let mut out: Vec<(u64, String, Value)> = Vec::new();
@@ -2373,13 +2384,22 @@ impl Core {
         }
         let mut sent: Vec<(u64, String)> = Vec::new();
         let Some(m) = self.media.as_mut() else { return };
+        let now = Instant::now();
         for (to, who, label) in out {
             let k = (to, label["key"].as_str().unwrap_or("").to_string());
             if sent.contains(&k) {
                 continue;   // heard on this connection a way before (in person, then a call, then a room voice)
             }
+            if label["route"].as_u64() == Some(frames::ROUTE_NEAR as u64) {
+                self.in_person_to.insert(k.clone(), now);
+            } else if self.in_person_to.get(&k).is_some_and(|t| now.duration_since(*t) < IN_PERSON_FRESH) {
+                continue;   // heard on it in person now, by another of this speaker's connections here
+            }
             sent.push(k);
             m.forward(to, peer, &who, &label, &pkt);
+        }
+        if self.in_person_to.len() > 256 {   // (none kept that is no longer heard so)
+            self.in_person_to.retain(|_, t| now.duration_since(*t) < IN_PERSON_FRESH);
         }
     }
 
@@ -2407,9 +2427,10 @@ impl Core {
 
     /// A page's voice of the office at the other end of this link, here. In person: a visitor in this room (to this
     /// office's page if its user is near them, to the other visitors near them, and to a call on speaker if they are
-    /// near the phone); a friend across a plot's side, near in both worlds. A call's: to the page, unless its caller is
-    /// heard in person; on speaker, also to this room's visitors near the phone, as the phone's. A member of this
-    /// office's room's voice: to everyone else in it, and to the page if its user is in it.
+    /// near the phone); a friend across a plot's side, near in both worlds. A call's: to the page (unless its caller is
+    /// heard on it in person: heard()); on speaker, also to this room's visitors near the phone, as the phone's, unless
+    /// its caller is near this office's user. A member of this office's room's voice: to everyone else in it, and to the
+    /// page if its user is in it (unless heard on it in person: heard()).
     fn their_voice(&self, id: &str, out: &mut Vec<(u64, String, Value)>) {
         let Some(v) = self.visits.get(id).filter(|v| v.up && !v.local) else { return };
         let (ch, role, inside, call_on, speaker) = (v.channel, v.role, v.inside, v.call_on, v.speaker);
@@ -2436,8 +2457,10 @@ impl Core {
         } else if self.seam(&key) && !banned && (!call_on || near) {   // across a plot's side
             out.extend(own.map(|o| (o, format!("near:{ch}"), to_page(frames::ROUTE_NEAR, Value::Null))));
         }
-        if call_on && !near {   // its call (unless its caller is heard in person: then the call goes quiet for them)
+        if call_on {   // its call (4.3.2: quiet for the page while its caller's voice comes to it in person, by heard())
             out.extend(own.map(|o| (o, format!("call:{ch}"), to_page(frames::ROUTE_CALL, Value::Null))));
+        }
+        if call_on && !near {
             if let Some(phone) = self.voice.phone.filter(|_| speaker) {
                 for c in self.within(phone, VOICE_RANGE + VOICE_MARGIN, Some(ch)) {
                     out.extend(self.peer_on(c).map(|p| (p, format!("phone:{key}"), json!({ "relay": "phone", "name": name, "route": frames::ROUTE_NEAR, "key": key }))));
@@ -2448,7 +2471,7 @@ impl Core {
             for m in self.voice_members.keys().filter(|m| **m != key) {
                 out.extend(self.peer_of_key(m).map(|p| (p, format!("voice:{key}"), json!({ "relay": key, "name": name, "route": frames::ROUTE_VOICE, "key": key }))));
             }
-            if self.room_voice.as_deref() == Some(self.key.as_str()) && !near && !self.on_call(&key) {
+            if self.room_voice.as_deref() == Some(self.key.as_str()) && !self.on_call(&key) {   // (4.3.2: and while near, unless heard in person: heard())
                 out.extend(own.map(|o| (o, format!("voice:{key}"), to_page(frames::ROUTE_VOICE, json!(key)))));
             }
         }
@@ -2477,6 +2500,7 @@ impl Core {
                     }
                     self.rtc_links.retain(|_, p| *p != peer);
                     self.rtc_routes.remove(&peer);
+                    self.in_person_to.retain(|(to, _), _| *to != peer);
                 }
             }
         }
@@ -2515,7 +2539,13 @@ impl Core {
                 ways.entry(ch).or_default().0 = true;
             }
             if key != self.key && self.room_voice.as_deref() == Some(key.as_str()) {
-                ways.entry(ch).or_default().2 = true;
+                // 4.3.2: a huddle's by the voice visit that joined it, never the link this user may be in its starter's
+                // room by: there what comes is passed on in person, to whoever is near them, and a huddle runs the
+                // microphone with it off (in person, they are heard only while it is on).
+                let voice_visit = self.visits.values()
+                    .find(|v| v.up && !v.local && v.voice && v.huddle.is_some() && v.peer.get("key").and_then(Value::as_str) == Some(key.as_str()))
+                    .map(|v| v.channel);
+                ways.entry(voice_visit.unwrap_or(ch)).or_default().2 = true;
             }
         }
         want.extend(ways.into_iter().map(|(ch, (room, call, voice))| json!({ "to": ch, "room": room, "call": call, "voice": voice })));
@@ -4302,7 +4332,8 @@ fn page_for(v: &Value) -> PageRole {
             else if v.get("home") == Some(&json!(true)) || v.get("role") == Some(&json!("visitor")) || v.get("voice") == Some(&json!(true)) { PageRole::User }
             else { PageRole::Both }
         }
-        "input" | "point" | "keyframe" | "scene_resync" | "shared_adds" | "landscapes" | "enter" | "exit" | "addressed" | "act"
+        // (4.3.2: "enter" and "exit" to both: a user page's visitors, in person, are those inside, as its panel lists them)
+        "input" | "point" | "keyframe" | "scene_resync" | "shared_adds" | "landscapes" | "addressed" | "act"
         | "avatar" | "avatar_none" | "possessions" | "possession" | "assets" | "asset_want" | "asset_kept" => PageRole::Host,
         "chat" | "chat_log" | "unseen" | "held" | "held_sent" | "media_none" | "preview" | "history" | "shared"
         | "voice_near" | "room_voice" | "voice_members" | "user" | "banned" | "seen" | "layout" | "landscape"

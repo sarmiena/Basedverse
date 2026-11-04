@@ -1307,6 +1307,34 @@ async def run(a, b, url):
               await a.until("(s => !!s && s.frames > 50 && s.level > 0.005)(v._voices.get(%s))" % json.dumps("room:" + kb)),
               await b.until("(s => !!s && s.frames > 50 && s.level > 0.005)(v._voices.get(%s))" % json.dumps("room:" + ka))), (False, False, True, True))
         await a.shot("a_huddle_on.png")
+
+        print("\n4.3.2: in a huddle and near in person too: heard all along, microphones off or on")
+        SLOT = "[...v._rtc.values()].flatMap(c => [...c.slots.values()]).find(sl => !!sl.out && !!sl.voice && !!sl.label && sl.label.key === %s)"
+        def heard_by(k, route=None):   # a slot of theirs played here (by that way)
+            return "(sl => !!sl%s)(%s)" % ("" if route is None else " && sl.label.route === %d" % route, SLOT % json.dumps(k))
+        async def growing_of(tab, k):   # and their voice's frames still coming through it
+            q = "(sl => sl ? sl.voice.frames : 0)(%s)" % (SLOT % json.dumps(k))
+            f0 = await tab.js(q)
+            await asyncio.sleep(1.0)
+            return await tab.js(q) - f0 > 20
+        await step_in(b, "A")
+        check("B steps into A's room, near A, both still in the huddle", (await a.until("v.visitors.length === 1 && v.voices.some(x => x.name === 'B')", 15),
+              await b.until("v.voices.some(x => x.name === 'A') && !!v.inHuddle", 15)), (True, True))
+        check("microphones off, A still hears B, and B A, by the huddle (before 4.3.2, A's visit-client held B's huddle voice back for B in person, which B's page sends only with its microphone on)",
+              (await a.until(heard_by(kb, 2), 10), await growing_of(a, kb), await b.until(heard_by(ka, 2), 10), await growing_of(b, ka)), (True, True, True, True))
+        check("B's huddle voice goes by the voice visit that joined it, not with B in person to A's room (where whoever is near B would hear it, its microphone off)",
+              await b.js("[...v._rtc.values()].filter(c => c.to != null).every(c => !(c.want && c.want.room && c.want.voice)) && [...v._rtc.values()].some(c => c.to != null && c.want && c.want.voice)"), True)
+        await b.js("v.setMic(true)")
+        check("B's microphone on: A hears B in person, from where B stands, as loud as the huddle (no fading: B is in it)", await a.until(
+            heard_by(kb, 0) + " && (s => !!s && s.near && s.panner.rolloffFactor === 0)(v._voices.get(%s))" % json.dumps(kb), 10), True)
+        await asyncio.sleep(1.0)
+        check("and B's huddle voice no longer comes to A as well (one way a person, by what A's visit-client passes on)", await a.js(
+            "![...v._rtc.values()].flatMap(c => [...c.slots.values()]).some(sl => !!sl.label && sl.label.key === %s && sl.label.route === 2 && performance.now() - (sl.liveAt || 0) < 600)" % json.dumps(kb)), True)
+        await b.js("v.setMic(false)")
+        await asyncio.sleep(1.0)
+        check("off again: A hears B still (by the huddle again)", (await a.until(heard_by(kb), 10), await growing_of(a, kb)), (True, True))
+        await step_out(b, "A")
+        await a.until("v.visitors.length === 0")
         await a.js(f"{cw}.querySelector('.voice button[data-v=leave]').click()")
         check("A ends it from its window: both out, the huddle gone, microphones off", (await a.until("!v.roomVoice && !v.inHuddle && v.huddles.length === 0 && !v._mic"),
               await b.until(f"!v.roomVoice && !v.inHuddle && v.huddles.length === 0 && !v._mic && {cw}.querySelector('.log').textContent.includes('The huddle in Yard is over')")), (True, True))
@@ -1448,6 +1476,17 @@ async def run(a, b, url):
         check("and back home: their room spawns them where they stepped in (at), and A's visitor is gone",
               (await b.until("room.where === null && room.world.inside", 10), await hc.until("v.visitors.length === 1 && v.visitors[0].owner && spawns[spawns.length - 1].owner && !!spawns[spawns.length - 1].at && spawns[spawns.length - 1].p.x < 1.5", 10), await a.until("v.visitors.length === 0", 10)), (True, True, True))
         await b.shot("c_user_back.png")
+        print("\n4.3.2: A steps into C's room: C's person's page has A in it too, and hears A")
+        await a.js("v.setMic(true)")
+        await step_in(a, "C")
+        check("A in C's room: its room's page has A, and so has its person's (before 4.3.2 \"enter\" went to the room's page alone: the person's had A outside)",
+              (await hc.until("v.visitors.some(x => x.visitor.name === 'A')", 15), await b.until("v.visitors.some(x => x.visitor.name === 'A')", 15)), (True, True))
+        check("and C's person hears A, from where the room has A", await b.until(
+            "(s => !!s && s.frames > 50 && s.level > 0.01 && s.near)(v._voices.get(%s))" % json.dumps(key_a), 20), True)
+        await step_out(a, "C")
+        await a.js("v.setMic(false)")
+        check("A out again: in neither of C's pages", (await hc.until("!v.visitors.some(x => x.visitor.name === 'A')", 15),
+              await b.until("!v.visitors.some(x => x.visitor.name === 'A')", 15)), (True, True))
         await b.goto("about:blank")
         check("the person's page gone: the room's page has no owner, and no visitor", await hc.until("v.owner === null && v.visitors.length === 0", 10), True)
         await b.goto(room_c % ("user", tuc))
