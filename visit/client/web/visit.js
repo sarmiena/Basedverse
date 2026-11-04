@@ -13,7 +13,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "4.3.1", PROTO = "basedverse-visit-local/2";
+  const VERSION = "4.3.2", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -2277,8 +2277,10 @@
       }
       return p && p.key ? this._voiceOf(p.key) : null;
     }
-    // Each slot to the voice it carries (one way a speaker: in person first, then a call, then a room voice), into
-    // where that voice is heard from now; who is speaking, by what each slot carries.
+    // Each slot to the voice it carries, into where that voice is heard from now; who is speaking, by what each slot
+    // carries. One way a speaker: the first of in person, a call, a room voice that is heard here now (4.3.2: in person
+    // from nowhere this page has them, or past voiceRange, the next; before, the first by route even so, and then
+    // nothing: a huddle's voice went silent near its speaker).
     _slotsTick(now) {
       const best = new Map(), slots = [];
       for (const c of this._rtc.values()) for (const sl of c.slots.values()) {
@@ -2289,20 +2291,20 @@
           sl.ts = ss.rtpTimestamp; sl.liveAt = now;
         }
         slots.push(sl);
+        sl.v = null; sl.to = null;
         if (!sl.label || !(now - (sl.liveAt || 0) < SLOT_LIVE)) continue;   // (a slot keeps its last label after its speaker stops)
+        sl.v = this._voiceKey(sl.label); sl.to = sl.v ? this._voiceOut(sl.v) : null;
         const b = best.get(sl.label.key);
-        if (!b || sl.label.route < b.label.route) best.set(sl.label.key, sl);
+        if (!b || (sl.to && !b.to) || (!sl.to === !b.to && sl.label.route < b.label.route)) best.set(sl.label.key, sl);
       }
       for (const sl of slots) {
-        const v = sl.label && best.get(sl.label.key) === sl ? this._voiceKey(sl.label) : null;
+        const mine = !!sl.label && best.get(sl.label.key) === sl, v = mine ? sl.v : null, out = mine ? sl.to : null;
         sl.meter.getFloatTimeDomainData(sl.buf);
         const level = rms(sl.buf);
         if (v) {
-          v.frames += sl.fresh; v.level = level;
+          v.frames += sl.fresh; v.level = level; v.who = sl.label.key;
           if (level > 0.01) { v.heardAt = now; const r = sl.label.relay && this._voiceRoom; if (r && r.s && r.s.relayed && r.s.relayed.has(sl.label.relay)) r.s.relayed.get(sl.label.relay).at = now; }
         }
-        const c2 = v && v.callKey && this._calls.get(v.callKey);
-        const out = !v ? null : v.room ? v.flat : c2 && c2.state === "on" ? (c2.voice ? v.flat : c2.speaker ? (v.near ? v.gain : null) : v.phone) : v.near ? v.gain : null;
         if (out !== sl.out) {
           if (sl.out) try { sl.src.disconnect(sl.out); } catch (e) { /* gone */ }
           sl.out = out;
@@ -2310,6 +2312,19 @@
         }
         sl.voice = v;
       }
+    }
+    // Where a voice goes, the way it comes now: a room voice flat; a call's to the ear (a telephone), flat (talking), or
+    // on speaker by where the phone is; in person by where they are, while within voiceRange (else not heard so).
+    _voiceOut(v) {
+      const c = v.callKey && this._calls.get(v.callKey);
+      return v.room ? v.flat : c && c.state === "on" ? (c.voice ? v.flat : c.speaker ? (v.near ? v.gain : null) : v.phone) : v.near ? v.gain : null;
+    }
+    // Whether your user hears the user of this office another way than in person now (8.7): on a call with them, or in
+    // the same room voice (a huddle). Then in person they are heard from where they are, as loud as that way: not
+    // fading out as they walk off (and then loud again past voiceRange, by the other way).
+    _alsoHeard(key) {
+      const c = key && this._calls.get(key), rv = this.roomVoice;
+      return !!key && ((!!c && c.state === "on") || (!!rv && Array.isArray(rv.members) && rv.members.some(m => m.key === key)));
     }
 
     // Which room your user is in: their own (at home), one they went to (a visit, a link gone there), or a plot they
@@ -2418,6 +2433,7 @@
         s.near = !!p && p.distance <= range;
         if (!p || !ctx) continue;
         s.panner.maxDistance = range;
+        s.panner.rolloffFactor = !c && this._alsoHeard(s.who) ? 0 : 1;   // 4.3.2: by where they are alone (_alsoHeard)
         if (s.panner.positionX) { s.panner.positionX.setValueAtTime(p.x, ctx.currentTime); s.panner.positionY.setValueAtTime(p.y, ctx.currentTime); s.panner.positionZ.setValueAtTime(p.z, ctx.currentTime); }
         else s.panner.setPosition(p.x, p.y, p.z);
       }
@@ -3328,13 +3344,16 @@
       this._bodyTell(h);
     }
 
+    // A watcher stepped in (or out, below). 4.3.2: a user page hears it too, its mirror inside as the room's visit is:
+    // whom it hears in person there (_near), and its panel's rows; it spawns nobody (its room's page does).
     _hostEnter(m) {
       const h = this._hosted.get(m.channel);
       if (!h || !h.watch) return;
       Object.assign(h, { inside: true, pose: null, input: null, keyNext: true, fails: 0 });
       const at = isObj(m.pose) ? { x: Number(m.pose.x) || 0, y: Number(m.pose.y) || 0, z: Number(m.pose.z) || 0, yaw: Number(m.pose.yaw) || 0, air: Math.max(0, Number(m.pose.air) || 0) } : null;
-      this._spawn(h, at);
+      if (!h.mirror) this._spawn(h, at);
       this._visitorsList();
+      if (h.mirror) this._changed();
     }
 
     _hostExit(m) {

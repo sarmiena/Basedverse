@@ -507,7 +507,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `bans` | `bans` [{`key`, `name`, `voice`, `chat`}] | whom this office's user keeps out of their room's voice or chat (8.9), as it changes. `ready` has `bans` |
 | `ignored` | `ignored` [{`key`, `npc`?, `name`}] | 3.3: whom this office's user ignores in chat (8.9), as it changes. `ready` has `ignored` |
 | `banned` | `key`, `name`, `voice`, `chat` | a room that keeps this office's user out of its voice or chat (8.9), or no longer (both false). `ready` has `banned_by` |
-| `enter` / `exit` | `channel`, `pose`? {`x`, `y`, `z`, `yaw`, `air`} (for `enter`) | a watcher stepped into this room, there (host side: spawn it, as a visitor), or out of it; no `pose`: a link going there, spawned where newcomers go |
+| `enter` / `exit` | `channel`, `pose`? {`x`, `y`, `z`, `yaw`, `air`} (for `enter`) | a watcher stepped into this room, there (host side: spawn it, as a visitor), or out of it; no `pose`: a link going there, spawned where newcomers go. 4.3.2: to a user page too (engine/SPEC.md 3.4), which has them inside: heard in person, and in its panel's rows |
 | `enter_refused` | `channel`, `reason` (`"full"`, or `"moved"`: a visit to a room began, and this office stepped out) | stepping into a watched room was refused, or undone: outside it |
 | `online` / `offline` | `office`, `knocking`, `lobby_info` {`title`, `motd`, `admin`}, `lobby_voice` (4.0: the lobby carries voice knocks and huddles) / `away`? | the lobby session came up (after a drop: the same office if it resumed), with this office's own knocks still waiting ([{`id`, `to`, `link`?}]) and what the lobby's welcome said of itself (`ready` has `lobby_info` too) / went down: `away: true` when the page took it out (`leave_lobby`), `false` when it is on its way back (`join_lobby`), absent when the lobby is out of reach |
 | `lobby` | `offices`: [{`id`, `name`, `status`, `sim`, `max_visitors`, `visitors`, `visiting`, `ready`, `key`, `watchers`, `world`, `links`, `whisper`, `voice`?, `about`}] | every change (6.3) |
@@ -1227,8 +1227,12 @@ chat, everyone in it hears everyone else, wherever they are.
 - **One way a person.** Two people may reach each other more than one way (standing near each other and on a
   call, in a room's voice and near): each hears the other one way only, the first of: in person (in the same room,
   or across a plot's side, within 45 m), on a call, in a room voice. The listener's visit-client chooses, by what it
-  knows (who is near, as the room says; its calls; its room voice); a voice comes to the page saying which (5.4).
-  So no voice is heard twice, behind itself.
+  passes on (4.3.2): a call or a room voice waits while that person's voice goes to the same page in person, and
+  goes again once it stops (their microphone off: a huddle or a call runs it, and in person they are heard only
+  while it is on); a voice comes to the page saying which (5.4), and the page plays the first it hears from where it
+  is. So no voice is heard twice, behind itself, and none goes silent for being near. Someone on a call with you, or
+  in your room voice, near you in person, is heard from where they stand as loud as that way, not fading with
+  distance (4.3.2).
 - **A room's voice.** Every room has one; whoever is in its chat (8.9: in it, or linked with it) may join it
   (`v.joinVoice`, the chat window's 🎧), one room voice at a time. Its owner's visit-client carries it: a member's
   page sends its voice there, and it passes each on to everyone else in it, as its owner's own. In it,
@@ -1267,7 +1271,8 @@ chat, everyone in it hears everyone else, wherever they are.
 - **Over WebRTC** (4.2, #71). Each page connects to every office it speaks to or hears from, as its visit-client says
   (`rtc_want`): its own office, always; the room its user is in; a call's other side (both ways: on speaker, those
   near that phone are heard from there); a friend across a plot's side (one link with them, one with a call on
-  first); the room voice it joined. One RTCPeerConnection each (`rtc_offer`, answered by that office: its own over the
+  first); the room voice it joined (a huddle's by the voice visit that joined it, 4.3.2: never with the page's voice
+  in person in its starter's room, passed on there to whoever is near). One RTCPeerConnection each (`rtc_offer`, answered by that office: its own over the
   page's WebSocket, another's over the link with it, `{"rtc_offer"}`, whose key the link has proved), all of an
   office's on one UDP port (`--media-port`). One no longer named goes silent, and is closed 5 s on unless it is named
   again meanwhile (a call that rings again: no gap to connect again); one that fails is made again 3 s on. Nothing of
@@ -1284,8 +1289,10 @@ chat, everyone in it hears everyone else, wherever they are.
     Packets are forwarded as they come (nothing held back or reordered there), each slot's sequence numbers and
     timestamps its own, carried on across a change of speaker, every loss on the way still a gap: the browser's own
     jitter buffer and loss concealment play it, and decode Opus's in-band FEC.
-  - **One way a person**, as above: each office passes one speaker on once to each connection (in person first); a
-    page plays one speaker by one slot only (in person first, then a call, then a room voice).
+  - **One way a person**, as above: each office passes one speaker on once to each connection (in person first: a
+    call or room voice of theirs not while their voice has gone to it in person in the last 200 ms, 4.3.2); a page
+    plays one speaker by one slot only, the first of in person, a call, a room voice that it hears now (4.3.2: in
+    person only from where it has them, within 45 m; else the next).
   - **Its servers**: the lobby's STUN and TURN (6, `ice` in its welcome). An office asks its STUN server where it is
     seen from outside, so a page reaches it from anywhere (its main interface's address, and that); a page connects
     by both, and by TURN where no direct way goes (a phone's mobile network, a strict NAT). Its TURN login is its
