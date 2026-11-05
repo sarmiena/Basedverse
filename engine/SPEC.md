@@ -382,13 +382,14 @@ const v = await Visit.connect({ port, token, sim: { name, version } });
 - **As the host**: `v.host(...)` and its hooks as today; `v.sayAs(id, name, text)` for the room's own figures; `v.visitors[i].owner` true for the owner's visit (4);
   `v.owner` (`{ id, channel }` or null) and `"change"` as the person comes and goes; `voice_where.me` from where
   the room has the owner (nothing for the page to do). What is the user's refuses with `wrong_role`: `v.say`,
-  `v.setMic`, `v.avatar`, `v.possessions`, `v.world`, `v.knock`, `v.link`, … The stage, panel, map and chat
-  window are not made (`Visit.panel` and the others throw `wrong_role`): nobody would see them. `v.listener`
-  is a no-op.
+  `v.setMic`, `v.avatar`, `v.possessions`, `v.world`, `v.homeView`, `v.knock`, `v.link`, … No UI is made on it
+  (5.0: Visit makes none on any page; the reference UI's pieces throw `wrong_role` here): nobody would see it.
+  `v.listener` is a no-op.
 - **As the user**: `v.host(...)` throws `wrong_role`. `v.home` is the owner's visit (`{ id, channel, paused }`
   or null, `"change"` as it changes). Everything personal works as today. Two ways to draw home:
-  - **`Visit.stage(v)`** draws home full-window as it draws a visited room, first person, the room's
-    `walk` at once: the vanilla client page is `connect`, `stage`, `panel`.
+  - **`v.homeView(element)`** draws home in an element of the page's, as it draws a visited room, first person,
+    the room's `walk` at once (5.0; before, inside `Visit.stage`): the vanilla client page is `connect`, then the
+    reference UI's `VisitUI.stage` (on `v.homeView`) and `VisitUI.panel` (../visit/UI.md).
   - **`v.world({ three, renderer, ground, gap, bubbles, speaking, self })`**, for a room with a camera of its
     own (third person, from above): no `scene`, since the page has none. Visit reads home from the host's stream
     with the page's `three` (or fetches the host's revision, as a stage does), makes it the office's own plot,
@@ -431,8 +432,9 @@ The sim, as visit/INTEGRATING.md step 5 has it, with these rules:
 
 What a person loads, with a session:
 
-- `Visit.connect({ url: "/visit/ws", role: "user" })`, then the vanilla pieces (`Visit.stage`, `Visit.panel`,
-  which has the chat window, map and more), or a camera of its own with `v.world` (7).
+- `Visit.connect({ url: "/visit/ws", role: "user" })`, then the vanilla pieces (5.0: the reference UI's
+  `VisitUI.stage` and `VisitUI.panel`, which has the chat window, map and more: the room's copy, ../visit/UI.md), or
+  a camera of its own with `v.world` (7).
 - The room's own HUD round it, talking to the workroom's server as it likes (the gates are the server's:
   sessions, keys, ../auth/INTEGRATING.md step 5). It never holds the scene's truth: what it draws came from the
   host.
@@ -532,7 +534,7 @@ test (an office's room hosted by the engine inside its `visit`).
 - **Phones (8.8).** The phone is the room's object (host: `phone`); ringing, answering, the speaker are the
   person's (user: `call`, `speaker`); where a call's audio is played is the user's page. Step 1 of section 11
   finds whether anything else is needed.
-- **The owner's camera in the stage.** `Visit.stage` is first person. A vanilla third-person view of home
+- **The owner's camera in the stage.** `v.homeView` (the reference stage's) is first person. A vanilla third-person view of home
   (behind the person's own avatar) may be wanted for the client page; `v.world` with a camera of the room's
   does it today.
 

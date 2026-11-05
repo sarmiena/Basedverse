@@ -44,7 +44,8 @@ visit/
 - **visit.js**: the library in the workroom's page, served by its own visit-client (so the two always
   match). It talks only to that visit-client: it sends the room's scene to its visitors and moves them with the
   host hooks, draws the scene of the room it visits (with that room's three.js, checked against its hash), and
-  captures the visitor's input. Optionally, a ready-made lobby panel and stage.
+  captures the visitor's input. No UI in your page (5.0): that is your room's, built from its API, or a copy of
+  the reference UI in [examples/ui](examples/ui/visit-ui.js) ([UI.md](UI.md)).
 - **The lobby** ([../lobby/](../lobby/)): presence, knocks, and introducing visit-clients to each other.
   It speaks version 1 (browser sims streaming their own view to a group, as today) and version 2
   (visit-clients) side by side.

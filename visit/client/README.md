@@ -48,4 +48,4 @@ knows the user), each with a data directory of its own.
 | `src/pg.rs` | the Postgres it carries: made, started, its roles and schemas brought up to date, stopped; `visit import` |
 | `src/runtime.rs` | what it carries, unpacked once per version into the user's runtime directory; the data directory's default |
 | `build.rs` | the pinned Postgres and Chrome, built in |
-| `web/visit.js` | the library: the lobby's state and actions, sending a room's scene and drawing a host's, the host hooks, input, `Visit.walk`, `Visit.panel`, `Visit.stage` |
+| `web/visit.js` | the library: the lobby's state and actions, sending a room's scene and drawing a host's, the host hooks, input, `Visit.walk`, the views (`v.view`, `v.homeView`, `v.world`); no UI in the page since 5.0 (../examples/ui/visit-ui.js, the reference UI rooms copy) |

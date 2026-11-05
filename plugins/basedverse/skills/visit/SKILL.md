@@ -45,7 +45,7 @@ feature in a workroom's code. If the changelog has something newer than the tabl
   asks otherwise. Every way the workroom differs from vanilla goes in its `VISIT.md`, in the user's own words, with
   the date.
 - **A deviation replaces or turns off a Visit default**, and nothing else. Examples: the room's own phone
-  (`model: false`), its own 🔊 (`speaking: false`), its own panel instead of `Visit.panel`, a feature switched off.
+  (`model: false`), its own 🔊 (`speaking: false`), its own panel instead of the reference UI's (5.0: the room's copy of it, changed), a feature switched off.
   A choice Visit leaves to every room is not a deviation: what its landscape is, where the phone stands, which
   interactions it has, its avatar, where the panel goes. The feature stays **vanilla**, and the choice goes in the
   "how" column.
@@ -111,10 +111,10 @@ feature in a workroom's code. If the changelog has something newer than the tabl
 |---|---|---|---|
 | one program, `visit`: its database, sign-in and engine inside it; no Docker | 2.0 | steps 1–2; "Upgrading a 1.x room to 2.0" | `VISIT_PATH`, `VISIT_DATA_DIR` in the `.env`; the launcher starts `visit`, waits for its ready line |
 | connect, host, visit | 0.5 | steps 2–6 | `Visit.connect`, `visit.host(` |
-| panel, stage | 0.5 | steps 6–7 | `Visit.panel(`, `Visit.stage(` |
+| panel, stage (5.0: the room's own copy of the reference UI, ../visit/UI.md) | 0.5, 5.0 | steps 6–7; UI.md | `VisitUI.panel(`, `VisitUI.stage(` (before 5.0: `Visit.panel(`, `Visit.stage(`) |
 | links (link, corner, go there) | 0.8 | step 7 | `visit.link(`, or the panel |
 | world (friends' plots round yours) | 0.7 | step 9 | `visit.world(`, `world.frame(`, `world.render(` |
-| map | 0.9 | step 9 | `Visit.map(`, or the panel's Map |
+| map | 0.9 | step 9 | `VisitUI.map(` (before 5.0: `Visit.map(`), or the panel's Map |
 | where friends put you | 0.10 | step 9 | `visit.seen`, the panel's notes |
 | avatars | 0.9 | step 5 | `visit.avatar(`, `entry.avatar` |
 | interactions | 0.9 | step 5 | `visit.interactions(`, `userData.visitPoint` |

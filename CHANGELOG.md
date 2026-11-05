@@ -10,6 +10,56 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v5.0.0 — 2026-11-05 — your page's UI is your own: visit.js draws none, and a reference UI to copy (#82)
+
+Nothing changes a protocol's name: offices on 4.x and 5.0 meet and visit each other as before. What changes is the
+library a page loads, and it breaks a page that calls `Visit.panel`, `Visit.chat`, `Visit.map` or `Visit.stage`.
+
+- **visit.js puts no UI in your page.** The panel (the HUD), the chat window, the target card, the map, the stage's
+  bar, the ⏱ corner and the lightbox are no longer Visit's. Rooms used to reach into them (a row added inside the
+  panel, the card turned off for their own), and any upgrade that changed their markup could break that.
+  `Visit.panel`, `Visit.chat`, `Visit.map` and `Visit.stage` now throw, and the error says where they went.
+  - Visit still draws what is inside the 3D views it is given: the room your user visits (`v.view`), your own room
+    (`v.homeView`, new), your world (`v.world`). It draws the people in them, chat bubbles, the 🔊 over speakers and
+    a view's crosshair, and it plays voices and room sounds.
+- **The reference UI, [visit/examples/ui/visit-ui.js](visit/examples/ui/visit-ui.js):** the UI Visit used to draw,
+  rewritten on the public API alone (`VisitUI.panel`, `.chat`, `.targetCard`, `.map`, `.stage`, `.perf`). A room copies it
+  into its own tree and owns it from then on. visit-client never serves it, so an upgrade never changes it.
+- **[visit/UI.md](visit/UI.md):** each piece, what it does, and what it is built on, with screenshots of the reference.
+- **New in the API, for a page's own UI** (visit/SPEC.md 9):
+  - `v.plot`, `v.plotMetres`, `v.currentWorld`;
+  - `v.watches`: the plots your world shows, and how each room draws your user;
+  - `v.nameOf(key)`, `v.hasPhone`, `v.roomHere`;
+  - `v.actionsOf(target)` and `v.mayTalk(figure)`: a target card's buttons;
+  - `v.setMount(id)`;
+  - `v.homeView(element)`: your own room, first person, for a page without a world;
+  - `v.perfOn`, and the `"perf"` event with each second's ⏱ row;
+  - `world.layout()`, and each of `world.plots` with its `size`;
+  - `Visit.limits`.
+- **`v.perf(true)` measures, and no longer draws a corner.** The reference's `VisitUI.perf(v)` draws it; its panel
+  makes one.
+- **The `chat_box` event is gone** (the card's Say and Whisper pointing the chat box): the reference's
+  `ui.chat.aim(target)` does it.
+
+**What an integration does:**
+
+1. **Upgrade visit-client and its visit.js together**, as always.
+2. **Copy `visit/examples/ui/visit-ui.js` into your room's own tree**, serve it beside your page, and load it with a
+   `<script>` (before or after visit.js: it reads `Visit` when called).
+3. **Rename the calls:**
+   - `Visit.panel(...)` → `VisitUI.panel(...)` (same options: `{ chat: false }`, `{ card: false }`);
+   - `Visit.chat` → `VisitUI.chat`;
+   - `Visit.map` → `VisitUI.map`;
+   - `Visit.stage` → `VisitUI.stage`.
+
+   Its classes (`.visit-panel`, `.visit-folded`, `.visit-chat`, ...) and `--visit-chat-left`/`--visit-chat-bottom`
+   are as they were, so your CSS still fits.
+4. **Make your copy hold whatever you added to Visit's UI.** A row you appended inside the panel goes into your copy's
+   panel; a card you turned off for your own can leave your copy. Write it down in your `VISIT.md`.
+5. **A page that emitted `chat_box` itself** calls `ui.chat.aim(...)` instead. A page that relied on `v.perf(true)`
+   drawing its corner makes one with `VisitUI.perf(v)`, or with `VisitUI.panel`.
+6. visit/UI.md, "Upgrading a 4.x room", has it in full.
+
 ## v4.3.2 — 2026-11-04 — voices heard near each other in a huddle, and as soon as someone steps in
 
 Nothing changes a protocol's name: offices on 4.2 and 4.3 meet and visit each other as before. Each fix is the

@@ -165,13 +165,14 @@ Rules the server page keeps (SPEC 8.1):
 </div>
 <div id="panel"></div>
 <script src="/visit/visit.js"></script>
+<script src="/visit-ui.js"></script>   <!-- your copy of basedverse's visit/examples/ui/visit-ui.js (5.0: ../visit/UI.md) -->
 <script>
 (async () => {
   // Through your server's relay (step 4): a path on this origin, no token, role "user".
   const v = window.visit = await Visit.connect({ url: "/visit/ws", role: "user", sim: { name: "my-workroom", version: "2.0" } });
   v.on("error", e => console.warn("visit:", e.code, e.message));
-  Visit.stage(v);                                         // home, full-window, first person; a visit or a link as before
-  Visit.panel(document.getElementById("panel"), v);       // the lobby, the chat window, the map, voice, calls, ⏱
+  VisitUI.stage(v);                                       // home, full-window, first person (your copy of the reference UI,
+  VisitUI.panel(document.getElementById("panel"), v);     //   ../visit/UI.md); the lobby, the chat window, the map, voice, calls, ⏱
   v.setName(await whoAmI());                              // the name your server has for this session, if it does
 })().catch(e => showNoVisit(e));                          // your room's HUD still works without Visit
 </script>
@@ -435,7 +436,7 @@ Through the HTTPS proxy of auth step 10, on your LAN first, then from outside it
 | the client page's `new WebSocket("/visit/ws")` fails with 403 | the browser's `Origin` is not in `VISIT_ORIGINS` (the relay passes it through): add the origin the address bar shows |
 | the client page connects, but `v.home` stays null | no host: the engine is down or still loading (`/health`), or its page hosts nothing (`v.host` not called: its console, in the engine's log) |
 | `wrong_role` in the client page's console | your client page calls a host-only method (`v.host`, `v.interactions`, `v.listener`): move it to the server page |
-| `wrong_role` in the engine's log | the server page calls a person's method (`v.say`, `v.setMic`, `v.avatar`, `v.setName`, `v.world`, `Visit.panel`): move it to the client page |
+| `wrong_role` in the engine's log | the server page calls a person's method (`v.say`, `v.setMic`, `v.avatar`, `v.setName`, `v.world`, `v.homeView`, the reference UI's `VisitUI.panel`): move it to the client page |
 | the owner walks through walls, or faster than guests do | your `move` treats `who.owner` differently than you meant; or the client page gives its own position to `world.frame` instead of taking `at` back |
 | the stage shows the room, but the owner's own model is missing | the user's page draws itself (SPEC 4): in a stage there is nothing to draw (first person); with `v.world`, put your avatar at `at` |
 | a sign or a screen in the room never updates | its canvas is a WebGL canvas read back (`toDataURL`): draw it on a 2D canvas, which is real in the engine |
