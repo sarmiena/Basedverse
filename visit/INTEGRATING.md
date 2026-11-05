@@ -33,15 +33,19 @@ You get two shared pieces you do not modify:
   visitors and moves them with your hooks, draws the scene of the room you visit, captures input.
 
 You write: a launcher step (start `visit` with a token), a way to hand the token to your page, your
-scene and two host hooks, a little UI (or use the ready-made panel), and a few lines in your drawing loop for
-the world. Your page never opens any connection to another machine itself.
+scene and two host hooks, your UI (since 5.0 your page's own: copy the reference UI, or build one from
+[UI.md](UI.md)), and a few lines in your drawing loop for the world. Your page never opens any connection to another machine itself.
 
 ## The vanilla experience
 
 Every room that takes Visit's defaults looks and works the same for the people visiting it, and that is the point:
-take them unless your user asks for something else. The defaults are Visit's own ready-made pieces:
+take them unless your user asks for something else. Since 5.0 (#82) the pieces in your page (the panel, the chat
+window, the card, the Map, the stage, ⏱) are no longer drawn by visit.js: they are the **reference UI**,
+[examples/ui/visit-ui.js](examples/ui/visit-ui.js), which you copy into your room's own tree, load with your page, and
+then own ([UI.md](UI.md): each piece, and what it is built on). An upgrade of Visit never changes your copy. The
+defaults:
 
-- **the panel** (`Visit.panel`): 🌐 Lobby (the lobby's page in a tab, as your workroom: its chat, who is here, your
+- **the panel** (`VisitUI.panel`): 🌐 Lobby (the lobby's page in a tab, as your workroom: its chat, who is here, your
   worlds, knocking; your door stays in your room), 📱 Phone (the same, as a QR code for a phone) and Link a browser
   (the code a browser at the lobby's page shows; the browsers linked, to unlink), one row a person (in the lobby, or
   linked with you: in your room, linked; open it for Go there, their look in your room, Kick, Unlink; their line; 🗺 +
@@ -50,7 +54,7 @@ take them unless your user asks for something else. The defaults are Visit's own
   End it; **Find** the lobby's worlds, **New** one of your own, public or with a password), your line in the lobby's
   list, the people you can reach (your worlds', your visitors; 🎧 to talk, someone who wants to talk ringing), your door (open to your worlds, closed), your world's Map (and how many rooms you picked, of 8), the microphone and who is near, calls (📞 call, Pick up, speaker / handset, Hang up), notes (where
   a friend's world put your room), and ⏱ (how this page is doing);
-- **the chat window** (the panel's, `Visit.chat`): bottom left, as in a game. Enter to type, and say a line to
+- **the chat window** (the panel's, `VisitUI.chat`): bottom left, as in a game. Enter to type, and say a line to
   everyone near you (within 45 m, as your voice carries: 3.4.2), whisper to one person (`/w name`), say it in your
   room's chat (`/room`: everyone in it and linked with it) or a linked friend's (`/room name`), to the lobby (`/1`), or to one of your worlds
   (`/g name`, or `/2`, `/3`…); joining the lobby, it says the lobby's name and its message of the day; Tab finishes a name, else moves on to the next of those (Shift+Tab: back); 🎙 a voice
@@ -64,9 +68,9 @@ take them unless your user asks for something else. The defaults are Visit's own
 - **mounts** (`visit.ride`, M, the panel's "your mount"): Visit carries them and puts them under their rider in
   the room they ride into; what they are (models, names, paces) is your room's to say (`visit.possessions`), and the
   panel shows them once you give some;
-- **the stage** (`Visit.stage`): your own room, first person, for a page that draws no world (4.0: another's room is
+- **the stage** (`VisitUI.stage`, on `visit.homeView`): your own room, first person, for a page that draws no world (4.0: another's room is
   visited through your world);
-- **the Map** (`Visit.map`, from the panel): your world from above;
+- **the Map** (`VisitUI.map`, from the panel): your world from above;
 - **in your world** (`visit.world`): chat bubbles over whoever said something, and a 🔊 over whoever you hear
   speaking, drawn by Visit (`bubbles`, `speaking`);
 - **the phone** (`visit.phone(true, { at })`): Visit's own desk phone on a stand where you put it, ringing, its handset
@@ -76,9 +80,9 @@ take them unless your user asks for something else. The defaults are Visit's own
   `spawn` and `move` decide (step 5 suggests some);
 
 What has no default is your room's own: what your landscape is, where the phone stands, which interactions (cosmetic
-only, step 5), your user's avatar. When your user asks for something else (their own panel, a phone of their own, no
-🔊), it is theirs: switch that default off (`bubbles: false`, `speaking: false`, `model: false`, your own UI from
-`visit.*`) and write it down in your workroom (a `VISIT.md`, say: what, why, in their words), so that an upgrade keeps
+only, step 5), your user's avatar. When your user asks for something else (a panel of their own, a phone of their
+own, no 🔊), it is theirs: change your copy of the reference UI, or switch Visit's default off (`bubbles: false`,
+`speaking: false`, `model: false`), and write it down in your workroom (a `VISIT.md`, say: what, why, in their words), so that an upgrade keeps
 it rather than putting the default back. basedverse's `basedverse` plugin for Claude Code keeps that file for you.
 
 ## Before you start
@@ -500,9 +504,9 @@ visit.host({
   answers, `"everyone"`, `"owner"` or `"none"`, so a card offers Say and Whisper only to those it would answer). Your user, and
   anyone in your room, may have one of its figures or people as a **target**: Visit picks it the way you say
   (`visit.host({ ..., targeting: "click" | "near" | "none" })`; click by default), or your page picks it its own way
-  (`visit.setTarget({ kind, id, name })`, and `visit.targeting(false)` so Visit picks none). Visit's panel shows a
-  small card for it; your world draws its own instead with `Visit.panel(element, visit, { card: false })` and
-  `visit.on("target", t => …)`. A line meant for a figure reaches your room's page, aloud or whispered, whoever said
+  (`visit.setTarget({ kind, id, name })`, and `visit.targeting(false)` so Visit picks none). The reference UI shows a
+  small card for it (`v.actionsOf(target)` for a figure's buttons); your world draws its own instead with
+  `VisitUI.panel(element, visit, { card: false })` and `visit.on("target", t => …)`. A line meant for a figure reaches your room's page, aloud or whispered, whoever said
   it: `visit.on("addressed", ({ figure, from, name, text, whisper }) => …)`, on the engine in your server page. Answer
   with `visit.sayAs(id, name, text)` (aloud), or `visit.sayAs(id, name, text, { to: from.id || "owner" })` (to them
   alone, a whisper). Whom your figures answer is yours to decide (`from.owner`: your user; an answer that costs you
@@ -585,13 +589,14 @@ someone they share a world with, and they walk onto it, as onto any ground of th
 Your world draws it with your own three.js, and Visit carries everything else (their input to its host, its scene
 to you, voices, chat). There is no knock to walk in, no link, and no stage drawing another's room.
 
-Still call the ready-made stage once, right after `connect`, if your page draws no world of its own:
+Still call the reference UI's stage once, right after `connect`, if your page draws no world of its own:
 
 ```js
-Visit.stage(visit);
+VisitUI.stage(visit);
 ```
 
-It draws your user's own room, first person, for a page without a world (engine/SPEC.md 4). `visit.viewFocused` stays
+It draws your user's own room, first person, for a page without a world (engine/SPEC.md 4): Visit draws it in an
+element of the stage's (`visit.homeView(element)`), and the stage puts a line under it. `visit.viewFocused` stays
 false (nothing else takes your keys), so a room's own keys need no guard. With a world (step 9), you need neither.
 
 The host's scene is drawn by your page itself: nothing for you to do. Your world fetches the host's release of
@@ -611,10 +616,15 @@ so); signing out takes it out of the lobby at once, and signing in brings it bac
 sign-in your server already checks is the one that counts. The lobby (`VISIT_LOBBY`: basedverse's is
 `wss://basedverse.app/`, or one anyone runs, ../lobby/README.md) checks your office's key as it joins.
 
-The quickest way: the ready-made panel, in any element of yours (a corner of the page, say):
+The quickest way: the reference UI's panel (copied into your tree, loaded with your page; [UI.md](UI.md)), in any
+element of yours (a corner of the page, say):
+
+```html
+<script src="/visit-ui.js"></script>   <!-- your copy of examples/ui/visit-ui.js -->
+```
 
 ```js
-Visit.panel(document.getElementById("visit-panel"), visit);
+const ui = VisitUI.panel(document.getElementById("visit-panel"), visit);
 ```
 
 It lists the people your user can reach (4.0, #57: worlds are the way to meet; no Knock, no Link): those in a world
@@ -757,7 +767,7 @@ back out.
 
    `world.render` draws your room clipped to your plot: anything of yours outside it (a sky dome, a huge ground)
    is cut there; use `scene.background` for a sky. A post-processing chain (`EffectComposer`) does not fit it.
-5. **Where they sit.** The panel's **Map** (`Visit.map(visit).open()`) shows your world from above: drag a
+5. **Where they sit.** The panel's **Map** (`VisitUI.map(visit).open()`, the reference UI's) shows your world from above: drag a
    friend's room where you want it, turn it, or type where its middle goes; kept by `visit`, across reloads.
    Your layout is yours alone, nobody agrees to it: each friend is told only where their own room sits in it, and
    picking a friend on the Map shows their view of the two of you (where their world has your room). Nothing to
@@ -849,7 +859,7 @@ marked offline, walked into but not through its walls; start it again, and the p
 | the visitor's view says "walking into …'s room" and stays | the host's page is not sending its scene (its console says why), or the visitor's page could not load three.js: see the next row |
 | the visitor's view says "cannot draw …'s room" | its page could not load the host's three.js (a Content-Security-Policy blocking cdn.jsdelivr.net or `blob:` scripts, step 6; or no network to the CDN), or its browser has no WebGL 2 |
 | visitors walk through walls | your `blocked` does not cover them, or your `move` ignores it |
-| your room or a visit feels slow, or stutters | turn on the panel's ⏱ (`visit.perf(true)`): each second it shows frames, stalls (long tasks), Visit's own work by part, and your room's drawing apart, with its draw calls a frame (colour, and shadows apart: every mesh that casts a shadow is drawn again for each light that casts them); "copy report" gives the last two minutes. A stall with "send" or "whole" in it is your scene's size; slow frames with Visit idle are your room's own drawing (or the machine: a video call takes its share); "pictures sent" every second is a canvas you mark changed every second |
+| your room or a visit feels slow, or stutters | turn on the panel's ⏱ (`visit.perf(true)`; the reference UI's corner shows it, UI.md): each second it shows frames, stalls (long tasks), Visit's own work by part, and your room's drawing apart, with its draw calls a frame (colour, and shadows apart: every mesh that casts a shadow is drawn again for each light that casts them); "copy report" gives the last two minutes. A stall with "send" or "whole" in it is your scene's size; slow frames with Visit idle are your room's own drawing (or the machine: a video call takes its share); "pictures sent" every second is a canvas you mark changed every second |
 | a visit feels laggy | read the stage's numbers (`visit.stats`): input to screen is the visitor's own drawing (a frame's time, or its machine is busy drawing); frames a second low means the host's room is heavy for the visitor's machine. Walking that lags behind the keys means the host gave no `walk`; things in the room moving late, a high link round trip, or `relay` (a relay is slower and rate-limited) are the network |
 | visitors see their own body from inside | mark each body `userData.visitor = entry.id` (step 5) |
 | visitors drift back as they walk | your `walk.speed` is not the speed your `move` gives `Visit.walk`, or your `move` is not `Visit.walk` (leave `walk` out) |
@@ -871,7 +881,8 @@ integration does about it**. To upgrade a workroom that works, read it from the 
    **From 1.x** (visit-client, auth-client and the rest), do "Upgrading a 1.x room to 2.0", below, instead of this
    list, then come back for the versions after 2.0.
 3. Do each "what an integration does" of the versions you skipped, in order, and add any new setting it
-   names to the `.env` (setup adds its own).
+   names to the `.env` (setup adds its own). **Across 5.0** your page's UI becomes your own: [UI.md](UI.md),
+   "Upgrading a 4.x room".
 4. Run step 8 again, and step 9's check.
 
 ## Upgrading a 1.x room to 2.0

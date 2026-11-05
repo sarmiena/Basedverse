@@ -34,7 +34,7 @@ how-to. This file is the contract behind it, for whoever builds or changes the s
 | **visit.js** | the library, in the sim's page. Talks only to its own visit-client. Sends the room's three.js scene to its visitors and moves them with the sim's hooks; draws the scene of the room it visits; captures input. Served by the visit-client itself, so the two always match. | shared, identical for everyone |
 | **lobby server** | presence, knocks, worlds, the lobby's chat and whispers, and introducing visit-clients to each other (`basedverse-lobby/4`, section 6). Anyone may run one (../lobby/README.md); a workroom joins the one its `VISIT_LOBBY` names (basedverse's: `wss://basedverse.app/`). | shared, one server per lobby |
 | **relay** | an [iroh](https://iroh.computer) relay, for links between machines that cannot reach each other directly. Encrypted end to end; it cannot read what it carries. | the lobby's own (`lobby --relay-port`), for its offices only, as its welcome names it (`relays`); a lobby that runs none: iroh's public relays |
-| **the sim** | its own room, made with three.js (r125 to r186); a launcher step; its scene and two host hooks (`spawn`, `move`); its UI (or the library's default panel). | each sim |
+| **the sim** | its own room, made with three.js (r125 to r186); a launcher step; its scene and two host hooks (`spawn`, `move`); its UI, its own since 5.0 (UI.md: built on the library, or a copy of the reference UI). | each sim |
 
 The rule that holds it together: **a page only ever talks to its own visit-client**, and **only
 visit-clients talk to each other**. A page reload breaks nothing but the localhost hop.
@@ -1388,7 +1388,7 @@ when their office is linked with this one, else by their office's (the lobby kno
   room, from in it or outside it (over its owner's `visit:me`, over visitors' marked bodies; never one's own, from
   one's own eyes) and a world (`v.world`: at home over its user and its visitors; on each plot, over its owner and
   its visitors; and over its user). A room without a world draws them itself, from `v.chats` and the `chat` event.
-- **The chat window** (`Visit.chat`; the panel's): bottom left, as in a game. Enter to type a line, Enter to say
+- **The chat window** (the page's own since 5.0, UI.md; as the reference UI's `VisitUI.chat` has it): bottom left, as in a game. Enter to type a line, Enter to say
   it, Esc to stop; `/` opens it with the `/` typed, for a command. Where a line goes is before the box (Say, Tell
   <name>, To <name>'s room, Lobby), picked there or with `/s`, `/w <name>` (`/t`, `/tell`), `/r` (back to whoever
   last whispered to you), `/room <name>`, `/1` (`/l`), `/g <group>` (3.0.0; `/2`, `/3`… the user's groups in order) and a space, and it stays for the next line. Every line of
@@ -1451,8 +1451,8 @@ when their office is linked with this one, else by their office's (the lobby kno
   `title`, `about`, `actions`, the interaction types a card offers, and `talk`, whom it answers: `"everyone"` (the
   default), `"owner"` (its room's user alone) or `"none"`, a hint the card and the `@` picker follow; at most 32, 8 KB,
   never code). What shows is each
-  world's: Visit's panel has a small card (name, title, line, actions, Say, Whisper; a person's Link or Knock),
-  `card: false` none. **Lines meant for a figure**: said aloud with it as the line's `target` (`v.say(text, { target })`;
+  world's (5.0: the page's own, UI.md): the reference UI's card has the name, title, line, actions (`v.actionsOf`),
+  Say, Whisper and 🎧 Talk; `card: false`, none. **Lines meant for a figure**: said aloud with it as the line's `target` (`v.say(text, { target })`;
   the chat window's `@` offers the room's figures, and a line that mentions one is meant for it), everyone who can see
   the sayer has the line, and the room's page has `addressed` too; or whispered to it (`to: { figure }`), the room's
   page alone has it (`addressed`, `whisper`), the sayer keeps it as their own ("To [it]"). The room's page (on the
@@ -1684,7 +1684,8 @@ v.avatar(object, { unit })  // your own body, for rooms that show their visitors
                             //   draws you, { channel, key, name, look, eyes, problem }
 v.possessions([{ id, name, object, unit, mount, fly, speed, lift }])   // what your user owns (8.11), as your room makes them
 v.mounts                    // what they can ride: [{ id, name, fly, speed, lift }] (none until your room gives some)
-v.ride(id); v.riding; v.mount   // get on a mount (null: off); what they ride; the one M (the panel's) gets them on
+v.ride(id); v.riding; v.mount   // get on a mount (null: off); what they ride; the one a page's ride (M, in the reference UI) gets them on
+v.setMount(id)              // 5.0: that one chosen (kept in this browser); while riding, they change to it
 v.rideSpeed; v.rideLift; v.rideFly   // their mount's, for your own room at home: times walking pace, metres up, flies
 v.setMic(on); v.mic         // your microphone (8.7): on, those near your user hear them, and those in a room voice with them (remembered)
 v.voices; v.voiceRange      // who your user can hear, near them (as the room's visit-client says; across a plot's side, too): [{ key, name,
@@ -1707,8 +1708,9 @@ v.bans; v.banOf(key)        // whom you keep out: [{ key, name, voice, chat }]; 
 v.bannedBy                  // rooms that keep you out: [{ key, name, voice, chat }]; the "banned" event as it changes
 v.listener({ x, y, z, yaw })   // where your user is in your room, for a room that draws no world (a world says it)
 v.landscapeChanged()        // something marked userData.visitStatic (8.10) changed in itself: its landscape goes again
-v.perf(on); v.perfReport()  // telemetry (the panel's ⏱; remembered in this browser; ?visit-perf=1): a corner of the page,
+v.perf(on); v.perfOn; v.perfReport()   // telemetry (a page's ⏱; remembered in this browser; ?visit-perf=1): measured
                             //   each second, this page's frames and stalls (long tasks) and Visit's own work by part (ms);
+                            //   5.0: Visit draws none of it: "perf" gives each second's row (UI.md has its fields),
                             //   perfReport(): the last two minutes, a row a second, each with this Visit's version
                             //   (`visit`, as `Visit.version`); with a world, `draws`: { colour, shadow }, its drawing's
                             //   draw calls a frame (4.3.1; three.js's renderer.info leaves the shadow passes out).
@@ -1727,7 +1729,7 @@ v.held; v.unhold(id)        // those whispers, still kept by your visit-client: 
                             //   one taken back. "held_sent": one passed on, now they are in the lobby
 v.unseen; v.read(conversation)   // the mailbox (8.9): { count, conversations: [{ conversation, count }], lines } ("unseen"
                             //   event); its lines of a conversation read (none: all of them)
-v.attention(on)             // someone is looking at this page's chat (Visit.chat says it, by itself): what comes is seen
+v.attention(on)             // someone is looking at this page's chat (its chat window says so): what comes is seen
 v.chatTargets; v.lobbyChat  // whom say(text, { key }) can reach: [{ key, name }]; the lobby carries chat
 v.chats                     // the lines over heads still showing where you are and in your room: [{ key, name, text, mine,
                             //   owner, id, channel }]
@@ -1781,14 +1783,13 @@ v.figures([{ id, name, title, about, actions, talk }])   // host: your room's fi
 v.on("addressed", e)               // host: { figure, from: { id | owner, key, name }, name, text, whisper }: a line for a figure
 v.sayAs(id, name, text, { to })    // host: a figure's line; with to (a visit's id, or "owner"), to them alone (a whisper)
 v.host({ ..., targeting })         // "click" (default) | "near" | "none": how Visit picks a target for anyone in your room
-Visit.panel(element, v, { card: false })   // no target card: your world draws its own
 v.ignore(key, { npc, name }); v.unignore(key, { npc }); v.clearIgnored()   // 3.3: whom your user ignores in chat (8.9): a
                    //   person by their key, a room's figure by that room's key and its id; at most v.maxIgnored (50)
 v.ignored; v.isIgnored(key, npc)   // [{ key, npc, name }]; "ignored" as it changes
 v.sounds({ kind: file })           // 3.4, host (8.13): your room's sounds (a Blob, ArrayBuffer or URL each): a Promise of { kind: id }
 object.userData.visitSound = { kind, volume, ref, far, bed }   // a loop from that thing (bed: everywhere in your room)
 v.soundAt(objectOrPoint, kind, { volume, ref, far })   // host: one of your room's sounds, once, from there, for everyone in it
-v.roomSounds; v.setRoomSounds(on)  // the room's sounds on or off on this page (the panel's 🔈), kept in this browser
+v.roomSounds; v.setRoomSounds(on)  // the room's sounds on or off on this page (a page's 🔈), kept in this browser
 v.ownSounds(false)                 // your own room's sounds: your page plays them itself (Visit, for your visitors only)
 v.pick(key, name); v.unpick(key); v.isPicked(key)   // 3.3: a room in your world, or out of it: a key from v.offices,
                    //   or (proved by the link) a visit's peer.key; at most v.maxPicks (8: "too_many" past it)
@@ -1832,8 +1833,9 @@ const me = world.frame(dt, { x, y, z, yaw, pitch, air, facing }, { forward, stra
                    //   is (flying), so a plot it steps into has it that high (8.2); up: as a visitor's input; facing: the
                    //   way your user faces (radians, as yaw), for their mount at home (8.11; else yaw)
 world.render(camera);   // 4.0 (#42): what never moves (a kept plot, a landscape on its plot's root) drawn merged by material
-world.plots        // [{ key, name, at: { x, z, turn }, rect: [x0, z0, x1, z1], inside, offline }] (offline: a picked plot
-                   //   kept while its office is away, 8.10)
+world.plots        // [{ key, name, at: { x, z, turn }, rect: [x0, z0, x1, z1], size, inside, offline, home }] (offline: a picked
+                   //   plot kept while its office is away, 8.10; size: unturned, in your room's units, 5.0; home: your own room's)
+world.layout()     // 5.0: world.plots laid out anew, now (a placement kept a moment ago is in it), for a map
 world.inside; world.point(target, { wheel }); world.leave(); world.release()   // wheel: notches, a wheel point (8.3)
 v.place(key, { x, z, turn }); v.unplace(key)   // yours alone: each friend in it is told where it is, nothing more
 v.on("seen", ({ key, name, at }) => …)          // a friend's world has your room somewhere new (at), or not (null)
@@ -1858,36 +1860,25 @@ Visit.checkModel(object, { three, unit, kind })  // a model as other rooms will 
                                                  //   eyes, seat, clips }; kind "avatar" (default) or "mount"
 Visit.bubble(THREE, text, unit)                  // a line's bubble (8.9), a sprite whose bottom sits where you put it (unit: metres
                                                  //   a unit), for a room that draws its own
-Visit.panel(element, v)                          // an optional ready-made lobby panel: one row a person (everyone in the lobby,
-                                                 //   and everyone linked with you, either way, linked first): Link (Knock, to an
-                                                 //   older office) with a message; linked: where you two stand (in your room, you
-                                                 //   are in their room, linked), Leave / Back to my room, and opened: where each
-                                                 //   sees the other, Go there, Put in my world, Show, their look in your room (their
-                                                 //   model / our model), Kick, Unlink (every link between you, and out of your
-                                                 //   world); 🗺 + / 🗺 ✓ by someone in a world with you: their room in your
-                                                 //   world, or out (3.3); links asked of you (Link, Not now);
-                                                 //   visitors look like (default: their model); your world (Map); voice (🎙, who is near); calls (Pick up,
-                                                 //   speaker / handset, Hang up), 📞 call (those linked with phones); the chat window (8.9);
-                                                 //   notes a while (where a friend's world put your room, 8.4, once it
-                                                 //   settles; a call that ended other than hung up); ⏱ telemetry on or
-                                                 //   off; stars, door, status, Go offline / online; Visit's version at
-                                                 //   its foot. Its caret (▾, first in its first line) folds it to that
-                                                 //   line and what asks you (a knock, a call ringing), remembered in
-                                                 //   this browser; `element` has the class visit-folded meanwhile, for
-                                                 //   a page's own rows beside the panel to fold with it:
-                                                 //   { element, chat, release(), say() (the chat window open to type) }
-Visit.panel(element, v, { chat: false })         // the panel without the chat window (yours instead)
-Visit.chat(v, { element, fade })                 // the chat window (8.9) on its own, bottom left (--visit-chat-left,
-                                                 //   --visit-chat-bottom move it): Enter or / to type; /s, /w name, /r, /room name, /1;
-                                                 //   fades `fade` ms (20000) after the last line: { element, open(), close(),
-                                                 //   release() }
-Visit.map(v)                                     // an optional ready-made map of your world from above (the panel's Map): drag,
-                                                 //   turn or type where friends' rooms sit; pick one: their view of you two;
-                                                 //   { element, open(), close(), shown, release() }
-Visit.stage(v)                                   // an optional ready-made visit view: the room visited full-window (with the
-                                                 //   link's numbers, Back to my room, Leave), or in a corner; a link starts in the
-                                                 //   corner, whose click offers Go there, Put in my world (with v.world), Unlink;
-                                                 //   { element, big, shrink(), grow(), release() }
+Visit.limits                                     // 5.0: what Visit and visit-client keep to, for a page's UI to say: { chatLen,
+                                                 //   chats, chatWindowMs, chatLog, maxPicks, maxIgnored, voiceSecs, voiceMax,
+                                                 //   voiceKinds, voiceRange }
+
+// 5.0 (#82): a page's own UI (UI.md). Visit draws none in the page: no panel, chat window, target card, map, stage
+// nor ⏱ corner (Visit.panel, Visit.chat, Visit.map and Visit.stage throw, saying where they went). The reference UI,
+// examples/ui/visit-ui.js, is one a room copies into its own tree. What it, or any, is built on, beside the above:
+v.plot; v.plotMetres        // your room's plot ({ center, size }, your room's units); its size in metres
+v.currentWorld              // the World your page made (v.world, or v.homeView's), or null
+v.watches                   // the plots your world shows (never your own room): [{ id, host: { id, key, name }, inside,
+                            //   paused, body: { look, eyes, problem } (how that room draws your user) or null }]
+v.nameOf(key)               // an office's name, as this page knows it ("" if none)
+v.hasPhone                  // your room has a phone (v.phone): a page offers v.phones to call
+v.roomHere                  // the room your user is in: { kind: "home" | "visit" | "plot", key (its owner's), conversation }
+v.actionsOf(target)         // a figure's actions the room it is in takes: [{ type, label }] (v.act runs one)
+v.mayTalk(figure)           // whether your user may talk to it (its `talk`)
+v.homeView(element)         // your own room, first person, in element, for a page that draws no world (engine/SPEC.md 7):
+                            //   WASD, Shift, Space/X and the mouse, a click pointing; { element, shown, release() }: it
+                            //   draws only while shown (not while visiting, nor once your page makes a world)
 ```
 
 **Poses** are the host's own: the library only stores them and passes them back. `Visit.walk` uses

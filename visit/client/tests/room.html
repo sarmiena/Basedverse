@@ -12,7 +12,9 @@
    wall, you as an orange block walking with WASD (Q and E turn), seen from behind, your friends' plots round it.
    ?role=host: the room's server page alone (engine/SPEC.md 8.1): the scene and its hooks, nothing of the person's;
    in the engine, visit-client from window.VISIT_ENGINE. ?role=user: the person's page alone (8.2): no room of its
-   own; its world draws home as its host sends it, the orange block walked by that host; the panel and the stage. */
+   own; its world draws home as its host sends it, the orange block walked by that host; the panel and the stage.
+   5.0 (#82): the panel and the stage are the reference UI's (../../examples/ui/visit-ui.js), as a room would copy it:
+   window.ui is the panel's handle (ui.chat, ui.card, ui.perf, ui.map). */
 html, body { height: 100%; margin: 0; background: #0d1117; color: #e6edf3; font: 13px system-ui, sans-serif; }
 #own { position: fixed; inset: 0; width: 100%; height: 100%; }
 #panel { position: fixed; top: 12px; right: 12px; width: 320px; }
@@ -21,6 +23,7 @@ html, body { height: 100%; margin: 0; background: #0d1117; color: #e6edf3; font:
 <body>
 <canvas id="own"></canvas>
 <div id="panel"></div>
+<script src="/examples/ui/visit-ui.js"></script>
 <script>
 // 4.0 (#57): the room this page's user is in, elsewhere: the watched plot they stand on (worlds are the way in).
 window.here = () => window.v ? [...v._watches.values()].find(w => w.inside && !w.home) || null : null;
@@ -196,8 +199,8 @@ async function buildView(v) {
     v.avatar(av);
     window.visitErrors = [];
     v.on("error", e => window.visitErrors.push(e));
-    Visit.panel(document.getElementById("panel"), v);
-    Visit.stage(v);
+    window.ui = VisitUI.panel(document.getElementById("panel"), v);
+    VisitUI.stage(v);
     return;
   }
   const t = await build(v);
@@ -261,8 +264,8 @@ async function buildView(v) {
     const hit = ray.intersectObjects(t.scene.children, true).find(h => !h.object.userData.visitor);
     window.points.push({ ...e, hit: hit ? hit.object.name : null });
   });
-  Visit.panel(document.getElementById("panel"), v);
-  Visit.stage(v);   // the room visited: full-window, or in a corner while back in this one
+  window.ui = VisitUI.panel(document.getElementById("panel"), v);
+  VisitUI.stage(v);   // the room visited: full-window, or in a corner while back in this one
 })().catch(e => { document.body.insertAdjacentHTML("beforeend", `<p style="position:fixed;bottom:8px;left:8px">${e.message}</p>`); console.error(e); });
 </script>
 </body>

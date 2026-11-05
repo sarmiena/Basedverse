@@ -26,6 +26,7 @@ import threading
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+EXAMPLES = os.path.join(HERE, "..", "..", "examples")   # visit/examples
 import websockets  # noqa: E402
 
 BIN, CDP_A, CDP_B, OUT = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
@@ -165,6 +166,14 @@ class Tab:
         r = await self.call("Page.captureScreenshot", format="png")
         open(os.path.join(OUT, name), "wb").write(base64.b64decode(r["data"]))
 
+    async def shot_of(self, name, selector):
+        """One element alone (the reference UI's pieces, as visit/UI.md shows them); nothing if it is not shown."""
+        r = await self.js("(e => e && (b => [b.x, b.y, b.width, b.height])(e.getBoundingClientRect()))(document.querySelector(%s))" % json.dumps(selector))
+        if not r or r[2] < 1 or r[3] < 1:
+            return
+        d = await self.call("Page.captureScreenshot", format="png", clip={"x": r[0], "y": r[1], "width": r[2], "height": r[3], "scale": 1})
+        open(os.path.join(OUT, name), "wb").write(base64.b64decode(d["data"]))
+
 
 class Engine:
     """The engine (engine/SPEC.md 5) hosting a room, asked through its test aid (ENGINE_DEBUG: POST /debug/eval), as a
@@ -275,8 +284,15 @@ async def main():
     if not await renderers((a, b)):
         return 2
     class Handler(http.server.SimpleHTTPRequestHandler):
-        """The test room's files; the room's server page (?role=host) only once the test says so (a `host-go` file in
-        OUT): the engine, started before the test, is kept trying, with its backoff, until C's visit-client is up."""
+        """The test room's files, and /examples/ (visit/examples: the reference UI the room loads, as a room that
+        copied it would); the room's server page (?role=host) only once the test says so (a `host-go` file in OUT):
+        the engine, started before the test, is kept trying, with its backoff, until C's visit-client is up."""
+        def translate_path(self, path):
+            if path.startswith("/examples/"):
+                rel = os.path.normpath(path.split("?", 1)[0].split("#", 1)[0][len("/examples/"):])
+                if not rel.startswith(".."):
+                    return os.path.join(EXAMPLES, rel)
+            return super().translate_path(path)
         def do_GET(self):
             if "role=host" in self.path and not os.path.exists(os.path.join(OUT, "host-go")):
                 return self.send_error(503, "not yet")
@@ -310,6 +326,22 @@ async def run(a, b, url):
         both = "window.v && v.state === 'online' && v.offices.filter(o => o.ready).length === 2"
         check("both rooms connect, host their scenes, and see each other, ready", (bool(await a.until(both, 30)), bool(await b.until(both, 30))), (True, True))
         check("the token left the address bar", "token" in (await a.js("location.href")), False)
+
+        print("\n5.0 (#82): visit.js puts no UI in the page; the reference UI is the room's, on the public API alone")
+        src, ui_src = open(os.path.join(HERE, "..", "web", "visit.js")).read(), open(os.path.join(EXAMPLES, "ui", "visit-ui.js")).read()
+        check("visit.js makes no panel, chat window, card, map, stage, ⏱ corner nor lightbox (none of their classes, no style sheet)",
+              sorted(set(re.findall(r'["\.]visit-(panel|chat|card|map|stage|perf|lightbox)\b', src))) + (["a style sheet"] if 'createElement("style")' in src else []), [])
+        check("the reference UI reads nothing private of Visit's (no v._ anything)", sorted(set(re.findall(r"\bv\._[A-Za-z_]+", ui_src))), [])
+        check("Visit.panel, .chat, .stage and .map are gone, and say where they went", await a.js(
+            "['panel', 'chat', 'stage', 'map'].map(n => { try { Visit[n](); return 'ran'; } catch (e) { return /examples\\/ui\\/visit-ui\\.js/.test(e.message); } })"), [True] * 4)
+        check("Visit.limits: what Visit and visit-client keep to, for a page's UI to say", await a.js(
+            "[Visit.limits.chatLen, Visit.limits.chats, Visit.limits.maxPicks, Visit.limits.maxIgnored, Visit.limits.voiceSecs, Object.isFrozen(Visit.limits)]"), [200, 5, 8, 50, 60, True])
+        check("what a page's UI is built on: its plot, the plots it watches, the room it is in, names, its phone, the ⏱, a figure's actions", await a.js(
+            "[v.plotMetres.length, Array.isArray(v.watches), v.roomHere.key === v.key, v.roomHere.conversation === 'room:' + v.key, v.nameOf(v.offices.find(o => o.name === 'B').key),"
+            " v.hasPhone, v.perfOn, JSON.stringify(v.actionsOf({ kind: 'figure', actions: ['spin', 'nope'] })), v.mayTalk({ talk: 'owner', room: 'elsewhere' })]"),
+            [2, True, True, True, "B", True, False, '[{"type":"spin","label":"spin it"}]', False])
+        check("the room's page holds the reference UI's handle: its chat window, its card, its ⏱ corner", await a.js(
+            "[!!ui.chat.aim, !!ui.card.element, !!ui.perf.element, ui.map]"), [True, True, True, None])
 
         check("A's panel: Visit's version at its foot, and no Enter to chat line", await a.js(
             "(t => t.includes('Visit ' + Visit.version) && !t.includes('Enter to chat'))(document.querySelector('.visit-panel').textContent)"), True)
@@ -448,6 +480,7 @@ async def run(a, b, url):
         check("4.3.1: ⏱ counts a frame's draw calls, its shadows apart (three.js's own count leaves them out)",
               bool(drew) and drew["colour"] > 0 and drew["shadow"] > 0, True)
         check("and says so", "draw calls a frame:" in (await a.js("document.querySelector('.visit-perf').textContent") or ""), True)
+        await a.shot_of("ui-perf.png", ".visit-perf")
         await a.js("v.perf(false)")
         check("⏱ off: the renderer as it was, nothing counted", await a.until(
             "!room.world._count && !String(room.world.renderer.renderBufferDirect).includes('inShadow') && !String(room.world.renderer.shadowMap.render).includes('inShadow')"), True)
@@ -582,7 +615,7 @@ async def run(a, b, url):
         print("\nthe map: placing B's room exactly, from above")
         await a.js("document.querySelector('.visit-panel button[data-v=map]').click()")
         # (B's door was shut: A's watch was refused, and A asks again 20 s after that)
-        check("A's panel opens the map: A's room and B's, from above", await a.until("!!(v._mapView && v._mapView.shown && room.world.plots.some(p => p.name === 'B'))", 40), True)
+        check("A's panel opens the map: A's room and B's, from above", await a.until("!!(ui.map && ui.map.shown && room.world.plots.some(p => p.name === 'B'))", 40), True)
         pick = "[...document.querySelectorAll('.visit-map button[data-m=pick]')].find(b => b.textContent.startsWith('B'))"
         await a.until("!!" + pick)
         await a.js(pick + ".click()")
@@ -596,7 +629,7 @@ async def run(a, b, url):
         check("and A's world puts it there", await a.until("(p => p && p.at.x === -12 && p.at.z === -6)(room.world.plots.find(p => p.name === 'B'))"), True)
         await a.js("document.querySelector('.visit-map button[data-m=fit]').click()")
         await asyncio.sleep(0.3)
-        p0 = await a.js("v._mapView._px(%s)" % json.dumps(kb))
+        p0 = await a.js("ui.map._px(%s)" % json.dumps(kb))
         await a.call("Input.dispatchMouseEvent", type="mousePressed", x=p0[0], y=p0[1], button="left", clickCount=1)
         for i in range(1, 11):
             await a.call("Input.dispatchMouseEvent", type="mouseMoved", x=p0[0] + i * 6, y=p0[1], button="left")
@@ -612,6 +645,7 @@ async def run(a, b, url):
         check("and B told where it is now in A's world: its middle 9 m east of A's, turned a quarter right", await b.until(
             "(s => s && s.at.dx === 9 && s.at.dz === 0 && s.at.turn)(v.seen.find(s => s.key === %s))" % json.dumps(ka)), 3)
         await a.shot("a_map.png")
+        await a.shot_of("ui-map.png", ".visit-map .box")
         await a.js("document.querySelector('.visit-map button[data-m=close]').click()")
         await a.goto(world)
         check("A's page reloads: where A put B's room is kept", await a.until(
@@ -972,9 +1006,9 @@ async def run(a, b, url):
             "(l => l && l.scope === 'sim' && l.name === 'A' && l.to.name === 'A' && l.to.key !== v.key && l.text)(v.chatLog.at(-1))"), "for everyone here")
         check("B's window: [A's room] [A]; A's: [Your room] [A]", (await b.until(f"(t => t.includes('everyone') && t)({cw}.querySelector('.log').lastChild.textContent)"),
               await a.js(f"{cw}.querySelector('.log').lastChild.textContent")), ("[A's room] [A]: for everyone here", "[Your room] [A]: for everyone here"))
-        await b.js("v._emit('chat_box', { scope: 'say' })")
+        await b.js("ui.chat.aim({ scope: 'say' })")
         check("4.0: B's box on Say: no 🎧 there (who is near hears you; 🎧 follows the box: a person, a world, a room)", await b.until(f"{cw}.querySelector('button.headset').hidden"), True)
-        await b.js("v._emit('chat_box', { scope: 'sim', key: v.key, name: v.office.name })")   # /room: B's own
+        await b.js("ui.chat.aim({ scope: 'sim', key: v.key, name: v.office.name })")   # /room: B's own
         await b.js(f"{cw}.querySelector('button.headset').click()")
         check("B's box on its own room, its 🎧: into its own room's voice, a line over the box saying so", await b.until(
             f"!!v.roomVoice && v.roomVoice.key === v.key && {cw}.querySelector('.voice').textContent.startsWith('🎧 Your room: you')"), True)
@@ -1059,7 +1093,7 @@ async def run(a, b, url):
         await b.js(f"{cw}.querySelector('.shared button[data-k=close]').click()")
         await b.key("Escape", "Escape", 27, True)
         await b.key("Escape", "Escape", 27, False)
-        await a.js("window.cw2 = Visit.chat(v, { fade: 300 })")
+        await a.js("window.cw2 = VisitUI.chat(v, { fade: 300 })")
         check("a window idle a while fades away", await a.until("cw2.element.classList.contains('idle')"), True)
         await b.js("v.say('wake up')")
         check("and comes back with the next line", await a.until("!cw2.element.classList.contains('idle') && cw2.element.querySelector('.log').lastChild.textContent"), "[B] says: wake up")
@@ -1081,6 +1115,7 @@ async def run(a, b, url):
             f"(l => l.indexOf('from two days ago') >= 0 && l.indexOf('from two days ago') < l.indexOf('from a moment ago'))([...{cw}.querySelectorAll('.log .line')].map(x => x.textContent.endsWith('from two days ago') ? 'from two days ago' : x.textContent.endsWith('from a moment ago') ? 'from a moment ago' : ''))"), True)
         await a.shot("a_chat.png")
         await b.shot("b_chat.png")
+        await a.shot_of("ui-panel.png", ".visit-panel")
         # one of B's room's own figures (a receptionist, a guide): its line over its object, in everyone's chat, kept, never as B's user
         await b.js("room.add('visit:npc:guide')")
         await a.until("!!(here() && here().scene && here().scene.root.getObjectByName('visit:npc:guide'))")
@@ -1147,8 +1182,10 @@ async def run(a, b, url):
         check("its card: name, title, line; the guide's action, Say, Whisper", await a.until(f"(c => !c.hidden && [c.querySelector('b').textContent, c.querySelector('.ti').textContent, c.querySelector('.ab').textContent, [...c.querySelectorAll('.bt button')].map(b => b.textContent)])({card})"),
               ["Guide", "the room's guide", "Asks what you came for.", ["spin it", "Say", "Whisper"]])
         await a.shot("a_target_card.png")
+        await a.shot_of("ui-card.png", ".visit-card")
         await a.js(f"{card}.querySelector('button[data-c=whisper]').click()")
         check("Whisper: A's chat box opens, telling the guide", await a.until(f"(c => c.classList.contains('typing') && c.querySelector('select').selectedOptions[0].textContent)({cw})"), "Tell Guide:")
+        await a.shot_of("ui-chat.png", ".visit-chat")
         await a.call("Input.insertText", text="where am I?")
         await enter(a)
         ad = await b.until("addressed.length === 1 && addressed[0]")
@@ -1265,7 +1302,7 @@ async def run(a, b, url):
 
         print("\ntalking (4.0, #58): the chat window's 🎧 with its box on a whisper rings the other, as a phone; answered, each hears the other")
         cw = "document.querySelector('.visit-chat')"
-        await a.js("v._emit('chat_box', (o => ({ scope: 'whisper', id: o.id, key: o.key, name: o.name }))(v.offices.find(o => o.name === 'B')))")
+        await a.js("ui.chat.aim((o => ({ scope: 'whisper', id: o.id, key: o.key, name: o.name }))(v.offices.find(o => o.name === 'B')))")
         check("A's box on a whisper to B: its 🎧 talks with B", await a.until(f"(h => !h.hidden && h.title.startsWith('talk with B'))({cw}.querySelector('button.headset'))"), True)
         await a.js(f"{cw}.querySelector('button.headset').click()")
         check("A clicks 🎧: calling B, its window says so", await a.until(f"v.calls.length === 1 && v.calls[0].voice && v.calls[0].state === 'calling' && {cw}.querySelector('.voice').textContent.includes('Calling B')"), True)
@@ -1275,6 +1312,7 @@ async def run(a, b, url):
         check("and B's panel: A wants to talk, Answer", await b.until("document.querySelector('.visit-panel').textContent.includes('A wants to talk')"), True)
         check("its room's phone (none here) not rung by it: talk is not the phone's", await b.js("v.calls[0].voice === true && v.calls[0].state === 'ringing'"), True)
         await b.shot("b_talk_ringing.png")
+        await b.shot_of("ui-ring.png", ".visit-chat")
         await b.js(f"{cw}.querySelector('.ring button[data-v=answer]').click()")
         check("B answers from the ring: on, both ways; the ring gone", (await a.until("v.calls.length === 1 && v.calls[0].state === 'on'"),
               await b.until(f"v.calls.length === 1 && v.calls[0].state === 'on' && {cw}.querySelector('.ring').children.length === 0")), (True, True))
@@ -1292,7 +1330,7 @@ async def run(a, b, url):
         print("\na huddle (4.0, #58): 🎧 with the box on a world starts one; it rings for the world's members; joined from the ring")
         await b.js("v.joinGroup('Yard')")
         await b.until("v.groups.some(g => g.name === 'Yard')")
-        await a.js("v._emit('chat_box', { scope: 'group', key: 'yard', name: 'Yard' })")
+        await a.js("ui.chat.aim({ scope: 'group', key: 'yard', name: 'Yard' })")
         check("A's box on Yard: its 🎧 starts a huddle there", await a.until(f"{cw}.querySelector('button.headset').title.startsWith('start a huddle in Yard')"), True)
         await a.js(f"{cw}.querySelector('button.headset').click()")
         check("A clicks 🎧: in its huddle (its room's voice), its window says so", await a.until(f"!!v.inHuddle && v.inHuddle.mine && {cw}.querySelector('.voice').textContent.includes('Huddle in Yard')"), True)
@@ -1345,8 +1383,8 @@ async def run(a, b, url):
               await b.until(f"!v.roomVoice && !v.inHuddle && v.huddles.length === 0 && !v._mic && {cw}.querySelector('.log').textContent.includes('The huddle in Yard is over')")), (True, True))
         await b.js("v.leaveGroup('Yard')")   # (as it was: B joins Yard again below)
         await b.until("!v.groups.some(g => g.name === 'Yard')")
-        await a.js("v._emit('chat_box', { scope: 'say' })")
-        await b.js("v._emit('chat_box', { scope: 'say' })")
+        await a.js("ui.chat.aim({ scope: 'say' })")
+        await b.js("ui.chat.aim({ scope: 'say' })")
         await a.call("Input.dispatchKeyEvent", type="keyDown", code="Escape", key="Escape", windowsVirtualKeyCode=27)
         await a.call("Input.dispatchKeyEvent", type="keyUp", code="Escape", key="Escape", windowsVirtualKeyCode=27)
         await b.call("Input.dispatchKeyEvent", type="keyDown", code="Escape", key="Escape", windowsVirtualKeyCode=27)
