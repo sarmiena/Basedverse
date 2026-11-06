@@ -987,6 +987,26 @@ async def main():
         await a.send(type="teleport_answer", ask=q["ask"], ok=True)
         en = await a.until(lambda m: m["type"] == "enter")
         check("let in: A's page has B step in by teleport, with no pose (its pad says where)", (en["channel"], en.get("teleport"), "pose" in en), (sa["channel"], True, False))
+        # 5.2: what B brings to teleport with (a possession of its class), told to A's page; B charging, told to A's page;
+        # B to A's pad from inside A's room (out and in again); refused there, B stays in.
+        await b.send(type="possessions", list=[{"id": "beam", "name": "Beam", "teleport": True}, {"id": "pony", "mount": True}])
+        ps = await a.until(lambda m: m["type"] == "possessions")
+        check("5.2: B's teleport animation reaches A's page as a possession of its class", [(p["id"], p["teleport"], p["mount"]) for p in ps["list"]], [("beam", True, False), ("pony", False, True)])
+        await b.send(type="teleport_charge", channel=sb["channel"])
+        ch_ = await a.until(lambda m: m["type"] == "teleport_charge")
+        check("5.2: B about to teleport: A's page hears it charging, on B's channel", ch_["channel"], sa["channel"])
+        await b.send(type="enter", channel=sb["channel"], teleport=True)
+        q = await a.until(lambda m: m["type"] == "teleport_ask")
+        await a.send(type="teleport_answer", ask=q["ask"], ok=True)
+        ex = await a.until(lambda m: m["type"] in ("exit", "enter"))
+        en2 = await a.until(lambda m: m["type"] == "enter")
+        check("5.2: to A's pad from inside A's room: A's page asked, then has B out and in again, by teleport", (ex["type"], ex.get("teleport"), en2.get("teleport"), en2["channel"]), ("exit", True, True, sa["channel"]))
+        await b.send(type="enter", channel=sb["channel"], teleport=True)
+        await a.send(type="teleport_answer", ask=(await a.until(lambda m: m["type"] == "teleport_ask"))["ask"], ok=False)
+        f = await b.until(lambda m: m["type"] == "teleport_failed")
+        await asyncio.sleep(0.3)
+        check("refused from inside: B's page hears not_allowed, and B is still in (A's page heard no exit)",
+              (f["reason"], f["key"] == ka, [t for t in quiet_types(a) if t in ("exit", "enter")]), ("not_allowed", True, []))
         await b.send(type="exit", channel=sb["channel"], teleport=True)
         ex = await a.until(lambda m: m["type"] == "exit")
         check("B goes home by teleport: A's page hears B go by teleport (it plays it)", (ex["channel"], ex.get("teleport")), (sa["channel"], True))
@@ -1192,7 +1212,7 @@ async def main():
         await a.ws.send(struct.pack(">HBQ", 0, 64, 0) + gzip.compress(json.dumps(pz).encode()))   # slot 0: the dragon's model
         got = await b.until(lambda m: m["type"] == "possessions")
         check("A's page says what A owns: B's page hears it, on A's channel, checked", (got["channel"], got["list"]),
-              (vb["channel"], [{"id": "dragon", "name": "Smaug", "mount": True, "fly": True, "speed": 3.0, "lift": 1.2}, {"id": "cat", "name": "Tom", "mount": False, "fly": False, "speed": 1.0, "lift": 0.0}]))
+              (vb["channel"], [{"id": "dragon", "name": "Smaug", "mount": True, "fly": True, "speed": 3.0, "lift": 1.2, "teleport": False}, {"id": "cat", "name": "Tom", "mount": False, "fly": False, "speed": 1.0, "lift": 0.0, "teleport": False}]))
         await b.send(type="possession_want", channel=vb["channel"], id="dragon")
         got = await b.until(lambda m: m["type"] == "possession")
         check("B asks for the dragon: A's visit-client sends the model A's page gave, whole", (got["channel"], got["id"], got["possession"]), (vb["channel"], "dragon", pz))

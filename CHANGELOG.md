@@ -10,6 +10,46 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v5.2.0 — 2026-11-06 — Visit plays no teleport animation: each person brings theirs, each room plays it if it likes; teleport to the room you are in
+
+Nothing changes a protocol's name, and the lobby needs nothing: a possession's new class and a new message on the
+link, both of which a 5.1 office leaves be.
+
+- **The animation is the person's own, and playing it is each room's choice** (visit/SPEC.md 8.15). 5.1 played Visit's
+  beam in every room unless the room said `effect: false`. Now Visit plays none: a person's room gives their teleport
+  animation the way it gives their mounts (a possession with `teleport: true`: an object with clips `out` and `in`),
+  and Visit carries it to whatever room they are in. That room hears each teleport (`"teleported"`: `charging`, `out`,
+  `in`) with a fresh copy of what they brought, and plays it where they stand if it likes, or not at all. 5.1's `color`
+  and `effect` are taken and do nothing.
+- **[examples/teleport/beam.js](visit/examples/teleport/beam.js)**: 5.1's beam, as an animation to give (`make`: its
+  `out` 2 s, a flash as it collapses; its `in` 1.6 s) and a way to play anyone's (`play`). Copy it, change it, or make
+  your own.
+- **A teleport waits the length of its user's own `out` clip** before it goes (at most 5 s; none given: no wait;
+  `v.teleport(key, { wait })` to say another), held where they stand. The room they are in is told
+  (`teleport_charge`), to play their `out` while they are still there.
+- **Teleport to the room you are in**: from far across its land to its pad. The list keeps it ("here: to its pad").
+  Its host has you out and in again on its pad; refused, you stay where you are (`teleport_refused`; your page:
+  `teleport_failed`, `not_allowed`).
+- **The warp over your world's view is yours to ask for** (`v.world({ warp: true })`), building over the wait. 5.1 drew
+  it unless told not to.
+- **`VisitUI.panel(element, v, { teleport: false })`**: the reference panel without its teleport widget (✦, T, the list),
+  for a room with one of its own: a popup, say ([widgets/teleport.md](visit/widgets/teleport.md)).
+
+**What an integration does:**
+
+1. **Upgrade visit and its visit.js together** (5.2.0).
+2. **Give your user a teleport animation, if they want one** (INTEGRATING.md step 10): a possession with `teleport: true`
+   (clips `out` and `in`), beside any mounts. `examples/teleport/beam.js` makes one (copy it into your tree). Without one,
+   your user teleports at once, and nobody plays anything.
+3. **Play what people bring, if your room likes** (step 10): on `"teleported"`, put `e.animation` where they stand and
+   play its `out` (`charging`, `out`) or `in`; `TeleportBeam.play` does it. Your room played Visit's beam before by
+   itself: without this, it plays nothing now. A room that drew its own on the event with `effect: false` keeps it.
+4. **If your page wants the warp** over its world's view while its user teleports: `v.world({ ..., warp: true })`.
+5. **Widgets: teleport.** Your copy of the reference UI: bring over this release's diff (`withTeleport`, the list keeping
+   the room you are in). Your own: list the room your user is in too, marked as going to its pad, and say a teleport
+   may wait before it goes (`"teleport"`: `leaving` has `wait`). A teleport widget of your own beside the reference
+   panel: `VisitUI.panel(..., { teleport: false })`.
+
 ## v5.1.1 — 2026-11-06 — widgets: the UI each feature needs, one page each; the teleport list from your own button, T or your pad
 
 Nothing changes a protocol's name, and the lobby needs nothing.

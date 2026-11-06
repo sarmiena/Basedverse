@@ -783,9 +783,10 @@ marked offline, walked into but not through its walls; start it again, and the p
 
 ## Step 10 — Teleports: a pad in your room, and who may come (5.1)
 
-A teleport takes someone from wherever they are to a room that will have them, onto its pad, in Visit's beam of
-light: everyone in the room they leave sees them go, everyone in the room they reach sees them come (SPEC 8.15). Your
-room decides two things, and Visit does the rest.
+A teleport takes someone from wherever they are to a room that will have them, onto its pad (SPEC 8.15). Your room
+decides who may come and where they arrive; how anyone looks going and coming is theirs: each person brings their own
+teleport animation, as they bring their mounts, and a room plays it if it likes. Visit carries it, and plays nothing
+itself.
 
 1. **A pad, your room's own.** Make it in your scene as you like: a platform, a ring of light, a doorway, a rug. Put it
    somewhere deliberate (a corner, against a wall, where arrivals do not land in the middle of everything), facing
@@ -805,24 +806,40 @@ room decides two things, and Visit does the rest.
    ```
 3. **Your `spawn`** hears `{ at, teleport: true }` (`at`: your pad, in your terms). One that already puts a watcher
    where it stepped in has them on the pad; one that ignores `at` uses it when `teleport` is set.
-4. **The beam is Visit's**, played in your scene in your `color` (`teleport: { color: 0xffaa33 }`). For one of your
-   own: `effect: false`, and play it on `visit.on("teleported", ({ way, id, visitor, at }) => …)`. A room that draws
-   its own model of a visitor (`look: "mine"`) can play the same event on it: Visit's beam covers the spot, not your
-   model.
-5. **The teleport widget** ([widgets/teleport.md](widgets/teleport.md)): your user's list of the rooms that would take
+4. **Your user's animation** (5.2), if you want them to have one: an object with clips named `out` (going: its length is
+   how long they wait, held where they stand, before they go) and `in` (coming), given as a possession, beside any mounts:
+
+   ```js
+   visit.possessions([...mounts, { id: "teleport", name: "Beam", object: TeleportBeam.make(THREE), unit: 1, teleport: true }]);
+   ```
+
+   [examples/teleport/beam.js](examples/teleport/beam.js) makes one (a column of light, rings, sparks: 2 s going); copy it,
+   change it, or make your own. Without one, your user teleports at once, and no room has anything to play.
+5. **Play what people bring**, if your room likes (on its page, the host's): it hears each teleport, with a fresh copy of
+   their animation, and plays it where they stand, or not at all. Your own user's, at home, comes the same way.
+
+   ```js
+   visit.on("teleported", e => { if (e.animation) TeleportBeam.play(THREE, scene, e.animation, e.way === "in" ? "in" : "out", e.at); });
+   ```
+
+   `way` is `charging` (about to go: their `out`, while they are still here), `in` (on your pad), or `out` (gone; already
+   played as they charged: `animation` null). A room that draws its own model of a visitor (`look: "mine"`) can hide
+   it as their `out` ends.
+6. **The teleport widget** ([widgets/teleport.md](widgets/teleport.md)): your user's list of the rooms that would take
    them, and the way to go. **Every room from 5.1 needs it**, whether or not it takes teleports itself: without it your
    user cannot teleport anywhere, home included. The reference has it (the panel's ✦, and T); a UI of your own builds it
    from that page.
-6. **Open it from your pad.** If your room has a pad, a click on it should open the list (only your page can wire it):
+7. **Open it from your pad.** If your room has a pad, a click on it should open the list (only your page can wire it):
    name the pad, and on your page's click call the reference's `ui.teleports(true)` (or your own widget's) when the
    click lands on it. widgets/teleport.md has the few lines. A button of your own in your HUD can call `ui.teleports()`
    too.
 
 **Check:** with step 8's two rooms, each with a pad: the list opens from ✦ (or your button), from T, and from a click on
-your pad, and lists your own room and the other's; Teleport there
-lands you on its pad, the beam in its room (seen from the other page too), and its `spawn` heard `teleport`; Teleport
-to your own room brings you home onto yours, the beam in the room you left; with `allow: () => false` in one, the other
-no longer lists it, and a teleport there (from code) leaves you where you were.
+your pad, and lists your own room and the other's; Teleport there waits your animation's `out`, then lands you on its
+pad, the other room playing your `in` (seen from your page too), and its `spawn` heard `teleport`; Teleport to your own
+room brings you home onto yours, the room you left having played your `out` as you charged; with no animation given,
+both go at once and nothing plays; with `allow: () => false` in one, the other no longer lists it, and a teleport there
+(from code) leaves you where you were.
 
 ## Checklist
 

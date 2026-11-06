@@ -24,6 +24,7 @@ html, body { height: 100%; margin: 0; background: #0d1117; color: #e6edf3; font:
 <canvas id="own"></canvas>
 <div id="panel"></div>
 <script src="/examples/ui/visit-ui.js"></script>
+<script src="/examples/teleport/beam.js"></script>
 <script>
 // 4.0 (#57): the room this page's user is in, elsewhere: the watched plot they stand on (worlds are the way in).
 window.here = () => window.v ? [...v._watches.values()].find(w => w.inside && !w.home) || null : null;
@@ -236,8 +237,18 @@ async function buildView(v) {
     plot: { center: [ROOM.w / 2, ROOM.d / 2], size: [ROOM.w, ROOM.d] },   // its land, in a world: the room's floor
     unit: 1,   // metres
     // 5.1 (SPEC 8.15): it takes teleports, onto its pad; who may: room.tpAllow, the test's to set (without it, Visit's
-    // own rule: its guests and its owner); Visit's beam in amber here.
-    teleport: { pad: t.pad, get allow() { return window.room.tpAllow; }, color: 0xffaa33 },
+    // own rule: its guests and its owner).
+    teleport: { pad: t.pad, get allow() { return window.room.tpAllow; } },
+  });
+  // 5.2: as someone teleports here or away, the animation they brought (the example beam, ../../examples/teleport), played
+  // in this room by this room; none brought, none played (Visit plays nothing itself). window.tpPlayed: what it played.
+  // window.tpSeen: as each played, whether it was in this room's scene then, and how many visitors the room had.
+  window.tpPlayed = []; window.tpSeen = [];
+  v.on("teleported", e => {
+    if (!e.animation) return;
+    window.tpPlayed.push(e.way + ":" + (e.visitor.owner ? "owner" : e.visitor.name));
+    TeleportBeam.play(t.THREE, t.scene, e.animation, e.way === "in" ? "in" : "out", e.at);
+    window.tpSeen.push([e.way, !!t.scene.getObjectByName("teleport-beam"), v.visitors.length]);
   });
   if (v.role === "host") {   // the room's page alone (engine/SPEC.md 8.1): its hooks and interactions, nothing of the person's
     window.visitErrors = [];
@@ -248,7 +259,7 @@ async function buildView(v) {
     v.on("point", e => window.points.push(e));
     return;
   }
-  if (WORLD) window.room.world = v.world({ scene: t.scene, renderer: t.renderer });
+  if (WORLD) window.room.world = v.world({ scene: t.scene, renderer: t.renderer, warp: true });   // (5.2: the warp, asked for)
   // Our own avatar (SPEC 8.6): how a room that shows its visitors' own looks shows us. Its feet at its origin, facing
   // -z; it bobs its head standing about, and sways walking.
   const T = t.THREE, av = new T.Group();

@@ -424,6 +424,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `teleport_ask` | | 5.1, the user's: which rooms would take this office's user by teleport: its own (its host page asked, about its owner) and each office in the lobby whose entry says `teleport`, ready (at most 48), each asked once through the lobby. `teleport_asked` back, then a `teleport_answer` for each. One round every 1.5 s (`rate_limited`) |
 | `teleport` | `key` | 5.1, the user's: knock to teleport into that office's room, one this office's world does not watch (`teleport_failed` otherwise: `home`, `watching`, `no_world`, `offline`, `not_supported`, `not_found`): let in, a watch with `teleport` (`visit_started`), stepped into by the page as its scene comes |
 | `teleport_answer` | `ask`, `ok` | 5.1, the host's: its answer to a `teleport_ask` on it (none within 3 s: no) |
+| `teleport_charge` | `channel` | 5.2, the user's: its user is about to teleport out of the room on that channel (one it is in): its host plays it |
 | `place` / `unplace` | `key`, `x`, `z` (within 100 km), `turn` (0–3) / `key` | put a friend's plot in this office's world: its middle there, turned so many quarter turns (8.4); kept in the state file. At most 256; not this office's own key (4.3.0: its room is its world's middle; a state file from before that has it, or a pick of it, drops it as it is read) |
 | `seen` | `key`, `at` {`dx`, `dz` (m, within 100 km), `turn` (0–3), `size` ([w, d] m: this plot's)} \| null | where this office's world has that office's plot (8.4): its middle `dx`, `dz` metres from this plot's middle, turned `turn` quarter turns left; null, not in it. Told to that office over any link with it, and again over each new one (kept in memory, not in the state file). At most 256 |
 | `plot_keep` | `key`, `name`, `plot` {`center`, `size`}, `unit` | a picked plot in this office's world, to keep while its office is away (8.10): drawn from its last landscape. At most 64 |
@@ -524,6 +525,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `enter_refused` | `channel`, `reason` (`"full"`, or `"moved"`: a visit to a room began, and this office stepped out; 5.1: `"teleport"`, its room said no to a teleport) | stepping into a watched room was refused, or undone: outside it |
 | `enter` / `exit` with `teleport: true` | `channel` | 5.1 (8.15): a watcher stepped in by teleport (no `pose`: the host page spawns it on its pad), its page having said yes; or went by teleport (its page plays it) |
 | `teleport_ask` | `ask`, `from` {`id`, `name`, `key`, `sim`, `guest`, `owner`, `user`} | 5.1, to the host page: may they teleport into this room? (`guest`: in a world with this office; `owner`: its own user; `user`: the name their user goes by, if a link says it.) Answer with `teleport_answer` within 3 s |
+| `teleport_charge` | `channel` | 5.2, to the host page: someone in this room is about to teleport out (after their animation's `out`): its page may play it |
 | `teleport_asked` | `keys`, `lobby` | 5.1, to the user page: whom its `teleport_ask` waits on (this office's own key first, if its room is up), and whether this lobby carries teleports |
 | `teleport_answer` | `key`, `name`, `ok`, `home`?, `reason`? | 5.1: one room's answer (`home`: this office's own); `reason` when nobody's page said it (`not_supported`, `not_ready`, `timeout`, `gone`, `rate_limited`) |
 | `teleport_failed` | `key`, `reason`, `message`? | 5.1: a knock to teleport came to nothing (`declined`, `full`, `not_ready`, a lobby's refusal, or the user page's own `teleport` refused) |
@@ -945,6 +947,8 @@ Messages are JSON, each prefixed by its length (u32 big-endian). In order, relia
 | host | `{"perform": {"act": {"clip", "loop", "secs"} \| null, "hold"}}` | 4.0 (8.6): what the room has this visitor do and hold, to the visitor's page as `perform` (only while it is in the room) |
 | watcher | `{"enter": {"x", "y", "z", "yaw", "air"} \| null}` / `{"exit": true}` | stepping into the room watched, there (clamped, passed to the host's page as `enter`; null: a link going there, spawned where newcomers go), or out (8.4, 8.5); in, it counts toward `max_visitors` |
 | host | `{"enter_refused": "full"}` | the room is full: the watcher stays outside |
+| watcher | `{"teleport_charge": true}` | 5.2 (8.15): its user is about to teleport out of this room (after their animation's `out`): passed to the host's page as `teleport_charge` while it is in the room |
+| host | `{"teleport_refused": true}` | 5.2: a teleport to this room's pad, from inside it, refused: the watcher stays in (its page hears `teleport_failed`, `not_allowed`) |
 | watcher | `{"enter": null, "teleport": true}` / `{"exit": true, "teleport": true}` | 5.1 (8.15): stepping in by teleport: the host's visit-client asks its page (`teleport_ask`, the link's key) and then passes it on as `enter` with `teleport` and no pose, or answers `{"enter_refused": "teleport"}`; out by teleport (`exit` with `teleport`, its page plays it). A host before 5.1 takes the first for a link's "go there" (where newcomers go), the second for an exit |
 | either | `{"seen": {"dx", "dz", "turn", "size"} \| null}` | where the sender's world has the receiver's plot (8.4), or not; sent when it changes and each time a link comes up. Passed to the page as `seen` with only those fields |
 | either | `{"bye": "<reason>"}` | ending the visit (also sent to the lobby as `end`) |
@@ -1521,10 +1525,11 @@ object makes it and everything under it landscape (the marker itself stays on th
   its office says so: it ends the watch itself (`kicked`: its door shut, a guest no longer), declines one, or this
   office takes it out of its world (`unpick`).
 
-### 8.11 Possessions: mounts
+### 8.11 Possessions: mounts, and a teleport animation
 
-What an office's user owns and brings along to the rooms they go to. For now, **mounts**: something to ride, on
-the ground or in the air. Nothing to join: a room says nothing, and its visitors ride.
+What an office's user owns and brings along to the rooms they go to: **mounts**, something to ride, on the ground or
+in the air; and (5.2) **their teleport animation** (`teleport: true`: clips `out` and `in`; 8.15), which the rooms they
+teleport out of and into may play (Visit fetches it as soon as it is listed, and plays nothing of it). Nothing to join: a room says nothing, and its visitors ride.
 
 **What they are is each room's to say.** Visit has none of its own: it carries what a room makes (its models,
 names, paces), puts it under its rider in the room they are in, and leaves the deciding to rooms: the rider's
@@ -1673,6 +1678,17 @@ by the room as it likes.
   page about its owner, and through the lobby every office in it whose hello said `teleport`, ready (at most 48, one
   round every 1.5 s), each door's page answering as above; a door silent for 3 s is no. The page lists those that
   said yes (`v.teleportTargets`), its own room first. A page shows its list, and leaves out the room its user is in.
+- **The animation is the person's own** (5.2). Visit plays none: a person's room gives their teleport animation as it
+  gives their mounts (a possession with `teleport: true`, 8.11: an object with clips named `out` and `in`), and Visit
+  carries it to whatever room they are in. That room plays it, if it likes, when it hears them (`teleported`: charging,
+  out, in, each with a fresh copy of what they brought, or none). A room that does not want to, does not: nothing of it
+  plays by itself, anywhere. `examples/teleport/beam.js` is one to give, and plays one.
+- **Charging** (5.2). Before going, a teleport waits the length of the person's own animation's `out` clip (none: no
+  wait; their page may say another, `v.teleport(key, { wait })`, at most 5 s), held where they stand; the room they
+  are in is told (`teleport_charge`), to play their `out` while they are still there. Then they go.
+- **To the room they are in** (5.2): a teleport may go to it, onto its pad (from far across its land, say): stepped
+  into by teleport again; its host's visit-client asks its page as ever, and has them out and in again (its page plays
+  the beam, and spawns them on the pad). Refused, they stay where they are (`teleport_refused`).
 - **Going** (`v.teleport(key)`). A room the person's world shows (picked, or home) is stepped into by teleport
   (`enter` with `teleport`, no pose); any other is knocked on to teleport (6.4), watched once its page says yes,
   placed in the world as an unplaced plot is, and stepped into as soon as its scene is in. Either way its host's
@@ -1681,15 +1697,13 @@ by the room as it likes.
   their visit-client takes them out of the room they were in by teleport (`exit` with `teleport`), whose page plays
   it. A room come to by teleport and not picked is let go 2 s after they leave it (its host plays them going first);
   picked meanwhile, it stays in their world.
-- **The beam** is Visit's, played by each room's own visit.js in its own scene (so it travels as the scene does, to
-  everyone who sees the room, its owner too): a column of light at their feet, rings running along it, sparks round
-  it, a glow on the floor, 1.6 s, in the room's `color` (else cyan); going, their body (Visit's model of them, where
-  the room shows their own look) drawn up into it; coming, down out of it. A room that draws its own (`effect: false`)
-  hears `teleported` (`{ way: "in" | "out", id, visitor, at }`) and plays what it likes; so does any room, for its
-  own model of a visitor. The person's own page draws a warp over its world's view while they go (`v.world({ warp:
-  false })`: none, 5.1.1) (`teleport` events:
-  `leaving`, `arrived`, `failed` with why), and a flash as they arrive. A page that walks its user at home itself (no
-  engine) goes home onto its own pad at once, its own room playing the beam.
+- **What each room hears** (`teleported`, on its page: `{ way, id, visitor, at, animation }`): `charging` (about to go:
+  their `out`), `in` (on its pad: their `in`), `out` (gone: their `out`, unless it played as they charged, then
+  `animation` null and `charged`). `animation` is a fresh copy, scaled to the room's units, for the room to place at
+  `at` and play (and let go); null when they brought none. 5.1 played Visit's own beam in every room unless it said
+  `effect: false`; 5.2 plays nothing, and takes 5.1's `color` and `effect` and does nothing with them. The person's own
+  page draws a warp over its world's view while they go only if it asks (`v.world({ warp: true })`; 5.1 drew it
+  unless told not to). A page that walks its user at home itself (no engine) goes home onto its own pad at once.
 - **Older Visits.** An office before 5.1 says nothing of `teleport`, so it is neither asked nor knocked on; a host
   before 5.1 that is stepped into by teleport puts its visitor where newcomers go, and plays nothing. A lobby before
   5.1 carries no teleports (its `welcome` does not say `teleport`): a page's list then has its own room alone (`v.teleport`
@@ -1753,7 +1767,8 @@ v.watching(officeId)        // whether a plot of theirs is in your world (picked
 v.avatar(object, { unit })  // your own body, for rooms that show their visitors' own looks (8.6, MODELS.md); null: none
                             //   "model" event: { what, problems, notes }, as it is checked; "body": how the room you are in
                             //   draws you, { channel, key, name, look, eyes, problem }
-v.possessions([{ id, name, object, unit, mount, fly, speed, lift }])   // what your user owns (8.11), as your room makes them
+v.possessions([{ id, name, object, unit, mount, fly, speed, lift, teleport }])   // what your user owns (8.11), as your room makes them;
+                            //   5.2: teleport: true, their teleport animation (clips "out" and "in"), for the rooms they teleport in and out of
 v.mounts                    // what they can ride: [{ id, name, fly, speed, lift }] (none until your room gives some)
 v.ride(id); v.riding; v.mount   // get on a mount (null: off); what they ride; the one a page's ride (M, in the reference UI) gets them on
 v.setMount(id)              // 5.0: that one chosen (kept in this browser); while riding, they change to it
@@ -1890,14 +1905,15 @@ v.host({
                                                     //   it, from above its plot, going round
   beforeSample(now) {},                             // optional (4.0, #42): your room's own step, once before each sample of its
                                                     //   scene (30 a second while anyone sees it): where to move what visitors see
-  teleport: { pad, allow(who) {}, color, effect },  // optional (5.1, 8.15): this room takes teleports. pad: where they arrive
+  teleport: { pad, allow(who) {} },                 // optional (5.1, 8.15): this room takes teleports. pad: where they arrive
                                                     //   ({ x, y, z, yaw }, an Object3D of yours, or a function of who); allow:
                                                     //   true (or a Promise of it) if who ({ id, key, name, office, sim, guest,
-                                                    //   owner }) may come (without it: your guests and you); color: Visit's
-                                                    //   beam's here (0x66ddff); effect: false, none of Visit's
+                                                    //   owner }) may come (without it: your guests and you). 5.2: Visit plays
+                                                    //   nothing: "teleported" hands your room what they brought
 });
-v.on("teleported", ({ way, id, visitor, at }) => …)   // 5.1, hosting: someone came ("in", on your pad) or went ("out") by
-                                                      //   teleport, there: for your own effect, or your own model of them
+v.on("teleported", ({ way, id, visitor, at, animation, charged }) => …)   // 5.1, hosting: someone came ("in", on your pad)
+                            //   or went ("out") by teleport, there; 5.2: "charging", about to go; animation: a fresh copy
+                            //   of the one they brought (clips "out", "in"; null: none), yours to play there, or not
 // In the engine (engine/SPEC.md) your renderer's render() does nothing (4.0, #42): Visit reads your scene itself.
 
 // a world (8.4): after host(). Every frame, where your page has its user (in its room's terms) and what they press;
@@ -1906,8 +1922,8 @@ v.on("teleported", ({ way, id, visitor, at }) => …)   // 5.1, hosting: someone
 // Then world.render(camera), in place of renderer.render(scene, camera).
 const world = v.world({ scene, renderer, ground, gap, clipOwn, bubbles, speaking, warp });   // your whole scene and its renderer (host()'s by default);
                    //   bubbles (true): it draws the lines said (8.9) in the room your user is in over their speakers' heads;
-                   //   speaking (true): a 🔊 over each one your user hears speaking there (8.7); warp (true, 5.1.1): the warp
-                   //   over this view while your user teleports (8.15; false: none, your page shows it its own way)
+                   //   speaking (true): a 🔊 over each one your user hears speaking there (8.7); warp (5.2: false unless
+                   //   said; 5.1.1 drew it unless told not to): a warp over this view while your user teleports (8.15)
 const me = world.frame(dt, { x, y, z, yaw, pitch, air, facing }, { forward, strafe, up, run });   // air: how far above its floor your user
                    //   is (flying), so a plot it steps into has it that high (8.2); up: as a visitor's input; facing: the
                    //   way your user faces (radians, as yaw), for their mount at home (8.11; else yaw)
@@ -1964,9 +1980,11 @@ v.homeView(element)         // your own room, first person, in element, for a pa
 // there by teleport (a Promise of { ok, reason }).
 v.findTeleports(); v.teleportTargets   // [{ key, name, user, home }]: those that said yes to the last ask
 v.teleportAsking; v.teleportLobby      // an ask under way; this lobby carries teleports (else your own room alone)
-v.teleport(key); v.teleporting         // { key, name, home, since, entered } while one goes, else null
-v.on("teleport", ({ state, key, name, reason }) => …)   // "leaving" | "arrived" | "failed" (reason: not_allowed,
-                            //   declined, timeout, gone, full, here, no_world, no_pad, refused, not_supported, offline)
+v.teleport(key, { wait }); v.teleporting   // { key, name, home, since, entered } while one goes, else null; 5.2: it waits its
+                            //   user's own animation's "out" first (wait: ms instead), the room they are in told
+v.on("teleport", ({ state, key, name, reason }) => …)   // "leaving" (5.2: 2 s of charging, then going) | "arrived" |
+                            //   "failed" (reason: not_allowed, declined, timeout, gone, full, no_world, no_pad, refused,
+                            //   not_supported, offline); 5.2: the room your user is in may be the key too (onto its pad)
 ```
 
 **Poses** are the host's own: the library only stores them and passes them back. `Visit.walk` uses
@@ -2023,7 +2041,7 @@ slowly while its tab is hidden.
 | worlds | 20 a key, 50 members each (the lobby's `--world-size`), a password 4 to 64 characters, 5 passwords tried a minute (6.10) |
 | linked browsers | 10 an office, 4 in the lobby at once; a pass or a code good 10 minutes, once; a room's confirmation 5 minutes, 5 wrong tries (6.11) |
 | world | a plot not said: what its scene covers, at most 200 units a side; 4 units between plots in a ring; out of a plot 0.3 units past it; stepping in answered within 3 s |
-| teleports (5.1, 8.15) | a room's page answers an ask in 3 s (its `allow` in 2.5 s), else no; the lobby keeps an ask 5 s, 120 asks an office a minute; a page's round of asks one every 1.5 s, at most 48 rooms, over in 7 s; stepping in by teleport answered within 8 s, and a teleport not there in 20 s given up; a room come to by teleport let go 2 s after its user leaves it (20 s if never stepped into); the beam 1.6 s |
+| teleports (5.1, 8.15) | 5.2: a teleport waits its user's own animation's `out` clip before it goes, at most 5 s; a room's page answers an ask in 3 s (its `allow` in 2.5 s), else no; the lobby keeps an ask 5 s, 120 asks an office a minute; a page's round of asks one every 1.5 s, at most 48 rooms, over in 7 s; stepping in by teleport answered within 8 s, and a teleport not there in 20 s given up; a room come to by teleport let go 2 s after its user leaves it (20 s if never stepped into); the beam 1.6 s |
 | layout, seen | 256 each |
 | chat | a line at most 200 characters; 5 lines every 10 s, from a page and from each visitor, whatever the scope (the lobby counts its own, lobby lines and whispers, too); shown over a head 4 to 12 s, by its length; the chat window keeps 100 lines, and fades 20 s after the last |
 | pictures, voice messages | a picture at most 8 MiB, 4 a line; a voice message at most 2 MiB and 60 s, one a line |

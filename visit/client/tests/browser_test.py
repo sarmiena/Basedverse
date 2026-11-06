@@ -23,6 +23,7 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -548,8 +549,10 @@ async def run(a, b, url):
         check("and A walks off again, home on the ground (not back up where it crossed)", (await b.until("v.visitors.length === 0"), abs(await a.js("room.me.y")) < 0.05), (True, True))
         await a.js("room.me.y = 0")   # on the ground again whatever the case above found, so what follows starts as it always has
 
-        print("\nteleports (5.1, 8.15): the rooms that would take you, each by its own rule; onto a room's pad by teleport, and home; Visit's beam in each room")
+        print("\nteleports (5.1, 8.15): the rooms that would take you, each by its own rule; onto a room's pad by teleport, and home; 5.2: the animation each brings, played by the rooms")
         kb0 = json.dumps(await a.js("v.offices.find(o => o.name === 'B').key"))
+        # 5.2: A's room gives its user's teleport animation (the example beam: "out" 2 s, "in"), as it gives mounts
+        await a.js("v.possessions([{ id: 'teleport', name: 'Beam', object: TeleportBeam.make(room.THREE), unit: 1, teleport: true }])")
         found = await a.js("v.findTeleports().then(l => l.map(t => [t.name, t.home]))")
         check("A asks where it may teleport: its own room (it has a pad) and B's (A its guest: Visit's own rule, B's room gives none)", sorted(found), [["A", True], ["B", False]])
         await b.js("room.tpAllow = who => who.name !== 'A'")
@@ -562,10 +565,10 @@ async def run(a, b, url):
         await a.js("document.querySelector('.visit-panel button[data-v=tp]').click()")
         await a.until("document.querySelectorAll('.visit-panel button[data-v=tp_go]').length === 1 && !v.teleportAsking")
         await a.shot_of("ui-teleport.png", ".visit-panel")
-        check("the panel's ✦ Teleport lists them, but the room A is in (its own)", await a.js("[...document.querySelectorAll('.visit-panel .row.tp b')].map(b => b.textContent)"), ["B"])
+        check("the panel's ✦ Teleport lists them, its own first (5.2: the room A is in too, to its pad)", await a.js("[...document.querySelectorAll('.visit-panel .row.tp b')].map(b => b.textContent)"), ["your room", "B"])
         await a.js("ui.teleports(false)")
         check("5.1.1: the panel's handle closes its list (ui.teleports(false)), and opens it (true), asking again",
-              (await a.js("!!document.querySelector('.visit-panel .row.tp')"), await a.js("ui.teleports(true)"), await a.until("document.querySelectorAll('.visit-panel .row.tp b').length === 1", 5)), (False, True, True))
+              (await a.js("!!document.querySelector('.visit-panel .row.tp')"), await a.js("ui.teleports(true)"), await a.until("document.querySelectorAll('.visit-panel .row.tp b').length === 2", 5)), (False, True, True))
         await a.js("ui.teleports(false)")
         await a.key("KeyT", "t", 84, True)
         await a.key("KeyT", "t", 84, False)
@@ -575,35 +578,49 @@ async def run(a, b, url):
         check("…and back", await a.until("!document.querySelector('.visit-panel .row.tp')", 5), True)
         check("5.1.1: v.world({ warp: false }) draws no warp", await a.js(
             "(w => { const was = w.warpOff; w.warpOff = true; w.warpState = null; w._warp('charge'); const none = !w.warpState; w.warpOff = was; return none; })(room.world)"), True)
-        await a.js("window.tpEvents = []; v.on('teleport', e => tpEvents.push(e.state))")
-        await a.js("window.tpGo = v.teleport(%s)" % kb0)
-        await asyncio.sleep(0.15)
+        check("5.2: a world draws the warp only if its page asks (this one did: warp: true)", await a.js("room.world.warpOff"), False)
+        await a.js("window.tpEvents = []; v.on('teleport', e => tpEvents.push(e.state + (e.wait ? '@' + e.wait : '')))")
+        await b.js("tpPlayed.length = 0; tpSeen.length = 0")
+        # (A's page: whether B's room's beam has come with B's scene, a moment after A is there)
+        await a.js("window.sawBeam = null; v.on('teleport', e => { if (e.state === 'arrived') setTimeout(() => { const w = [...v._watches.values()].find(w => w.host.name === 'B'); window.sawBeam = !!(w && w.scene && w.scene.root.getObjectByName('teleport-beam')); }, 250); })")
+        t0 = time.monotonic()
+        await a.js("window.tpGo = v.teleport(%s); 0" % kb0)
+        await asyncio.sleep(0.9)
+        held = await a.js("[!!v.teleporting, room.where == null, !!(v.teleporting && v.teleporting.entered == null)]")
+        check("5.2: A waits its own animation's \"out\" (2 s), held where it stands (going nowhere yet)", held, [True, True, True])
         await a.shot("a_teleport_warp.png")
         res = await a.js("tpGo")
-        check("A teleports to B's room: there", (res["ok"], await a.js("room.where && room.where.name")), (True, "B"))
+        took = time.monotonic() - t0
+        check("A teleports to B's room: there, after its 2 s", (res["ok"], await a.js("room.where && room.where.name"), 2.0 <= took < 8), (True, "B", True))
         check("B's room spawned A on its pad, by teleport (its spawn heard where the pad is)", await b.js(
             "(s => [s.at && Math.round(s.at.x * 10) / 10, s.at && Math.round(s.at.z * 10) / 10, Math.round(s.p.x * 10) / 10, Math.round(s.p.z * 10) / 10])(spawns[spawns.length - 1])"), [8.6, 1.4, 8.6, 1.4])
-        check("and Visit's beam plays in B's room's scene", await b.js("!!room.scene.getObjectByName('visit:teleport')"), True)
-        check("which reaches A as B's scene does: A's world draws it on B's plot", await a.until(
-            "(w => !!(w && w.scene && w.scene.root.getObjectByName('visit:teleport')))([...v._watches.values()].find(w => w.host.name === 'B'))", 5), True)
+        check("5.2: B's room plays the animation A brought (its \"in\"), A's own look, in its scene", (await b.until("tpPlayed.includes('in:A')", 5), await b.js("tpSeen[0] && tpSeen[0].slice(0, 2)")), (True, ["in", True]))
+        check("and Visit put nothing of its own in B's scene", await b.js("!room.scene.getObjectByName('visit:teleport')"), True)
+        check("which reaches A as B's scene does: A's world draws it on B's plot", await a.until("window.sawBeam !== null && window.sawBeam", 8), True)
         await asyncio.sleep(0.2)
         await a.shot("a_teleported.png")
         await b.shot("b_teleport_in.png")
         check("A's world has A on B's pad (its place through where A's world puts B's plot)", await a.js(
             "(x => { const p = new room.THREE.Vector3(8.6, 0, 1.4).applyMatrix4(room.world._holder(x).place.matrix); return Math.hypot(p.x - room.me.x, p.z - room.me.z) < 0.35; })(room.world._layout().find(p => p.key === %s))" % kb0), True)
-        check("A's page heard it leave, then arrive", await a.js("tpEvents"), ["leaving", "arrived"])
+        check("A's page heard it leave (its wait, 2 s), then arrive", await a.js("tpEvents"), ["leaving@2000", "arrived"])
         check("and B has A as its visitor", await b.until("v.visitors.length === 1 && v.visitors[0].visitor.name"), "A")
         await asyncio.sleep(1.8)
-        check("the beam done: gone from B's room", await b.js("!room.scene.getObjectByName('visit:teleport')"), True)
-        res = await a.js("v.teleport(v.key)")
-        check("A teleports home: there, on its own pad", (res["ok"], await a.js("room.where"), await a.js("Math.hypot(room.me.x - 8.6, room.me.z - 1.4) < 0.35")), (True, None, True))
-        check("B's room plays A going (its page heard A go by teleport)", await b.until("!!room.scene.getObjectByName('visit:teleport')", 3), True)
-        check("and A's own room plays A coming home", await a.js("!!room.scene.getObjectByName('visit:teleport')"), True)
-        await asyncio.sleep(0.2)
+        check("the animation done: gone from B's room", await b.js("!room.scene.getObjectByName('teleport-beam')"), True)
+        await a.js("window.tpHome = v.teleport(v.key); 0")
+        check("5.2: A teleports home: B's room hears A charging, and plays A's \"out\" on A while A is still there",
+              (await b.until("tpPlayed.includes('charging:A')", 3), await b.js("tpSeen[1]")), (True, ["charging", True, 1]))
+        await asyncio.sleep(1.0)
         await b.shot("b_teleport_out.png")
+        res = await a.js("tpHome")
+        check("A teleports home: there, on its own pad", (res["ok"], await a.js("room.where"), await a.js("Math.hypot(room.me.x - 8.6, room.me.z - 1.4) < 0.35")), (True, None, True))
+        check("and B's room played A's going once (as A charged: nothing more as A went)", await b.js("tpPlayed"), ["in:A", "charging:A"])
         await a.shot("a_home_by_teleport.png")
         check("B's visitor gone", await b.until("v.visitors.length === 0"), True)
         check("and B's plot still in A's world (A picked it: a room you picked stays)", await a.js("room.world.plots.filter(p => !p.home).map(p => p.name)"), ["B"])
+        await a.js("Object.assign(room.me, { x: 2, z: 6 })")
+        await asyncio.sleep(0.3)
+        res = await a.js("v.teleport(v.key)")
+        check("5.2: from elsewhere in its own room, A teleports to it: onto its pad", (res["ok"], await a.js("Math.hypot(room.me.x - 8.6, room.me.z - 1.4) < 0.35")), (True, True))
         await asyncio.sleep(1.8)
         await b.js("room.tpAllow = () => false")
         res = await a.js("v.teleport(%s)" % kb0)
@@ -1228,7 +1245,7 @@ async def run(a, b, url):
         check("A's page fetches them and draws them: the picture (512 px) on the ball, its mesh (6305 vertices)", await a.until(
             "(o => o && o.material.map && o.material.map.image && o.material.map.image.width === 512 && o.geometry.attributes.position && [o.material.map.image.width, o.geometry.attributes.position.count])"
             "(here() && here().scene && here().scene.root.getObjectByName('assetball'))", 30), [512, 6305])
-        check("and keeps them: a scene that names them again draws them with nothing fetched", await a.js(f"v._have.has('{ids[0]}') && v._have.has('{ids[1]}')"), True)
+        check("and keeps them: a scene that names them again draws them with nothing fetched", await a.until(f"v._have.has('{ids[0]}') && v._have.has('{ids[1]}')", 5), True)
         await b.js("room.remove('assetball')")
 
         print("\ntargets (3.3, #48): the guide described, picked by a click, its card; a whisper to it, its answer to A alone; @")
@@ -1600,8 +1617,10 @@ async def run(a, b, url):
         # 5.1 (8.15): the person teleports into A's room and home again, onto its own room's pad: its home a plot of its
         # world, its room the engine's page, which answers for its owner, spawns it on the pad and plays the beam (each
         # room's "teleported" kept, as the beams themselves last 1.6 s).
-        await hc.js("window.tpd = []; v.on('teleported', e => tpd.push(e.way + ':' + (e.visitor.owner ? 'owner' : e.visitor.name)))")
-        await a.js("window.tpdA = []; v.on('teleported', e => tpdA.push(e.way + ':' + e.visitor.name))")
+        await b.js("v.possessions([{ id: 'teleport', name: 'Beam', object: TeleportBeam.make(room.THREE), unit: 1, teleport: true }])")   # (5.2: C's person brings its own)
+        await asyncio.sleep(1.5)
+        await hc.js("window.tpd = []; v.on('teleported', e => tpd.push(e.way + ':' + (e.visitor.owner ? 'owner' : e.visitor.name) + (e.animation ? '+' : '')))")
+        await a.js("window.tpdA = []; v.on('teleported', e => tpdA.push(e.way + ':' + e.visitor.name + (e.animation ? '+' : '')))")
         found = await b.js("v.findTeleports().then(l => l.map(t => [t.name, t.home]))")
         check("C's person asks where it may teleport: its own room (the engine's page answering for its owner) and A's", (["C", True] in found, ["A", False] in found), (True, True))
         shown = await b.until("[...v._watches.values()].some(w => w.host.name === 'A' && w.scene)", 20)
@@ -1618,8 +1637,8 @@ async def run(a, b, url):
         check("and home by teleport: there, in its own room (a user page's home: no `where`)", (res["ok"], await b.js("room.where"), await b.js("room.world.inside")), (True, None, True))
         check("its room (the engine's page) spawned its owner on its pad, by teleport", await hc.until(
             "(s => !!s && s.owner && Math.round(s.p.x * 10) / 10 === 8.6 && Math.round(s.p.z * 10) / 10 === 1.4)(spawns[spawns.length - 1])", 10), True)
-        check("and played its owner going (to A) and coming home", await hc.js("tpd"), ["out:owner", "in:owner"])
-        check("A's room played C coming, and going", await a.until("tpdA.length >= 2 && tpdA.join()", 5), "in:C,out:C")
+        check("5.2: its room heard its owner charging (with the animation they brought), going, and coming home (with it)", await hc.js("tpd"), ["charging:owner+", "out:owner", "in:owner+"])
+        check("and A's room heard C coming (with C's animation), charging (with it), and going", await a.until("tpdA.length >= 3 && tpdA.join()", 5), "in:C+,charging:C+,out:C")
         await b.shot("c_home_by_teleport.png")
         await asyncio.sleep(2.5)
         if engine_port:

@@ -15,10 +15,10 @@ changes only the API under it, and the CHANGELOG says when it does.
 - your world (`v.world(...)`).
 
 In those views it draws people's bodies and mounts, chat bubbles over speakers, the 🔊 over whoever your user hears,
-and, in a view, the crosshair and the label of what it points at. It also plays voices and room sounds. 5.1: in your
-world's view, a warp while your user teleports (`v.world({ warp: false })`: none); in your room's scene, Visit's beam
-as someone teleports in or out (`teleport: { effect: false }`: none). Each of those has its switch
-(`bubbles: false`, `speaking: false` too).
+and, in a view, the crosshair and the label of what it points at. It also plays voices and room sounds. Each of those has its switch (`bubbles: false`,
+`speaking: false`). As someone teleports (5.2), Visit plays nothing: each room plays the animation people bring, if it
+likes ([examples/teleport](examples/teleport/beam.js)); a warp over your world's view is yours to ask for
+(`v.world({ warp: true })`).
 
 ## Two ways to have one
 
@@ -46,9 +46,11 @@ const ui = VisitUI.panel(document.getElementById("visit-panel"), visit);   // th
 VisitUI.stage(visit);   // a page that draws no world of its own: your room, first person, and the room visited
 ```
 
-- `VisitUI.panel(element, v, { chat, card })`: `chat: false` or `card: false` leaves that piece out.
+- `VisitUI.panel(element, v, { chat, card, teleport })`: `chat: false`, `card: false` or `teleport: false` leaves that
+  piece out.
 - It returns `{ element, chat, card, perf, map, say(), teleports(on), release() }`: `ui.teleports()` opens or closes
-  its teleport list (5.1.1), for your own button or a click on your pad ([widgets/teleport.md](widgets/teleport.md)).
+  its teleport list (5.1.1), for your own button or a click on your pad ([widgets/teleport.md](widgets/teleport.md));
+  `teleport: false` leaves it out (5.2), for a room with a teleport widget of its own.
 - `ui.chat.aim(target)` points the chat box at someone (the card's Say and Whisper do this).
 - Each piece also stands alone: `VisitUI.chat(v, { element, fade })`, `VisitUI.targetCard(v, { chat })`,
   `VisitUI.map(v)`, `VisitUI.perf(v)` and `VisitUI.stage(v)`.
