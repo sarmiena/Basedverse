@@ -13,6 +13,7 @@ pieces everyone drops in unchanged.
 | [INTEGRATING.md](INTEGRATING.md) | adding Visit to a workroom. Written for the coding agent doing it: hand it this file and say "integrate this into my workroom". |
 | [SPEC.md](SPEC.md) | the contract: `visit` and its local client, the page connection, the lobby (`basedverse-lobby/4`), the link between machines, scenes and input, worlds, security, limits, errors, versions. For whoever builds or changes the shared pieces. |
 | [WORLD.md](WORLD.md) | worlds: why they are the way they are, and what is still to come. |
+| [widgets/](widgets/README.md) | the UI your room gives its user: each piece a Visit feature needs (the panel, the chat window, the teleport list...), one page each: what it must do, what it is built on, the reference's ([UI.md](UI.md): why it is your room's own). |
 
 ## Giving it to someone
 

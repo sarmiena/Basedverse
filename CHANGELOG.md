@@ -10,6 +10,42 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v5.1.1 — 2026-11-06 — widgets: the UI each feature needs, one page each; the teleport list from your own button, T or your pad
+
+Nothing changes a protocol's name, and the lobby needs nothing.
+
+- **[visit/widgets/](visit/widgets/README.md)**: every widget (a piece of your room's UI on Visit's API) a feature needs,
+  one page each: what it gives your user, when your room needs it, the reference's, what it is built on, what one of
+  your own **must** do, and how to check it. The panel, the chat window, your target's card, the map, teleport, the ⏱
+  corner and the stage. UI.md keeps why your UI is your own and the reference in five lines; its pieces moved there.
+  Nothing is forced on anyone: a room has each widget the reference's way, its own way, or not at all, and says which.
+  What is fixed is the list: a release that adds or changes a widget says so here, under **Widgets**.
+  - Why: a room upgraded to 5.1 by its changelog steps could end up without the teleport list (5.1's step read "bring
+    over ✦, or make your own"), its user with no way to teleport though everything under it worked.
+- **Widgets: teleport** ([widgets/teleport.md](visit/widgets/teleport.md)): needed by every room from 5.1, whether or
+  not it takes teleports itself (its user goes out, and home, from it). The reference's opens three ways now: its ✦
+  (in the panel's first line), **T** (new), and `ui.teleports(on)` (new, on the panel's handle: `true` opens it,
+  `false` closes it, nothing turns it over), for your own button and a click on your pad.
+- **Your pad opens the list** (INTEGRATING.md step 10): a click on it should. Only your page can wire it; the widget's
+  page has the few lines (name the pad, look for it under your click: `world.room`, or your own scene).
+- **`v.world({ warp: false })`**: no warp over your world's view while your user teleports (a page that shows it its
+  own way, on the "teleport" events). With Visit's beam already yours to turn off (`teleport: { effect: false }`),
+  everything Visit draws for a teleport has its switch.
+
+**What an integration does:**
+
+1. **Upgrade visit and its visit.js together** (5.1.1), as always.
+2. **Go down [visit/widgets/](visit/widgets/README.md)**: for each widget, does your room have it? The reference's copy
+   (does your copy have the part? a copy taken before a release lacks what it added), your own UI (does it do what the
+   page says it must?), or none (fine for one your features do not need: say why). Write each in your `VISIT.md`.
+3. **Widgets: teleport.** Every room from 5.1 needs it. With your copy of the reference UI: bring over this release's
+   diff of `visit/examples/ui/visit-ui.js` (`TELEPORT_KEY`, `teleports`, `teleportKey`, and `teleports` on the handle;
+   5.1.0's ✦ rows too, if your copy is older); if your page already uses T, change `TELEPORT_KEY` in your copy. With a
+   UI of your own: build it from widgets/teleport.md.
+4. **Your pad, if your room has one**: a click on it opens the list (widgets/teleport.md, "Opening it from your room").
+   A button of your own may call `ui.teleports()` as well.
+5. **Optional**: `v.world({ warp: false })`, for a page that shows a teleport its own way.
+
 ## v5.1.0 — 2026-11-06 — teleports: to any room that will take you, onto its pad, in a beam everyone there sees
 
 Nothing changes a protocol's name: offices on 5.0 and 5.1 meet and visit each other as before (a 5.0 office is neither

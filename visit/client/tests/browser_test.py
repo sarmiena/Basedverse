@@ -563,6 +563,18 @@ async def run(a, b, url):
         await a.until("document.querySelectorAll('.visit-panel button[data-v=tp_go]').length === 1 && !v.teleportAsking")
         await a.shot_of("ui-teleport.png", ".visit-panel")
         check("the panel's ✦ Teleport lists them, but the room A is in (its own)", await a.js("[...document.querySelectorAll('.visit-panel .row.tp b')].map(b => b.textContent)"), ["B"])
+        await a.js("ui.teleports(false)")
+        check("5.1.1: the panel's handle closes its list (ui.teleports(false)), and opens it (true), asking again",
+              (await a.js("!!document.querySelector('.visit-panel .row.tp')"), await a.js("ui.teleports(true)"), await a.until("document.querySelectorAll('.visit-panel .row.tp b').length === 1", 5)), (False, True, True))
+        await a.js("ui.teleports(false)")
+        await a.key("KeyT", "t", 84, True)
+        await a.key("KeyT", "t", 84, False)
+        check("5.1.1: T turns it over", await a.until("!!document.querySelector('.visit-panel .row.tp')", 5), True)
+        await a.key("KeyT", "t", 84, True)
+        await a.key("KeyT", "t", 84, False)
+        check("…and back", await a.until("!document.querySelector('.visit-panel .row.tp')", 5), True)
+        check("5.1.1: v.world({ warp: false }) draws no warp", await a.js(
+            "(w => { const was = w.warpOff; w.warpOff = true; w.warpState = null; w._warp('charge'); const none = !w.warpState; w.warpOff = was; return none; })(room.world)"), True)
         await a.js("window.tpEvents = []; v.on('teleport', e => tpEvents.push(e.state))")
         await a.js("window.tpGo = v.teleport(%s)" % kb0)
         await asyncio.sleep(0.15)
