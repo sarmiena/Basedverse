@@ -17,7 +17,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "5.1.1", PROTO = "basedverse-visit-local/2";
+  const VERSION = "5.2.0", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -43,9 +43,11 @@
   const MAX_PICKS = 8;   // the most plots your world shows at once (3.3: the ones you picked; visit-client's and the lobby's limit too)
   const MAX_IGNORED = 50;   // the most your user ignores in chat (3.3: as WoW's ignore list)
   // 5.1 (SPEC 8.15): teleports. A room's `teleport.allow` answers within TP_ALLOW_MS (else no); your user's ask is over
-  // in TP_FIND_MS at most, one every TP_ROUND_MS; a teleport not there in TP_GIVE_UP_MS is given up; its room has TP_ENTER_WAIT_MS to say where
-  // it put them. Visit's beam lasts TP_FX_MS, in a room's colour (teleport.color), else TP_COLOR.
-  const TP_ALLOW_MS = 2500, TP_FIND_MS = 7000, TP_ROUND_MS = 1600, TP_GIVE_UP_MS = 20000, TP_ENTER_WAIT_MS = 8000, TP_FX_MS = 1600, TP_COLOR = 0x66ddff;
+  // in TP_FIND_MS at most, one every TP_ROUND_MS; a teleport not there in TP_GIVE_UP_MS (after its wait) is given up; its
+  // room has TP_ENTER_WAIT_MS to say where it put them. 5.2: Visit plays no animation of its own (its rooms play the ones
+  // people bring); a teleport waits, before it goes, the length of its user's own animation's "out" clip (TP_WAIT_MAX_MS
+  // at most). The warp, a page's if it asks for it (v.world({ warp: true })), is in WARP_COLOR.
+  const TP_ALLOW_MS = 2500, TP_FIND_MS = 7000, TP_ROUND_MS = 1600, TP_GIVE_UP_MS = 20000, TP_ENTER_WAIT_MS = 8000, TP_WAIT_MAX_MS = 5000, WARP_COLOR = 0x66ddff;
   // What the host hears many times a second: none of it changes what the page shows, so none fires "change".
   const QUIET = new Set(["input", "point", "keyframe", "link_stats", "scene", "scene_lost", "scene_resync", "assets", "asset_want", "asset_kept", "asset_none"]);
   // A timer from a Worker: a page's own timers slow to once a second (or less) while its tab is in the
@@ -1052,7 +1054,6 @@
       this.teleportLobby = false;
       this.teleporting = null;
       this._tpFind = null;
-      this._fx = [];
       // A visitor's numbers, about once a second (the "stats" event): input to screen (drawn here) and the
       // link's round trip in ms, the link's path ("direct" or "relay"), frames drawn a second. null while not
       // visiting.
@@ -1252,7 +1253,14 @@
         case "avatar": this._avatarIn(m); break;
         case "avatar_none": this._avatarNone(m); break;
         case "body": this._bodyIn(m); break;
-        case "possessions": { const h = this._hosted.get(m.channel); if (h) h.possessions = possessionsFrom(m.list); break; }
+        case "possessions": {
+          const h = this._hosted.get(m.channel);
+          if (!h) break;
+          h.possessions = possessionsFrom(m.list);
+          // 5.2: their teleport animation, fetched now (as a mount is when ridden), to hand your room as they teleport
+          for (const p of h.possessions) if (p.teleport && !h.mirror && !h.wanted.has(p.id)) { h.wanted.add(p.id); this._send({ type: "possession_want", channel: h.channel, id: p.id }); }
+          break;
+        }
         case "possession": this._possessionIn(m); break;
         case "phone": if (m.on) this._phoneOn.add(m.channel); else { this._phoneOn.delete(m.channel); const p = this._peerOf(m.channel); if (p && p.key) this._callEnd(p.key, "their phone went", false); } break;
         case "call": this._callIn(m); break;
@@ -1309,6 +1317,7 @@
           break;
         }
         case "teleport_ask": if (this.role !== "user") this._teleportAsk(m); break;   // 5.1: may they teleport into your room?
+        case "teleport_charge": if (this.role !== "user") this._hostCharge(m); break;   // 5.2: someone here about to go
         case "teleport_asked": this._tpAsked(m); break;
         case "teleport_answer": this._tpAnswer(m); break;
         case "teleport_failed": if (this.teleporting && (m.key == null || m.key === this.teleporting.key)) this._tpEnd(false, String(m.reason || "refused")); break;
@@ -1522,9 +1531,11 @@
         if (!/^[A-Za-z0-9_.-]{1,40}$/.test(id) || ids.has(id)) throw new Error(`visit.possessions: "${id}" is not an id of its own (1-40 letters, digits, _ . -)`);
         if (!p.object || !p.object.isObject3D) throw new Error(`visit.possessions: ${id} is a three.js object`);
         ids.add(id);
-        const unit = Number(p.unit) > 0 ? Number(p.unit) : this._unit(), c = this._modelCheck(String(p.name || id), p.object, unit, p.mount === true ? "mount" : "thing");
-        return { id, name: String(p.name || id).slice(0, 24), object: p.object, unit,
-          mount: p.mount === true, fly: p.fly === true, speed: num(p.speed, 1, 0.25, 5), lift: num(p.lift, c && c.seat != null ? c.seat : 0, 0, 5) };   // its "seat" point, unless you say
+        const tp = p.teleport === true;   // 5.2 (8.15): your user's teleport animation, carried as mounts are; its rooms play it
+        if (tp && !(p.object.animations || []).some(c => /^(out|in)$/i.test(c.name))) throw new Error(`visit.possessions: ${id} is a teleport animation: give it a clip named "out" (going) or "in" (coming)`);
+        const unit = Number(p.unit) > 0 ? Number(p.unit) : this._unit(), c = tp ? null : this._modelCheck(String(p.name || id), p.object, unit, p.mount === true ? "mount" : "thing");
+        return { id, name: String(p.name || id).slice(0, 24), object: p.object, unit, teleport: tp,
+          mount: p.mount === true && !tp, fly: p.fly === true, speed: num(p.speed, 1, 0.25, 5), lift: num(p.lift, c && c.seat != null ? c.seat : 0, 0, 5) };   // its "seat" point, unless you say
       });
       this._own = own;
       this._possessionsSend();
@@ -1532,7 +1543,7 @@
       this._changed();
     }
     _possessionsSend() {
-      this._send({ type: "possessions", list: this._own.map(({ id, name, mount, fly, speed, lift }) => ({ id, name, mount, fly, speed, lift })) });
+      this._send({ type: "possessions", list: this._own.map(({ id, name, mount, fly, speed, lift, teleport }) => ({ id, name, mount, fly, speed, lift, teleport })) });
       this._own.forEach((p, slot) => this._possessionSend(p, slot));
     }
     async _possessionSend(p, slot) {   // its model, as an avatar goes: gzipped JSON, a frame by its slot in the list
@@ -1626,8 +1637,7 @@
     _bodyPlace(h) {
       const a = h.avatar, hk = this._hooks;
       if (!a || !hk) return;
-      if (h.look !== "theirs" || !h.pose || !h.inside) { if (a.object.parent && !h.beaming) a.object.parent.remove(a.object); return; }   // (5.1: one going by teleport, once its beam is done)
-      if (h.beaming) this._fxLetBody(h.beaming);
+      if (h.look !== "theirs" || !h.pose || !h.inside) { if (a.object.parent) a.object.parent.remove(a.object); return; }
       if (a.object.parent !== hk.scene.root) hk.scene.root.add(a.object);
       a.object.position.set(Number(h.pose.x) || 0, Number(h.pose.y) || 0, Number(h.pose.z) || 0);
       a.object.rotation.set(0, Number(h.pose.yaw) || 0, 0);
@@ -2126,11 +2136,13 @@
       f.resolve(this.teleportTargets.slice());
       this._changed();
     }
-    // Your user to that room by teleport: one findTeleports found, or your own (v.key). Out of the room they are in (its
-    // room plays them going, for everyone there), a warp over your world's view, and onto its pad (its room plays them
-    // coming). A room your world does not show is watched for it, and let go once they leave it (unless you pick it).
-    // A Promise of { ok, reason }; "teleport": { state: "leaving" | "arrived" | "failed", key, name, reason }.
-    teleport(key) {
+    // Your user to that room by teleport: one findTeleports found, or your own (v.key), or the one they are in (onto its
+    // pad, 5.2). They wait first, held where they stand, the length of their own teleport animation's "out" clip (the
+    // possession your room gave with `teleport: true`; none: no wait; `{ wait }` in ms: that instead), the room they are in
+    // told meanwhile (its own to play their animation, or not); then out of it, and onto the other's pad (that room's to
+    // play their "in"). A room your world does not show is watched for it, and let go once they leave it (unless you pick
+    // it). A Promise of { ok, reason }; "teleport": { state: "leaving" (with `wait`) | "arrived" | "failed", key, name, reason }.
+    teleport(key, { wait } = {}) {
       this._as("user", "teleport");
       key = String(key || "");
       const t = this.teleportTargets.find(x => x.key === key), home = key === this.key;
@@ -2138,16 +2150,18 @@
       const fail = reason => { this._emit("teleport", { state: "failed", key, name, reason }); return Promise.resolve({ ok: false, reason }); };
       if (this.teleporting) return fail("teleporting");
       if (!this._world) return fail("no_world");
-      const r = this.roomHere;
-      if (r && r.key === key) return fail("here");
       let resolve;
       const promise = new Promise(r => { resolve = r; });
-      this.teleporting = { key, name, home, since: performance.now(), entered: null, from: null, resolve };
-      this._world._warp("charge");
+      const now = performance.now(), wd = this._world;
+      const anim = this._own.find(p => p.teleport), out = anim && (anim.object.animations || []).find(c => /^out$/i.test(c.name));
+      const ms = Math.round(Math.min(TP_WAIT_MAX_MS, Math.max(0, wait != null ? Number(wait) || 0 : out ? out.duration * 1000 : 0)));
+      this.teleporting = { key, name, home, since: now + ms, chargeUntil: now + ms, entered: null, from: null, resolve };
+      wd._warp("charge", ms);
+      if (ms > 0 && wd.in != null) this._send({ type: "teleport_charge", channel: wd.in });   // (the room they are in, told)
       // a room your world shows (or your own) is stepped into by your world, its next frame; any other, knocked on
       const shown = home || [...this._watches.values()].some(w => !w.home && w.host && w.host.key === key);
       if (!shown) this._send({ type: "teleport", key });
-      this._emit("teleport", { state: "leaving", key, name });
+      this._emit("teleport", { state: "leaving", key, name, wait: ms });
       this._changed();
       return promise;
     }
@@ -3444,13 +3458,13 @@
       // 5.1 (SPEC 8.15): `teleport` (optional): this room takes teleports. `pad`, where they arrive: { x, y, z, yaw } in
       // its units, an Object3D (the room's own pad, as it styles it: its place and the way it faces), or a function of
       // who comes giving either; `allow(who)`, who may come (true, or a Promise of it; without it, your guests and you);
-      // `color`, Visit's beam's here; `effect: false`, none of Visit's (the room plays its own: the "teleported" event).
+      // 5.2: Visit plays nothing as someone teleports: your room hears "teleported" (charging, out, in), with the animation
+      // they brought, to play or not. (5.1's `color` and `effect` are taken, and do nothing.)
       const tp = hooks.teleport;
       if (tp != null && tp !== false) {
         if (!isObj(tp) || tp.pad == null) throw new Error("visit.host: teleport is { pad, allow, color, effect }: pad, where those who teleport in arrive ({ x, y, z, yaw }, an Object3D, or a function of who)");
         if (typeof tp.pad !== "function" && !tp.pad.isObject3D && !(isObj(tp.pad) && Number.isFinite(tp.pad.x) && Number.isFinite(tp.pad.z))) throw new Error("visit.host: teleport.pad is { x, y, z, yaw }, an Object3D, or a function of who");
         if (tp.allow != null && typeof tp.allow !== "function") throw new Error("visit.host: teleport.allow is a function of who: true if they may teleport in");
-        if (tp.color != null && !Number.isFinite(tp.color)) throw new Error("visit.host: teleport.color is a colour, as a number (0x66ddff)");
       }
       this._hooks = hooks;
       // 4.0 (#42 C): in the engine (engine/SPEC.md) the room's own picture is never seen: its draws are no-ops already,
@@ -3497,13 +3511,13 @@
       Object.assign(h, { inside: true, pose: null, input: null, keyNext: true, fails: 0 });
       // 5.1 (SPEC 8.15): by teleport, onto this room's pad (its spawn hears it as `at`, with `teleport`), in a beam
       let at = isObj(m.pose) ? { x: Number(m.pose.x) || 0, y: Number(m.pose.y) || 0, z: Number(m.pose.z) || 0, yaw: Number(m.pose.yaw) || 0, air: Math.max(0, Number(m.pose.air) || 0) } : null;
+      h.charged = 0;
       const tp = m.teleport === true && !h.mirror && this._padPose(h.visitor);
       if (tp) at = Object.assign(tp, { air: 0 });
       if (!h.mirror) this._spawn(h, at, !!tp);
-      if (tp && h.pose) {
+      if (tp && h.pose) {   // 5.2: your room plays it, if it likes: the animation they brought (none: null)
         const p = h.pose, there = { x: Number(p.x) || 0, y: Number(p.y) || 0, z: Number(p.z) || 0 };
-        this._tpFx(there, "in", h);
-        this._emit("teleported", { way: "in", id: h.id, visitor: h.visitor, at: there });
+        this._emit("teleported", { way: "in", id: h.id, visitor: h.visitor, at: there, animation: this._tpAnimFor(h) });
       }
       this._visitorsList();
       if (h.mirror) this._changed();
@@ -3514,12 +3528,13 @@
       if (!h || !h.watch) return;
       this._rideSet(h, null);
       if (h.held && h.held.parent) h.held.parent.remove(h.held);   // (4.0: out of the room, what it did and held go)
-      // 5.1 (SPEC 8.15): gone by teleport: the beam where they stood, their body (Visit's model of it) drawn up into it
+      // 5.1 (SPEC 8.15): gone by teleport, from there (5.2: with the animation they brought, unless it played as they charged)
       const p = h.pose, was = p && !h.mirror && m.teleport === true ? { x: Number(p.x) || 0, y: Number(p.y) || 0, z: Number(p.z) || 0 } : null;
-      if (was) this._tpFx(was, "out", h);
+      const charged = !!(h.charged && performance.now() - h.charged < 10000);
+      h.charged = 0;
       Object.assign(h, { inside: false, pose: null, input: null, act: null, held: null });
       this._bodyPlace(h);
-      if (was) this._emit("teleported", { way: "out", id: h.id, visitor: h.visitor, at: was });
+      if (was) this._emit("teleported", { way: "out", id: h.id, visitor: h.visitor, at: was, charged, animation: charged ? null : this._tpAnimFor(h) });
       this._visitorsList();
     }
 
@@ -3543,6 +3558,15 @@
       }
       this._send({ type: "teleport_answer", ask: String(m.ask || ""), ok });
     }
+    // 5.2: someone in this room is about to teleport (their animation's "out", then they go): your room hears it, with a
+    // fresh copy of the animation they brought, to play where they stand (or not: Visit plays nothing itself).
+    _hostCharge(m) {
+      const h = this._hosted.get(m.channel);
+      if (!h || !h.inside || !h.pose || h.mirror) return;
+      const at = { x: Number(h.pose.x) || 0, y: Number(h.pose.y) || 0, z: Number(h.pose.z) || 0 };
+      h.charged = performance.now();
+      this._emit("teleported", { way: "charging", id: h.id, visitor: h.visitor, at, animation: this._tpAnimFor(h) });
+    }
     // Where this room's pad has someone arrive, in its terms: { x, y, z, yaw }; an Object3D's place in the room's root,
     // facing where it faces (its -z); null: none.
     _padPose(who) {
@@ -3559,95 +3583,13 @@
       if (!isObj(p) || !Number.isFinite(Number(p.x)) || !Number.isFinite(Number(p.z))) return null;
       return { x: Number(p.x), y: Number(p.y) || 0, z: Number(p.z), yaw: Number(p.yaw) || 0 };
     }
-    // Visit's teleport, played in this room's own scene, so everyone who sees the room sees it as its scene goes to them:
-    // a column of light at their feet, rings running along it, sparks round it, a glow on the floor. Going ("out"), their
-    // body (Visit's model of them, if it draws one here) drawn up into the light; coming ("in"), down out of it. In
-    // metres, scaled to the room's units, additive (it lights what is behind it), in the room's colour.
-    _tpFx(at, way, h) {
-      const hk = this._hooks, t = hk && hk.teleport;
-      if (!hk || !at || (t && t.effect === false)) return;
-      const T = hk.scene.three, color = t && Number.isFinite(t.color) ? t.color : TP_COLOR;
-      const mat = (c, both = true) => new T.MeshBasicMaterial({ color: c, opacity: 0, transparent: true, depthWrite: false, blending: T.AdditiveBlending,
-        side: both ? T.DoubleSide : T.FrontSide, fog: false, toneMapped: false });
-      const g = new T.Group();
-      g.name = "visit:teleport";
-      g.position.set(at.x, at.y, at.z);
-      g.scale.setScalar(1 / this._unit());
-      // each part in a group of its own, moved and turned by it (a primitive's own translate does not travel: SPEC 8.1)
-      const part = (geo, m, y = 0, flat = false) => {
-        const p = new T.Group(), o = new T.Mesh(geo, m);
-        p.position.y = y; if (flat) o.rotation.x = -Math.PI / 2;
-        o.raycast = () => {};   // (nothing to point at)
-        p.add(o); g.add(p);
-        return { p, o, m };
-      };
-      const fx = {
-        g, way, at: performance.now(), h: h || null,
-        beam: part(new T.CylinderGeometry(0.55, 0.55, 3.2, 28, 1, true), mat(color), 1.6),
-        core: part(new T.CylinderGeometry(0.1, 0.16, 3.4, 12, 1, true), mat(0xffffff), 1.7),
-        disc: part(new T.CircleGeometry(0.95, 36), mat(color, false), 0.03, true),
-        rings: [0, 1, 2].map(() => part(new T.TorusGeometry(0.62, 0.035, 8, 44), mat(color), 0, true)),
-        sparks: Array.from({ length: 14 }, (_, i) => Object.assign(part(new T.OctahedronGeometry(0.055), mat(0xffffff)), { a: i / 14 * Math.PI * 2, r: 0.32 + (i % 3) * 0.13, s: 0.8 + (i % 4) * 0.15, d: (i % 5) * 0.07 })),
-        body: null, base: null,
-      };
-      const a = h && h.avatar, body = a && h.look === "theirs" && a.object && a.object.parent ? a.object : null;
-      if (body) { fx.body = body; fx.base = body.scale.clone(); if (way === "out") h.beaming = fx; }
-      hk.scene.root.add(g);
-      this._fx.push(fx);
-      this._fxStep(fx.at);
-    }
-    _fxStep(now) {
-      const ease = x => x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x), bump = (t, a, b) => t <= a || t >= b ? 0 : Math.sin(Math.PI * (t - a) / (b - a));
-      for (const fx of [...this._fx]) {
-        const t = (now - fx.at) / 1000, out = fx.way === "out";
-        if (t >= TP_FX_MS / 1000) { this._fxEnd(fx); continue; }
-        // the column: up at once, held while they go (or come), then thinning, rising (going) or settling (coming), out
-        const on = ease(t / 0.15), off = ease((t - 0.75) / 0.85), level = on * (1 - off);
-        fx.beam.m.opacity = 0.75 * level;
-        const wide = out ? 0.25 + 0.75 * on - 0.85 * off : 1.3 - 1.05 * ease(t / 0.3) + 0.6 * off;
-        fx.beam.p.scale.set(Math.max(0.05, wide), out ? 1 + 0.8 * off : ease(t / 0.25) || 0.01, Math.max(0.05, wide));
-        fx.beam.p.position.y = out ? 1.6 + 1.2 * off : 3.2 - 1.6 * (ease(t / 0.25) || 0.01);
-        fx.core.m.opacity = bump(t, 0, out ? 0.8 : 0.9);
-        fx.disc.m.opacity = 0.7 * level;
-        fx.disc.p.scale.setScalar(0.5 + 0.8 * ease(t / 0.4));
-        fx.rings.forEach((r, i) => {
-          const k = ease((t - 0.08 - 0.14 * i) / 0.8);
-          r.p.position.y = out ? 0.1 + 2.9 * k : 3.0 - 2.9 * k;
-          r.p.scale.setScalar(1 - 0.35 * k);
-          r.m.opacity = 0.9 * bump(t, 0.08 + 0.14 * i, 0.88 + 0.14 * i);
-        });
-        for (const sp of fx.sparks) {
-          const k = Math.max(0, (t - sp.d) / 1.2), a = sp.a + k * 5 * sp.s;
-          sp.p.position.set(Math.cos(a) * sp.r * (1 + 0.4 * k), out ? 0.15 + 2.6 * k * sp.s : 3.0 - 2.7 * k * sp.s, Math.sin(a) * sp.r * (1 + 0.4 * k));
-          sp.m.opacity = bump(t, sp.d, sp.d + 1.2);
-        }
-        // their body, drawn up into the light (going) or down out of it (coming): thin and tall, then gone, or back
-        const b = fx.body;
-        if (b && fx.h && out && fx.h.inside) this._fxLetBody(fx);   // (back in before the beam was done: theirs again)
-        else if (b && fx.base) {
-          const k = out ? ease((t - 0.1) / 0.5) : 1 - ease((t - 0.25) / 0.45), thin = 1 - 0.96 * k, tall = 1 + 0.7 * k;
-          b.scale.set(fx.base.x * thin, fx.base.y * tall, fx.base.z * thin);
-          b.visible = !(out && k >= 1);
-        }
-      }
-    }
-    // A body no longer the beam's: as it was (still in the room), or out of it (gone).
-    _fxLetBody(fx) {
-      const b = fx.body, h = fx.h;
-      if (!b) return;
-      if (fx.base) b.scale.copy(fx.base);
-      b.visible = true;
-      fx.body = null;
-      if (h && h.beaming === fx) {
-        h.beaming = null;
-        if (!h.inside && b.parent) b.parent.remove(b);
-      }
-    }
-    _fxEnd(fx) {
-      this._fxLetBody(fx);
-      this._fx = this._fx.filter(x => x !== fx);
-      if (fx.g.parent) fx.g.parent.remove(fx.g);
-      fx.g.traverse(o => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
+    // 5.2: a fresh copy of the teleport animation this visitor brought (its clips "out" and "in" on it, scaled to this
+    // room's units), for your room to put where they are and play; null: they brought none.
+    _tpAnimFor(h) {
+      const a = h.tpAnim, hk = this._hooks;
+      if (!a || !hk) return null;
+      try { const o = new hk.scene.three.ObjectLoader().parse(a.json); o.scale.multiplyScalar(a.k); return o; }
+      catch (e) { console.warn("visit: a teleport animation that cannot be read", e); return null; }
     }
 
     _hostMessage(m) {
@@ -4434,7 +4376,6 @@
         this._voiceTick();
         if (this._perf) this._pt("voice", performance.now() - t0);
       }
-      if (this._fx.length) this._fxStep(now);   // 5.1: Visit's teleport beams, in your room's scene
       if (!this._hooks || !this._hosted.size) return;
       for (const h of [...this._hosted.values()]) if (h.inside) this._step(h, now);
       if (now - (this._avatarAt || 0) >= 33) {   // visitors' own avatars, walking or idle, 30 times a second
@@ -4533,7 +4474,13 @@
       try {
         const T = hk.scene.three, budget = { vertices: 0, objects: 0 }, json = cleanScene(m.possession.json, budget);
         if (budget.vertices > AVATAR_VERTICES || budget.objects > AVATAR_OBJECTS) throw new Error(`more than ${AVATAR_VERTICES} vertices or ${AVATAR_OBJECTS} objects`);
-        const o = new T.ObjectLoader().parse(json), k = Math.min(1000, Math.max(0.001, (Number(m.possession.unit) || 1) / this._unit()));
+        const k = Math.min(1000, Math.max(0.001, (Number(m.possession.unit) || 1) / this._unit()));
+        if ((h.possessions || []).some(p => p.id === id && p.teleport)) {   // 5.2: their teleport animation, kept as data: a fresh copy each time
+          new T.ObjectLoader().parse(json);   // (read once now: one that cannot be, never kept)
+          h.tpAnim = { json, k, id };
+          return;
+        }
+        const o = new T.ObjectLoader().parse(json);
         o.scale.multiplyScalar(k);
         const g = new T.Group(), mixer = new T.AnimationMixer(o), clip = n => (o.animations || []).find(c => new RegExp(n, "i").test(c.name));
         g.add(o);
@@ -4894,7 +4841,7 @@
   // A list of possessions as a visitor's visit-client gives it (8.11), read again: [{ id, name, mount, fly, speed, lift }].
   function possessionsFrom(l) {
     return (Array.isArray(l) ? l : []).filter(isObj).slice(0, POSSESSIONS).filter(p => typeof p.id === "string" && /^[A-Za-z0-9_.-]{1,40}$/.test(p.id)).map(p => ({
-      id: p.id, name: String(p.name || p.id).slice(0, 24), mount: p.mount === true, fly: p.fly === true,
+      id: p.id, name: String(p.name || p.id).slice(0, 24), mount: p.mount === true && p.teleport !== true, fly: p.fly === true, teleport: p.teleport === true,
       speed: Math.min(5, Math.max(0.25, Number(p.speed) || 1)), lift: Math.min(5, Math.max(0, Number(p.lift) || 0)) }));
   }
   // An object's geometries, materials and their pictures, let go.
@@ -5196,11 +5143,11 @@
     // false draws every plot every frame). `shadowMs`: how often a friend's plot's lights work out their shadows,
     // in ms (250, each plot on its own beat; 0: every frame). Never your own room, nor the plot you are in: both
     // drawn every frame, their shadows too.
-    constructor(v, { scene, renderer, three, ground = 0x30363d, gap = WORLD_GAP, clipOwn = true, bubbles = true, speaking = true, self = "mine", cull = true, shadowMs = 250, warp = true } = {}) {
+    constructor(v, { scene, renderer, three, ground = 0x30363d, gap = WORLD_GAP, clipOwn = true, bubbles = true, speaking = true, self = "mine", cull = true, shadowMs = 250, warp = false } = {}) {
       const hk = v._hooks;
       if (!hk && !(v.role === "user" && three && three.REVISION && renderer)) throw new Error(v.role === "user" ? "visit.world needs { three, renderer }: the three.js this page draws with, and its renderer (its room comes from its host)" : "visit.world: v.host first (the world is drawn with your three.js, round your plot)");
       this.v = v; this.T = hk ? hk.scene.three : three;
-      this.warpOff = warp === false;   // 5.1.1: no warp over this view while its user teleports (the page shows its own)
+      this.warpOff = warp !== true;   // 5.2: the warp over this view while its user teleports, only if the page asks (warp: true)
       this.scene = hk ? scene || (hk.scene.root.isScene ? hk.scene.root : null) : null;
       this.renderer = renderer || (hk && hk.scene.renderer);
       if ((hk && !this.scene) || !this.renderer) throw new Error("visit.world needs { scene, renderer }: your whole scene, and the renderer that draws it");
@@ -5476,13 +5423,18 @@
     _tpFrame(tp, list, me, now) {
       const v = this.v;
       if (now - tp.since > TP_GIVE_UP_MS) { v._tpEnd(false, "timeout"); return null; }
+      const held = () => {   // where they were as it began, looking about as they like; heard from there
+        if (!tp.held) tp.held = Object.assign({}, this.me || me, { air: 0 });
+        v._home = { x: tp.held.x, y: tp.held.y, z: tp.held.z, yaw: me.yaw };
+        return Object.assign({}, tp.held, { yaw: me.yaw, pitch: me.pitch });
+      };
+      if (now < tp.chargeUntil) return held();   // 5.2: charging (the room they are in plays them going)
       if (tp.entered == null) {
-        if (tp.home && v.role !== "user") {
+        if (tp.home && v.role !== "user") {   // a page that walks its user at home itself: onto its own pad, here
           const pad = v._padPose({ id: null, key: v.key, name: v.userName || "", office: (v.office && v.office.name) || "", sim: {}, guest: false, owner: true });
           if (!pad) { v._tpEnd(false, "no_pad"); return null; }
           const was = this.in != null && v._watches.get(this.in);
-          if (was) { this._exit(was, true); this.in = null; } else v._tpFx(this.home || me, "out");
-          v._tpFx(pad, "in");
+          if (was) { this._exit(was, true); this.in = null; }
           this.yHome = null;
           this.home = { x: pad.x, y: pad.y, z: pad.z, yaw: me.yaw, pitch: me.pitch };
           v._home = { x: pad.x, y: pad.y, z: pad.z, yaw: me.yaw };
@@ -5490,32 +5442,38 @@
           return Object.assign({}, this.home, { in: null });
         }
         const x = list.find(y => y.w && y.w.scene && !y.w.paused && (tp.home ? y.w.home : !y.w.home && y.w.host.key === tp.key));
-        if (!x) return null;   // not here yet: on as we were
-        if (v.role !== "user" && this.in == null) v._tpFx(me, "out");   // from a home this page walks: its own room plays it
-        tp.from = { x: me.x, y: me.y, z: me.z };
+        if (!x) return held();   // its room not here yet (knocked on, its scene coming): still held
+        // 5.2: the room they are in already: onto its pad, its host having them out and in again (where it had them till
+        // then is not arriving)
+        tp.same = this.in === x.w.channel;
+        tp.was = tp.same && x.w.scene.hostPose ? Object.assign({}, x.w.scene.hostPose) : null;
+        tp.from = { x: tp.held ? tp.held.x : me.x, y: tp.held ? tp.held.y : me.y, z: tp.held ? tp.held.z : me.z };
         tp.entered = x.w.channel;
-        this._enter(x, me, now, true);
-        this._warp("charge");
+        tp.enteredAt = now;
+        this._enter(x, Object.assign({}, me, tp.from), now, true);
       }
       const x = list.find(y => y.w && y.w.channel === tp.entered);
       if (!x || !x.w.inside || this.in !== tp.entered) { v._tpEnd(false, "refused"); return null; }
-      const s = x.w.scene;
-      if (!s.hostPose) return Object.assign({}, tp.from, { yaw: me.yaw, pitch: me.pitch, air: 0, in: { key: x.key, name: x.name } });   // held, under the warp
+      const s = x.w.scene, hp = s.hostPose;
+      const there = hp && (!tp.same || !tp.was || Math.hypot(hp.x - tp.was.x, hp.z - tp.was.z) > 0.3 || now - tp.enteredAt > 3000);
+      if (!there) return Object.assign({}, tp.from, { yaw: me.yaw, pitch: me.pitch, air: 0, in: { key: x.key, name: x.name } });   // held, under the warp
       s.vis.x = s.vis.y = s.vis.z = 0;   // (its host has us on its pad: there at once, no gliding)
       s.hist.length = 0;
+      if (tp.same) { s.pose.x = hp.x; s.pose.z = hp.z; }
       v._tpEnd(true);
       return null;
     }
 
     // The warp over this world's view while a teleport goes (5.1): "charge" (up, and held, softer while it waits), then
     // "arrive" (a flash, fading) or "off" (fading at once). Drawn last, over everything, by render().
-    // 5.1.1: v.world({ warp: false }): none (a page that shows a teleport its own way, on the "teleport" events).
-    _warp(state) { if (this.warpOff) return; this.warpState = { state, at: performance.now(), from: this._warpLevel() }; }
+    // 5.2: only with v.world({ warp: true }) (5.1 drew it unless told not to): Visit forces no animation on anyone.
+    _warp(state, ms = 0) { if (this.warpOff) return; this.warpState = { state, at: performance.now(), from: this._warpLevel(), ms }; }
     _warpLevel(now = performance.now()) {
       const w = this.warpState;
       if (!w) return 0;
       const t = (now - w.at) / 1000;
-      if (w.state === "charge") return t < 0.35 ? Math.min(0.75, w.from + t * 2.4) : 0.35 + 0.4 * Math.exp(-(t - 0.35) * 1.5) + 0.08 * Math.sin(t * 7);
+      const up = (w.ms || 350) / 1000;   // 5.2: building over the wait (its user's animation's "out"), then held
+      if (w.state === "charge") return t < up ? 0.06 + 0.64 * (t / up) ** 2 : 0.42 + 0.08 * Math.sin(t * 7);
       if (w.state === "arrive") return t < 0.1 ? 1 : Math.max(0, 1 - (t - 0.1) / 0.75);
       return Math.max(0, w.from - t * 3);
     }
@@ -5525,7 +5483,7 @@
       if (r.xr && r.xr.isPresenting) return;
       let q = this._warpQ;
       if (!q) {
-        const mat = new T.ShaderMaterial({ uniforms: { uA: { value: 0 }, uT: { value: 0 }, uC: { value: new T.Color(TP_COLOR) }, uR: { value: 1 } },
+        const mat = new T.ShaderMaterial({ uniforms: { uA: { value: 0 }, uT: { value: 0 }, uC: { value: new T.Color(WARP_COLOR) }, uR: { value: 1 } },
           vertexShader: WARP_VS, fragmentShader: WARP_FS, transparent: true, depthTest: false, depthWrite: false, blending: T.AdditiveBlending });
         const mesh = new T.Mesh(new T.PlaneGeometry(2, 2), mat);
         mesh.frustumCulled = false;

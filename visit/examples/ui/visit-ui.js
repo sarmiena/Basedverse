@@ -9,7 +9,8 @@
 //   const ui = VisitUI.panel(element, v);    the HUD (in `element`, a box of your page's), with the chat window, your
 //                                            target's card and the ⏱ corner; { chat: false, card: false } leaves
 //                                            either out. ui.chat, ui.card, ui.perf, ui.map, ui.say(), ui.release();
-//                                            ui.teleports(on): its ✦ list, from your own button or your pad (5.1.1)
+//                                            ui.teleports(on): its ✦ list, from your own button or your pad (5.1.1);
+//                                            { teleport: false }: none of it (5.2: a room with a teleport widget of its own)
 //   VisitUI.stage(v);                        the room you visit, full-window or in a corner, your own room behind it
 //   VisitUI.map(v).open();                   your world from above (the panel's Map)
 //   VisitUI.chat(v), VisitUI.targetCard(v, { chat }), VisitUI.perf(v): each alone, for a page with its own panel
@@ -169,7 +170,7 @@
     return `${name} put your room ${dir} of theirs` + (Number.isFinite(gap) ? `, ${Math.round(gap)} m off` : "");
   }
 
-  function panel(element, v, { chat: withChat = true, card: withCard = true } = {}) {
+  function panel(element, v, { chat: withChat = true, card: withCard = true, teleport: withTeleport = true } = {}) {
     ready(v, "panel");
     if (!document.getElementById("visit-panel-css")) {
       const st = document.createElement("style"); st.id = "visit-panel-css"; st.textContent = PANEL_CSS; document.head.appendChild(st);
@@ -206,14 +207,14 @@
     // from the ✦, T anywhere but a box of the page's own, and the handle's teleports(), for the room's own button or a
     // click on its pad.
     const teleports = on => {
-      if (typeof v.findTeleports !== "function") return false;
+      if (!withTeleport || typeof v.findTeleports !== "function") return false;
       tpOpen = on === undefined ? !tpOpen : !!on; tpWhy = "";
       if (tpOpen) v.findTeleports();
       drawn = ""; draw();
       return tpOpen;
     };
     const teleportKey = e => {
-      if (e.code !== TELEPORT_KEY || e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented || typeof v.findTeleports !== "function") return;
+      if (!withTeleport || e.code !== TELEPORT_KEY || e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented || typeof v.findTeleports !== "function") return;
       const t = e.target;
       if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
       teleports();
@@ -263,14 +264,15 @@
       if (root.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;   // never under a typing hand
       const me = v.office, rows = [];
       root.classList.toggle("folded", folded); element.classList.toggle("visit-folded", folded);
-      rows.push(`<div class="row hd"><button class="caret" data-v="fold" title="${folded ? "open the panel" : "fold the panel: its first line, and what asks you (a knock, a call)"} · Visit ${VERSION}">${folded ? "▸" : "▾"}</button><span class="dot ${v.state === "online" ? esc(v.status) : ""}"></span><span class="grow">Visit${me ? " · " + esc(me.name) : ""}</span><span class="muted">${esc(v.state)}</span>${typeof v.findTeleports === "function" ? `<button data-v="tp" class="${tpOpen || v.teleporting ? "go" : ""}" title="Teleport (T): the rooms that would take you now (each room says who it takes), and your own">✦</button>` : ""}<button data-v="perf" class="${v.perfOn ? "go" : ""}" title="how this page is doing: frames, stalls, and what Visit does (on or off)">⏱</button>${v.state === "online" ? `<button data-v="lobby" title="the lobby in a browser tab, as you: its chat, who is here, worlds (your door stays here)">🌐 Lobby</button>` : ""}${v.state === "online" ? `<button data-v="away" title="leave the lobby: nobody sees you or can link until you come back">Go offline</button>` : ""}</div>`);
+      rows.push(`<div class="row hd"><button class="caret" data-v="fold" title="${folded ? "open the panel" : "fold the panel: its first line, and what asks you (a knock, a call)"} · Visit ${VERSION}">${folded ? "▸" : "▾"}</button><span class="dot ${v.state === "online" ? esc(v.status) : ""}"></span><span class="grow">Visit${me ? " · " + esc(me.name) : ""}</span><span class="muted">${esc(v.state)}</span>${withTeleport && typeof v.findTeleports === "function" ? `<button data-v="tp" class="${tpOpen || v.teleporting ? "go" : ""}" title="Teleport (T): the rooms that would take you now (each room says who it takes), and your own">✦</button>` : ""}<button data-v="perf" class="${v.perfOn ? "go" : ""}" title="how this page is doing: frames, stalls, and what Visit does (on or off)">⏱</button>${v.state === "online" ? `<button data-v="lobby" title="the lobby in a browser tab, as you: its chat, who is here, worlds (your door stays here)">🌐 Lobby</button>` : ""}${v.state === "online" ? `<button data-v="away" title="leave the lobby: nobody sees you or can link until you come back">Go offline</button>` : ""}</div>`);
       // 5.1 (SPEC 8.15): where you may teleport to, under the first line (folded or not, once you asked): each room that
       // said yes to you just now, your own first, but the one you are in.
-      if (tpOpen || v.teleporting) {
-        const here = v.roomHere && v.roomHere.key, tp = v.teleporting, list = v.teleportTargets.filter(t => t.key !== here);
+      if (withTeleport && (tpOpen || v.teleporting)) {
+        // (5.2: the room your user is in too: onto its pad, from wherever they are in it)
+        const here = v.roomHere && v.roomHere.key, tp = v.teleporting, list = v.teleportTargets;
         if (tp) rows.push(`<div class="row tp"><span class="grow">✦ teleporting to <b>${esc(tp.name)}</b>…</span></div>`);
         else rows.push(`<div class="row tp"><span class="grow">✦ teleport to <span class="muted">· each room says whom it takes</span></span><button data-v="tp" title="close">✕</button></div>`);
-        for (const t of list) rows.push(`<div class="row tp sub"><span class="grow">${t.home ? "⌂ <b>your room</b>" : `✦ <b>${esc(t.name)}</b>${t.user && t.user !== t.name ? ` <span class="muted">· ${esc(t.user)}</span>` : ""}`}</span><button class="go" data-v="tp_go" data-key="${esc(t.key)}"${tp ? " disabled" : ""}>Teleport</button></div>`);
+        for (const t of list) rows.push(`<div class="row tp sub"><span class="grow">${t.home ? "⌂ <b>your room</b>" : `✦ <b>${esc(t.name)}</b>${t.user && t.user !== t.name ? ` <span class="muted">· ${esc(t.user)}</span>` : ""}`}${t.key === here ? ` <span class="muted">· here: to its pad</span>` : ""}</span><button class="go" data-v="tp_go" data-key="${esc(t.key)}"${tp ? " disabled" : ""}>Teleport</button></div>`);
         if (v.teleportAsking) rows.push(`<div class="row tp sub"><span class="grow muted">asking the rooms…</span></div>`);
         else if (!tp && !list.length) rows.push(`<div class="row tp sub"><span class="grow muted">no room would take you just now${v.state === "online" && !v.teleportLobby ? " (this lobby carries no teleports)" : ""}</span><button data-v="tp_again">Ask again</button></div>`);
         if (tpWhy && !tp) rows.push(`<div class="row tp sub note">${esc(tpWhy)}</div>`);

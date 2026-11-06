@@ -1895,6 +1895,14 @@ impl Core {
             // 5.1 (8.15): the person's page asks which rooms would take them by teleport (their own among them), and
             // knocks to teleport into one their world does not watch; the room's page answers asks on this door.
             "teleport_ask" => self.teleport_round(),
+            // 5.2: the person is about to teleport out of the room they are in (on this channel): its host plays it.
+            "teleport_charge" => {
+                let ch = m.get("channel").and_then(Value::as_u64).unwrap_or(0) as u16;
+                match self.visits.values().find(|v| v.channel == ch && v.up && v.role == Role::Visitor && v.watch && v.inside) {
+                    Some(v) => { let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "teleport_charge": true }))); }
+                    None => self.page_error("no_such_visit", "you are not in a room on that channel", Some("teleport_charge")),
+                }
+            }
             "teleport" => match m.get("key").and_then(Value::as_str).filter(|k| state::key_ok(k)) {
                 Some(k) => {
                     let k = k.to_string();
@@ -3810,13 +3818,21 @@ impl Core {
             }
             TpAsk::Enter(id) => {
                 let full = self.visits.values().filter(|x| x.role == Role::Host && x.inside && !x.local).count() >= self.max_visitors as usize;
-                let Some(v) = self.visits.get_mut(&id).filter(|v| v.up && v.role == Role::Host && v.watch && !v.inside) else { return };
-                if !ok || (full && !v.local) {
+                let Some(v) = self.visits.get_mut(&id).filter(|v| v.up && v.role == Role::Host && v.watch) else { return };
+                let again = v.inside;   // 5.2: in this room already: out by teleport, and in again on its pad
+                if again && !ok {   // (still in the room: only this teleport refused)
+                    let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "teleport_refused": true })));
+                    return;
+                }
+                if !ok || (full && !v.local && !again) {
                     let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "enter_refused": if ok { "full" } else { "teleport" } })));
                     return;
                 }
                 v.inside = true;
                 let ch = v.channel;
+                if again {
+                    self.to_page(json!({ "type": "exit", "channel": ch, "teleport": true }));
+                }
                 self.to_page(json!({ "type": "enter", "channel": ch, "teleport": true }));
             }
             TpAsk::Knock { kid, fid, key } => {
@@ -4329,8 +4345,9 @@ impl Core {
             // 5.1 (8.15): stepping in by teleport: this room's page says whether they may (as it answers any ask), and
             // where (its pad); the owner coming home by teleport too (the owner's visit, local).
             Role::Host if v.watch && m.get("enter").is_some() && m.get("teleport") == Some(&json!(true)) => {
+                // 5.2: already inside too (a teleport to this room's pad from elsewhere in it)
                 let waiting = self.tp_asks.values().any(|(w, _)| matches!(w, TpAsk::Enter(x) if x == id));
-                if v.inside || waiting {
+                if waiting {
                     return;
                 }
                 let (peer, local) = (v.peer.clone(), v.local);
@@ -4353,6 +4370,13 @@ impl Core {
                         enter["pose"] = pose;
                     }
                     self.to_page(enter);
+                }
+            }
+            // 5.2 (8.15): its user is about to teleport out of this room (in 2 s): its page plays them going, while they
+            // are still here.
+            Role::Host if v.watch && m.get("teleport_charge") == Some(&json!(true)) => {
+                if v.inside {
+                    self.to_page(json!({ "type": "teleport_charge", "channel": ch }));
                 }
             }
             Role::Host if v.watch && m.get("exit").is_some() => {
@@ -4533,6 +4557,9 @@ impl Core {
                     let near = near_from(near);
                     v.near_keys = near.as_array().into_iter().flatten().filter_map(|e| e["key"].as_str().map(str::to_string)).collect();
                     self.to_page(json!({ "type": "voice_near", "channel": ch, "near": near }));
+                } else if m.get("teleport_refused") == Some(&json!(true)) && v.watch && v.inside {   // 5.2: to its pad from in it: no
+                    let key = v.peer.get("key").cloned().unwrap_or(Value::Null);
+                    self.to_page(json!({ "type": "teleport_failed", "key": key, "reason": "not_allowed" }));
                 } else if let Some(reason) = m.get("enter_refused").filter(|_| v.watch && v.inside) {
                     v.inside = false;
                     v.performed = Value::Null;
@@ -4675,7 +4702,7 @@ fn page_for(v: &Value) -> PageRole {
         }
         // (4.3.2: "enter" and "exit" to both: a user page's visitors, in person, are those inside, as its panel lists them)
         "input" | "point" | "keyframe" | "scene_resync" | "shared_adds" | "landscapes" | "addressed" | "act"
-        | "avatar" | "avatar_none" | "possessions" | "possession" | "assets" | "asset_want" | "asset_kept" | "teleport_ask" => PageRole::Host,
+        | "avatar" | "avatar_none" | "possessions" | "possession" | "assets" | "asset_want" | "asset_kept" | "teleport_ask" | "teleport_charge" => PageRole::Host,
         "chat" | "chat_log" | "unseen" | "held" | "held_sent" | "media_none" | "preview" | "history" | "shared"
         | "voice_near" | "room_voice" | "voice_members" | "user" | "banned" | "seen" | "layout" | "landscape"
         | "plot_forgotten" | "knock" | "knock_sent" | "knock_cancelled" | "answered" | "link_stats" | "scene"
@@ -4695,7 +4722,7 @@ fn role_may(role: PageRole, t: &str) -> bool {
         "seen", "plot_keep", "plot_load", "plot_forget", "knock", "answer", "leave_lobby", "join_lobby", "status", "rename",
         "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set", "group_owner", "group_delete", "groups", "admin",
         "lobby_pass", "browser_code", "browser_allow", "browsers", "browser_revoke", "huddle", "knock_cancel", "asset_want", "rtc_offer", "rtc_close", "mic",
-        "teleport_ask", "teleport"];
+        "teleport_ask", "teleport", "teleport_charge"];
     match role {
         PageRole::Both => true,
         PageRole::Host => !USER.contains(&t),
@@ -4951,7 +4978,9 @@ fn possessions_from(l: Option<&Value>) -> Option<Vec<Value>> {
         let num = |k: &str, d: f64, lo: f64, hi: f64| p.get(k).and_then(Value::as_f64).filter(|x| x.is_finite()).map_or(d, |x| x.clamp(lo, hi));
         out.push(json!({
             "id": id, "name": state::clip_name(p.get("name").and_then(Value::as_str).unwrap_or(id)),
-            "mount": p.get("mount") == Some(&json!(true)), "fly": p.get("fly") == Some(&json!(true)),
+            "mount": p.get("mount") == Some(&json!(true)) && p.get("teleport") != Some(&json!(true)), "fly": p.get("fly") == Some(&json!(true)),
+            // 5.2 (8.15): its teleport animation (clips "out" and "in"), as its room ships it: passed along, never played
+            "teleport": p.get("teleport") == Some(&json!(true)),
             "speed": num("speed", 1.0, 0.25, 5.0), "lift": num("lift", 0.0, 0.0, 5.0),
         }));
     }
@@ -5073,8 +5102,11 @@ mod tests {
     #[test]
     fn possessions_are_checked() {
         let l = possessions_from(Some(&json!([{ "id": "dragon", "name": "Smaug\u{7}", "mount": true, "fly": true, "speed": 9, "lift": -1, "extra": 1 }, { "id": "cat" }]))).unwrap();
-        assert_eq!(l, vec![json!({ "id": "dragon", "name": "Smaug", "mount": true, "fly": true, "speed": 5.0, "lift": 0.0 }),
-            json!({ "id": "cat", "name": "cat", "mount": false, "fly": false, "speed": 1.0, "lift": 0.0 })]);
+        assert_eq!(l, vec![json!({ "id": "dragon", "name": "Smaug", "mount": true, "fly": true, "speed": 5.0, "lift": 0.0, "teleport": false }),
+            json!({ "id": "cat", "name": "cat", "mount": false, "fly": false, "speed": 1.0, "lift": 0.0, "teleport": false })]);
+        // 5.2: a teleport animation, classed as such (never a mount too)
+        let t = possessions_from(Some(&json!([{ "id": "beam", "teleport": true, "mount": true }]))).unwrap();
+        assert_eq!((t[0]["teleport"].clone(), t[0]["mount"].clone()), (json!(true), json!(false)));
         assert!(possessions_from(Some(&json!([{ "id": "a" }, { "id": "a" }]))).is_none());   // twice the same
         assert!(possessions_from(Some(&json!([{ "id": "my:horse" }]))).is_none());   // not an id
         assert!(possessions_from(Some(&json!((0..9).map(|i| json!({ "id": format!("p{i}") })).collect::<Vec<_>>()))).is_none());
