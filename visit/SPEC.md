@@ -1686,7 +1686,8 @@ by the room as it likes.
   it, a glow on the floor, 1.6 s, in the room's `color` (else cyan); going, their body (Visit's model of them, where
   the room shows their own look) drawn up into it; coming, down out of it. A room that draws its own (`effect: false`)
   hears `teleported` (`{ way: "in" | "out", id, visitor, at }`) and plays what it likes; so does any room, for its
-  own model of a visitor. The person's own page draws a warp over its world's view while they go (`teleport` events:
+  own model of a visitor. The person's own page draws a warp over its world's view while they go (`v.world({ warp:
+  false })`: none, 5.1.1) (`teleport` events:
   `leaving`, `arrived`, `failed` with why), and a flash as they arrive. A page that walks its user at home itself (no
   engine) goes home onto its own pad at once, its own room playing the beam.
 - **Older Visits.** An office before 5.1 says nothing of `teleport`, so it is neither asked nor knocked on; a host
@@ -1903,9 +1904,10 @@ v.on("teleported", ({ way, id, visitor, at }) => …)   // 5.1, hosting: someone
 // what comes back is where they are now: at home as given, or in a plot as its host has them (in: { key, name }), its
 // y their feet as that host has them (a stair, a lift, flying), never higher than they came when they walk off.
 // Then world.render(camera), in place of renderer.render(scene, camera).
-const world = v.world({ scene, renderer, ground, gap, clipOwn, bubbles, speaking });   // your whole scene and its renderer (host()'s by default);
+const world = v.world({ scene, renderer, ground, gap, clipOwn, bubbles, speaking, warp });   // your whole scene and its renderer (host()'s by default);
                    //   bubbles (true): it draws the lines said (8.9) in the room your user is in over their speakers' heads;
-                   //   speaking (true): a 🔊 over each one your user hears speaking there (8.7)
+                   //   speaking (true): a 🔊 over each one your user hears speaking there (8.7); warp (true, 5.1.1): the warp
+                   //   over this view while your user teleports (8.15; false: none, your page shows it its own way)
 const me = world.frame(dt, { x, y, z, yaw, pitch, air, facing }, { forward, strafe, up, run });   // air: how far above its floor your user
                    //   is (flying), so a plot it steps into has it that high (8.2); up: as a visitor's input; facing: the
                    //   way your user faces (radians, as yaw), for their mount at home (8.11; else yaw)

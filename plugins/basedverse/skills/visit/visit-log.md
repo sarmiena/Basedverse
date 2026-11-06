@@ -44,6 +44,21 @@ State is one of:
 - Public routes (work signed out): none (or each, as the user named it, with the date and their words).
 - Where the server listens: 127.0.0.1 (or HTTPS / WireGuard / Tailscale, and how).
 
+## Widgets
+
+Each piece of this room's UI on Visit's API (basedverse's `visit/widgets/`): the reference UI's (as it came, or changed:
+how), the room's own (where), or none (why, in the user's words).
+
+| widget | whose | where, and what differs |
+|---|---|---|
+| panel | reference | |
+| chat window | reference | |
+| target card | reference | |
+| map | reference | |
+| teleport | reference | (the panel's ✦ and T; opened from the room's pad: how) |
+| ⏱ corner | reference | |
+| stage | reference | (only for a page that draws no world) |
+
 ## Deviations from vanilla
 
 Only what replaces or turns off a Visit default, each as the user asked for it. An upgrade re-applies it; if a

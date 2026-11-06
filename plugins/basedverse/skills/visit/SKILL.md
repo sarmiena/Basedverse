@@ -23,6 +23,10 @@ Do not work from memory: Visit changes with every release. Read these from the b
 - **`visit/MODELS.md`**: where people are (their feet) and how a room hands over its user's body and things so that
   other rooms show them right. Follow it as written for `spawn`, `move`, `visit.avatar` and possessions, and run
   `Visit.checkModel` on every model.
+- **`visit/widgets/`** (its `README.md`, then each page): every widget (a piece of the room's UI on Visit's API: the
+  panel, the chat window, the teleport list...) a feature needs, when a room needs it, and what one of the room's own
+  must do. Visit draws none of them in the page: the room has each, the reference UI's or its own, or not at all, by
+  the user's choice. A feature whose widget the room lacks works under the hood and is out of the user's reach.
 - **`visit/SPEC.md`**: the contract (`visit` and how it runs: section 4; messages, limits, the library's API), for
   detailed questions.
 - **`auth/INTEGRATING.md`** and **`auth/SPEC.md`**: the workroom's sign-in (accounts made in a terminal with
@@ -104,6 +108,9 @@ feature in a workroom's code. If the changelog has something newer than the tabl
    - Its engine: `ENGINE_ROOM_URL`, and `curl -s http://127.0.0.1:${ENGINE_PORT:-7405}/health`.
 5. **What it uses**: `VISIT.md` says. Without one, search the page's code for each feature (the table below), tell
    the user what you found, and let them correct it.
+6. **Its widgets**: for each widget in `visit/widgets/README.md`, whether the room has it: the reference UI's copy (find
+   the call it names, and whether the copy has the part: a copy from before a release lacks what that release added),
+   its own (find it in the page's code), or none. Check against the widget page's "it must" list, not just a name.
 
 ## Where to look (hints, not the list)
 
@@ -142,6 +149,7 @@ feature in a workroom's code. If the changelog has something newer than the tabl
 | users and worlds: a world public or with a password, its owner's ✕ ⛔ ♛; no door open to anyone (`visit.setPublic` does nothing) | 3.1 | vanilla (the panel) | `visit.createGroup(name, { password`, `visit.joinGroup(name, password`; no `visit.setPublic(` |
 | the lobby's page in a browser your workroom linked (🌐 Lobby, 📱 Phone's QR code, Link a browser's code) | 3.1 | vanilla (the panel) | `visit.openLobby(` from a click, `visit.lobbyQr(`, `visit.linkBrowser(`, or the panel |
 | linking by code confirmed both ways: the room's QR code (or digits) shown back by the browser | 3.2 | vanilla (the panel) | `visit.allowBrowser(` (a Promise of `{ qr, confirm }`: show them), or the panel |
+| widgets: each piece of the room's UI a feature needs (panel, chat window, card, map, teleport, ⏱, stage), one page each | 5.0, 5.1.1 | `visit/widgets/` | `VisitUI.panel(` and the rest in their copy of `visit-ui.js`, or the room's own UI |
 | teleports: a pad of the room's own (its look the room's), who may come by the room's own rule, Visit's beam in both rooms, ✦ Teleport in the panel | 5.1 | step 10 | `teleport:` in `visit.host(` (`pad`, `allow`, `color`, `effect`), `visit.findTeleports(`, `visit.teleport(`, `"teleported"` |
 
 ## List
@@ -152,6 +160,9 @@ For each feature give one line on what it gives the user, then its state in this
 - **their own**: a Visit default replaced or turned off, as `VISIT.md`'s Deviations say;
 - **off**;
 - **not yet**: new since the version they have, with that version.
+
+Then each widget (`visit/widgets/`), one line: the reference's, their own, none, or **missing** (a feature they use
+needs it, and the room has no way to it: say which feature is out of their user's reach for it).
 
 Say first which Visit the room is on (Step 0, point 2), and, on 1.x, that the upgrade to 2.0 comes before anything
 else. End with what is new since their version, from the changelog.
@@ -175,6 +186,9 @@ Write the plan in the conversation:
 - **From scratch**: INTEGRATING.md's steps in order, each with its check, the room's server on the machine beside
   `visit` (no Docker) unless the room already has it elsewhere.
 - **Upgrade (2.0 on)**: each version after theirs up to the newest, each one's "What an integration does".
+- **Widgets**: every widget a feature of theirs needs that the room lacks (Step 0, point 6), whatever the changelog
+  steps said: in their copy of the reference UI (the reference's diff, from the tag their copy came from), or built
+  from its page in `visit/widgets/` in their UI's own style. A widget is never left out without the user saying so.
 - Everything vanilla, except what the user asked for differently (quote them).
 - **What has no default**, so ask or propose:
   - what their landscape is (what never changes: ground, walls, trees, furniture; not people, screens or signs);
@@ -201,11 +215,12 @@ Wait for "go" (or the user's own word for it).
      check. Stop and tell the user if a check fails; never go on past one.
    - **From scratch**: follow INTEGRATING.md.
    - **Upgrade**: follow each release's steps in order, re-applying `VISIT.md`'s deviations.
-2. **Check it**: each step's check, then step 8 and step 9's checks, as far as this machine lets you (a second
+2. **Check it**: each step's check, each widget's check (`visit/widgets/`), then step 8 and step 9's checks, as far as this machine lets you (a second
    `visit` for step 8, never a second page on theirs). Say plainly what you could not check.
 3. **Write `VISIT.md`** at the workroom's root, from `${CLAUDE_SKILL_DIR}/visit-log.md`, or bring it up to date:
    - the version it is now integrated at;
    - each feature's state;
+   - each widget: the reference's (as it came, or changed: how), their own (where), or none (why, in their words);
    - each deviation, with the user's words and the date;
    - open requests for basedverse;
    - a line of history for this run (an upgrade to 2.0: from what, what was imported, what is kept for going back).

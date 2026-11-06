@@ -17,7 +17,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "5.1.0", PROTO = "basedverse-visit-local/2";
+  const VERSION = "5.1.1", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -5196,10 +5196,11 @@
     // false draws every plot every frame). `shadowMs`: how often a friend's plot's lights work out their shadows,
     // in ms (250, each plot on its own beat; 0: every frame). Never your own room, nor the plot you are in: both
     // drawn every frame, their shadows too.
-    constructor(v, { scene, renderer, three, ground = 0x30363d, gap = WORLD_GAP, clipOwn = true, bubbles = true, speaking = true, self = "mine", cull = true, shadowMs = 250 } = {}) {
+    constructor(v, { scene, renderer, three, ground = 0x30363d, gap = WORLD_GAP, clipOwn = true, bubbles = true, speaking = true, self = "mine", cull = true, shadowMs = 250, warp = true } = {}) {
       const hk = v._hooks;
       if (!hk && !(v.role === "user" && three && three.REVISION && renderer)) throw new Error(v.role === "user" ? "visit.world needs { three, renderer }: the three.js this page draws with, and its renderer (its room comes from its host)" : "visit.world: v.host first (the world is drawn with your three.js, round your plot)");
       this.v = v; this.T = hk ? hk.scene.three : three;
+      this.warpOff = warp === false;   // 5.1.1: no warp over this view while its user teleports (the page shows its own)
       this.scene = hk ? scene || (hk.scene.root.isScene ? hk.scene.root : null) : null;
       this.renderer = renderer || (hk && hk.scene.renderer);
       if ((hk && !this.scene) || !this.renderer) throw new Error("visit.world needs { scene, renderer }: your whole scene, and the renderer that draws it");
@@ -5508,7 +5509,8 @@
 
     // The warp over this world's view while a teleport goes (5.1): "charge" (up, and held, softer while it waits), then
     // "arrive" (a flash, fading) or "off" (fading at once). Drawn last, over everything, by render().
-    _warp(state) { this.warpState = { state, at: performance.now(), from: this._warpLevel() }; }
+    // 5.1.1: v.world({ warp: false }): none (a page that shows a teleport its own way, on the "teleport" events).
+    _warp(state) { if (this.warpOff) return; this.warpState = { state, at: performance.now(), from: this._warpLevel() }; }
     _warpLevel(now = performance.now()) {
       const w = this.warpState;
       if (!w) return 0;

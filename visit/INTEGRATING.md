@@ -42,8 +42,8 @@ Every room that takes Visit's defaults looks and works the same for the people v
 take them unless your user asks for something else. Since 5.0 (#82) the pieces in your page (the panel, the chat
 window, the card, the Map, the stage, ⏱) are no longer drawn by visit.js: they are the **reference UI**,
 [examples/ui/visit-ui.js](examples/ui/visit-ui.js), which you copy into your room's own tree, load with your page, and
-then own ([UI.md](UI.md): each piece, and what it is built on). An upgrade of Visit never changes your copy. The
-defaults:
+then own ([UI.md](UI.md); each piece, and which your room needs, in [widgets/](widgets/README.md)). An upgrade of Visit
+never changes your copy: a release that adds or changes a widget says so, and you bring it over. The defaults:
 
 - **the panel** (`VisitUI.panel`): 🌐 Lobby (the lobby's page in a tab, as your workroom: its chat, who is here, your
   worlds, knocking; your door stays in your room), 📱 Phone (the same, as a QR code for a phone) and Link a browser
@@ -618,7 +618,8 @@ sign-in your server already checks is the one that counts. The lobby (`VISIT_LOB
 `wss://basedverse.app/`, or one anyone runs, ../lobby/README.md) checks your office's key as it joins.
 
 The quickest way: the reference UI's panel (copied into your tree, loaded with your page; [UI.md](UI.md)), in any
-element of yours (a corner of the page, say):
+element of yours (a corner of the page, say). It has every widget Visit's features need ([widgets/](widgets/README.md));
+a UI of your own has each from its page there:
 
 ```html
 <script src="/visit-ui.js"></script>   <!-- your copy of examples/ui/visit-ui.js -->
@@ -808,10 +809,17 @@ room decides two things, and Visit does the rest.
    own: `effect: false`, and play it on `visit.on("teleported", ({ way, id, visitor, at }) => …)`. A room that draws
    its own model of a visitor (`look: "mine"`) can play the same event on it: Visit's beam covers the spot, not your
    model.
-5. **Your copy of the reference UI** has ✦ Teleport (in the panel's first line), on `visit.findTeleports()` and
-   `visit.teleport(key)`; nothing to do but keep it.
+5. **The teleport widget** ([widgets/teleport.md](widgets/teleport.md)): your user's list of the rooms that would take
+   them, and the way to go. **Every room from 5.1 needs it**, whether or not it takes teleports itself: without it your
+   user cannot teleport anywhere, home included. The reference has it (the panel's ✦, and T); a UI of your own builds it
+   from that page.
+6. **Open it from your pad.** If your room has a pad, a click on it should open the list (only your page can wire it):
+   name the pad, and on your page's click call the reference's `ui.teleports(true)` (or your own widget's) when the
+   click lands on it. widgets/teleport.md has the few lines. A button of your own in your HUD can call `ui.teleports()`
+   too.
 
-**Check:** with step 8's two rooms, each with a pad: ✦ Teleport lists your own room and the other's; Teleport there
+**Check:** with step 8's two rooms, each with a pad: the list opens from ✦ (or your button), from T, and from a click on
+your pad, and lists your own room and the other's; Teleport there
 lands you on its pad, the beam in its room (seen from the other page too), and its `spawn` heard `teleport`; Teleport
 to your own room brings you home onto yours, the beam in the room you left; with `allow: () => false` in one, the other
 no longer lists it, and a teleport there (from code) leaves you where you were.
@@ -871,9 +879,11 @@ no longer lists it, and a teleport there (from code) leaves you where you were.
 - [ ] Your world (step 9): your `plot` and `unit` are said, visitors can walk off your plot, `spawn` takes
       `at`, your user has a body of yours, you draw with `world.frame` and `world.render`, and step 9's check
       passes.
-- [ ] Teleports (step 10), if your room takes them: a pad of your own, in a deliberate place; `allow` as your user
-      wants it (or Visit's own: guests and you), written in your `VISIT.md`; `spawn` puts arrivals on the pad; step
-      10's check passes.
+- [ ] Teleports (step 10): the teleport widget, in every room from 5.1; if your room takes them, a pad of your own, in a
+      deliberate place, a click on it opening the list; `allow` as your user wants it (or Visit's own: guests and you),
+      written in your `VISIT.md`; `spawn` puts arrivals on the pad; step 10's check passes.
+- [ ] Your widgets ([widgets/](widgets/README.md)): each one your room's features need is there (the reference's, or
+      your own doing what its page says it must), and your `VISIT.md` says which.
 
 ## Troubleshooting
 

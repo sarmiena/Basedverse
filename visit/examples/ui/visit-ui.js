@@ -8,7 +8,8 @@
 //   <script src="visit-ui.js"></script>       (before or after visit.js: it reads Visit when it is called)
 //   const ui = VisitUI.panel(element, v);    the HUD (in `element`, a box of your page's), with the chat window, your
 //                                            target's card and the ⏱ corner; { chat: false, card: false } leaves
-//                                            either out. ui.chat, ui.card, ui.perf, ui.map, ui.say(), ui.release()
+//                                            either out. ui.chat, ui.card, ui.perf, ui.map, ui.say(), ui.release();
+//                                            ui.teleports(on): its ✦ list, from your own button or your pad (5.1.1)
 //   VisitUI.stage(v);                        the room you visit, full-window or in a corner, your own room behind it
 //   VisitUI.map(v).open();                   your world from above (the panel's Map)
 //   VisitUI.chat(v), VisitUI.targetCard(v, { chat }), VisitUI.perf(v): each alone, for a page with its own panel
@@ -28,6 +29,7 @@
   // mailbox (8.9).
   const LOOKING = 120000, STIRS = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"];
   const MOUNT_KEY = "KeyM";   // on your mount and off again (8.11), anywhere but a box of the page's own
+  const TELEPORT_KEY = "KeyT";   // 5.1.1: the ✦ list, open or closed, the same way
   const HUDDLE_ASK_MS = 60000;   // a huddle's ask in the chat window's ring, this long
 
   // Each piece first: Visit loaded (5.0 or later), its limits read, and this the person's page (a room's own page,
@@ -200,6 +202,23 @@
       v.ride(v.riding ? null : mountChosen());
     };
     addEventListener("keydown", mountKey);
+    // 5.1.1: the ✦ list (where you may teleport), opened (asking the rooms again), closed, or turned over (no argument):
+    // from the ✦, T anywhere but a box of the page's own, and the handle's teleports(), for the room's own button or a
+    // click on its pad.
+    const teleports = on => {
+      if (typeof v.findTeleports !== "function") return false;
+      tpOpen = on === undefined ? !tpOpen : !!on; tpWhy = "";
+      if (tpOpen) v.findTeleports();
+      drawn = ""; draw();
+      return tpOpen;
+    };
+    const teleportKey = e => {
+      if (e.code !== TELEPORT_KEY || e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented || typeof v.findTeleports !== "function") return;
+      const t = e.target;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      teleports();
+    };
+    addEventListener("keydown", teleportKey);
     // Notes, a while each: where a friend's world put your room (once it settles: a friend dragging it about on their
     // Map tells you at every step; never again for the same place), and a call that ended other than hung up.
     let notes = [];
@@ -244,7 +263,7 @@
       if (root.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;   // never under a typing hand
       const me = v.office, rows = [];
       root.classList.toggle("folded", folded); element.classList.toggle("visit-folded", folded);
-      rows.push(`<div class="row hd"><button class="caret" data-v="fold" title="${folded ? "open the panel" : "fold the panel: its first line, and what asks you (a knock, a call)"} · Visit ${VERSION}">${folded ? "▸" : "▾"}</button><span class="dot ${v.state === "online" ? esc(v.status) : ""}"></span><span class="grow">Visit${me ? " · " + esc(me.name) : ""}</span><span class="muted">${esc(v.state)}</span>${typeof v.findTeleports === "function" ? `<button data-v="tp" class="${tpOpen || v.teleporting ? "go" : ""}" title="Teleport: the rooms that would take you now (each room says who it takes), and your own">✦</button>` : ""}<button data-v="perf" class="${v.perfOn ? "go" : ""}" title="how this page is doing: frames, stalls, and what Visit does (on or off)">⏱</button>${v.state === "online" ? `<button data-v="lobby" title="the lobby in a browser tab, as you: its chat, who is here, worlds (your door stays here)">🌐 Lobby</button>` : ""}${v.state === "online" ? `<button data-v="away" title="leave the lobby: nobody sees you or can link until you come back">Go offline</button>` : ""}</div>`);
+      rows.push(`<div class="row hd"><button class="caret" data-v="fold" title="${folded ? "open the panel" : "fold the panel: its first line, and what asks you (a knock, a call)"} · Visit ${VERSION}">${folded ? "▸" : "▾"}</button><span class="dot ${v.state === "online" ? esc(v.status) : ""}"></span><span class="grow">Visit${me ? " · " + esc(me.name) : ""}</span><span class="muted">${esc(v.state)}</span>${typeof v.findTeleports === "function" ? `<button data-v="tp" class="${tpOpen || v.teleporting ? "go" : ""}" title="Teleport (T): the rooms that would take you now (each room says who it takes), and your own">✦</button>` : ""}<button data-v="perf" class="${v.perfOn ? "go" : ""}" title="how this page is doing: frames, stalls, and what Visit does (on or off)">⏱</button>${v.state === "online" ? `<button data-v="lobby" title="the lobby in a browser tab, as you: its chat, who is here, worlds (your door stays here)">🌐 Lobby</button>` : ""}${v.state === "online" ? `<button data-v="away" title="leave the lobby: nobody sees you or can link until you come back">Go offline</button>` : ""}</div>`);
       // 5.1 (SPEC 8.15): where you may teleport to, under the first line (folded or not, once you asked): each room that
       // said yes to you just now, your own first, but the one you are in.
       if (tpOpen || v.teleporting) {
@@ -483,7 +502,7 @@
       }
       else if (act === "talk") { if (!v.talk(b.dataset.key)) note("They cannot talk now"); }
       else if (act === "map") (mapView || (mapView = map(v))).open();
-      else if (act === "tp") { tpOpen = !tpOpen; tpWhy = ""; if (tpOpen) v.findTeleports(); draw(); }
+      else if (act === "tp") teleports();
       else if (act === "tp_again") { tpWhy = ""; v.findTeleports(); draw(); }
       else if (act === "tp_go") { tpWhy = ""; v.teleport(b.dataset.key); draw(); }
       else if (act === "perf") v.perf(!v.perfOn);
@@ -547,8 +566,9 @@
     const speaking = setInterval(() => { if (v.mic || v.voices.length || v.calls.length) draw(); }, 250);   // who is near, and speaking
     draw();
     return { element: root, chat: cw, card, perf: pc, get map() { return mapView; },
-      release() { clearInterval(speaking); v.off("change", draw); v.off("seen", onSeen); v.off("call", onCall); v.off("model", onModel); v.off("body", onBody); v.off("browsers", onBrowsers); for (const t of seenWait.values()) clearTimeout(t); if (cw) cw.release(); if (card) card.release(); pc.release(); if (mapView) mapView.release(); removeEventListener("keydown", mountKey); root.remove(); },
-      say() { if (cw) cw.open(); } };   // the chat window, open to type a line (as Enter does)
+      release() { clearInterval(speaking); v.off("change", draw); v.off("seen", onSeen); v.off("call", onCall); v.off("model", onModel); v.off("body", onBody); v.off("browsers", onBrowsers); for (const t of seenWait.values()) clearTimeout(t); if (cw) cw.release(); if (card) card.release(); pc.release(); if (mapView) mapView.release(); removeEventListener("keydown", mountKey); removeEventListener("keydown", teleportKey); root.remove(); },
+      say() { if (cw) cw.open(); },   // the chat window, open to type a line (as Enter does)
+      teleports };   // 5.1.1: the ✦ list: (true) opened, (false) closed, () turned over; what it is now
   }
 
   // ---------- the chat window (8.9): bottom left, as in a game ----------
