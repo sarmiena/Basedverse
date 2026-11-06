@@ -62,6 +62,9 @@ pub struct Limits {
     pub tags: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tag: Option<usize>,
+    /// 5.1: asks to teleport an office may make a minute (each one door asked once).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub teleport_asks_per_minute: Option<usize>,
 }
 
 impl Limits {
@@ -71,16 +74,21 @@ impl Limits {
             name: 24, message: 280, frame: 64 * 1024, knocks_per_minute: 6, knock_ttl, max_visitors: 8, max_watchers: 8,
             max_watching: 8, watch_knocks_per_minute: 30, link_addr: 2048, connections_per_ip: 8, resume: 30, chat: 200,
             chats_per_10s: 5, groups: None, group_members: None, group_pending: None, password: None, browsers: None, about: None, tags: None,
-            tag: None,
+            tag: None, teleport_asks_per_minute: None,
         }
     }
 
     /// Version 4's: version 3's, and worlds', linked browsers' and the directory's.
     pub fn v4(knock_ttl: u64) -> Limits {
         Limits { groups: Some(20), group_members: Some(WORLD_SIZE), password: Some((4, 64)), browsers: Some(10), about: Some(200), tags: Some(5), tag: Some(20),
-                 ..Limits::v3(knock_ttl) }
+                 teleport_asks_per_minute: Some(TELEPORT_ASKS), ..Limits::v3(knock_ttl) }
     }
 }
+
+/// 5.1: asks to teleport an office makes a minute, at most (a page asks every room it might go to, each time its user
+/// looks); and how long a door's room has to answer one before its asker hears no.
+pub const TELEPORT_ASKS: usize = 120;
+pub const TELEPORT_ASK_SECS: u64 = 5;
 
 /// The members a world takes, unless its lobby says otherwise (`--world-size`): each member's plot is in every other
 /// member's world, so a world is a neighbourhood, not a crowd.
@@ -247,6 +255,10 @@ pub enum ToLobby {
         /// knock to visit, so only an office that says so is sent one).
         #[serde(default, skip_serializing_if = "is_false", deserialize_with = "truthy")]
         voice: bool,
+        /// 5.1: it takes asks to teleport (`teleport_ask`) and knocks to teleport (a watch's, with `teleport`): its room
+        /// answers who may teleport into it (../../../visit/SPEC.md 8.15). Only an office that says so is asked.
+        #[serde(default, skip_serializing_if = "is_false", deserialize_with = "truthy")]
+        teleport: bool,
         /// Version 4: the room's line, in the lobby's list of who is here.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         about: Option<About>,
@@ -272,6 +284,22 @@ pub enum ToLobby {
         /// 4.0, with `voice`: to join the huddle the door started in this world.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         huddle: Option<String>,
+        /// 5.1, with `watch`: to teleport into the door's room (its page says who may): watched, and stepped into at once.
+        #[serde(default, skip_serializing_if = "is_false", deserialize_with = "truthy")]
+        teleport: bool,
+    },
+    /// 5.1 (../../../visit/SPEC.md 8.15): may this office teleport into that one's room? Its room answers
+    /// (`teleport_answered` back), never the lobby; a door whose hello did not say `teleport` is not asked.
+    TeleportAsk {
+        #[serde(default, deserialize_with = "id_or_none")]
+        to: Option<String>,
+    },
+    /// 5.1: a door's answer to a `teleport_ask` on it, as its room said.
+    TeleportAnswer {
+        #[serde(default, deserialize_with = "id_or_none")]
+        ask: Option<String>,
+        #[serde(default, deserialize_with = "truthy")]
+        ok: bool,
     },
     /// 4.0: a knock of this office's withdrawn (a call it rang, given up): its door hears `knock_cancelled`.
     KnockCancel {
@@ -417,6 +445,9 @@ pub struct Office {
     /// 4.0: it takes voice knocks and huddles.
     #[serde(default, skip_serializing_if = "is_false")]
     pub voice: bool,
+    /// 5.1: it takes asks and knocks to teleport (its room decides who may).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub teleport: bool,
     /// Version 4: its line, in the list of who is here.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub about: Option<About>,
@@ -553,6 +584,10 @@ pub enum FromLobby {
         /// 4.2 (#71): its STUN and TURN server, for voice over WebRTC (../../visit/SPEC.md 8.7).
         #[serde(skip_serializing_if = "Option::is_none", default)]
         ice: Option<Ice>,
+        /// 5.1: this lobby carries asks and knocks to teleport (an older one would refuse `teleport_ask` as a message it
+        /// does not know, and pass a knock's `teleport` on as a plain watch).
+        #[serde(skip_serializing_if = "is_false", default)]
+        teleport: bool,
     },
     Lobby { offices: Vec<Office> },
     Knock {
@@ -568,6 +603,8 @@ pub enum FromLobby {
         voice: bool,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         huddle: Option<String>,
+        #[serde(skip_serializing_if = "is_false", default)]
+        teleport: bool,
     },
     KnockSent {
         id: String,
@@ -578,6 +615,8 @@ pub enum FromLobby {
         link: bool,
         #[serde(skip_serializing_if = "is_false", default)]
         voice: bool,
+        #[serde(skip_serializing_if = "is_false", default)]
+        teleport: bool,
     },
     KnockCancelled { id: String, reason: String },
     Answered {
@@ -592,6 +631,8 @@ pub enum FromLobby {
         link: bool,
         #[serde(skip_serializing_if = "is_false", default)]
         voice: bool,
+        #[serde(skip_serializing_if = "is_false", default)]
+        teleport: bool,
     },
     Visit {
         id: String,
@@ -608,8 +649,24 @@ pub enum FromLobby {
         voice: bool,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         huddle: Option<String>,
+        /// 5.1: a watch begun by a knock to teleport (its door's room let the visitor in).
+        #[serde(skip_serializing_if = "is_false", default)]
+        teleport: bool,
     },
     VisitEnded { id: String, reason: String },
+    /// 5.1: someone asks whether they may teleport into this office's room: answer with `teleport_answer` (a few
+    /// seconds: then the asker hears no).
+    TeleportAsk { id: String, from: Knocker },
+    /// 5.1: what the room of `to` (an office id; `key`, its key) said to this office's `teleport_ask`. `reason` when the
+    /// lobby answered for it (`not_found`, `not_supported`, `not_ready`, `timeout`, `rate_limited`).
+    TeleportAnswered {
+        to: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        key: Option<String>,
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        reason: Option<String>,
+    },
     LobbyChat { from: Sayer, text: String },
     Whisper { from: Sayer, text: String },
     /// 3.1: to a linked browser: whose it speaks for (the office's id, name and key).
@@ -732,10 +789,10 @@ mod tests {
     fn messages_round_trip() {
         let j: ToLobby = serde_json::from_value(serde_json::json!({ "type": "group_join", "group": "Hollow" })).unwrap();
         assert_eq!(j, ToLobby::GroupJoin { group: Some("Hollow".into()), password: None });
-        let k = ToLobby::Knock { to: Some("o1".into()), message: None, watch: true, link: false, voice: false, huddle: None };
+        let k = ToLobby::Knock { to: Some("o1".into()), message: None, watch: true, link: false, voice: false, huddle: None, teleport: false };
         assert_eq!(k.to_json(), serde_json::json!({ "type": "knock", "to": "o1", "watch": true }));
         let m: ToLobby = serde_json::from_value(serde_json::json!({ "type": "knock", "to": "o1", "watch": "yes" })).unwrap();
-        assert_eq!(m, ToLobby::Knock { to: Some("o1".into()), message: None, watch: false, link: false, voice: false, huddle: None });
+        assert_eq!(m, ToLobby::Knock { to: Some("o1".into()), message: None, watch: false, link: false, voice: false, huddle: None, teleport: false });
         let m: ToLobby = serde_json::from_value(serde_json::json!({ "type": "max_visitors" })).unwrap();
         assert_eq!(m, ToLobby::MaxVisitors { n: None });
         let e = FromLobby::error("not_found", "no", Some("knock"));

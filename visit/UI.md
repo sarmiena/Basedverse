@@ -67,6 +67,7 @@ whatever asks for an answer, such as a call ringing.
 | What it shows | Built on |
 |---|---|
 | Your office, online or not, ⏱, 🌐 Lobby, Go offline / online | `v.office`, `v.state` ("change"), `v.perfOn`, `v.perf(on)`, `v.openLobby()`, `v.leaveLobby()`, `v.joinLobby()` |
+| ✦ (Teleport, 5.1, in the first line): the rooms that would take you, your own first but the one you are in, each with Teleport; asking; why one did not | `v.findTeleports()`, `v.teleportTargets` ("teleports"), `v.teleportAsking`, `v.teleportLobby`, `v.teleport(key)`, `v.teleporting`, "teleport", `v.roomHere` |
 | Not in the lobby because nobody is signed in; the lobby's title and message | `v.signedIn`, `v.lobbyInfo` |
 | Your status, how many visitors, your door | `v.status`, `v.maxVisitors`, `v.door`, `v.setStatus()`, `v.setMaxVisitors()`, `v.setDoor()` |
 | Your line in the lobby's list | `v.about`, `v.setAbout(text, tags)` |

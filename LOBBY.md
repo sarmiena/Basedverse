@@ -91,6 +91,9 @@ to end: QUIC, and SRTP).
 12. **One protocol crate.** `lobby/proto` (the `lobby-proto` crate) has what both ends must agree on: the
     messages a visit-client sends, as types; the limits; the name rule; what is signed. `lobby` and `visit` are
     both built with it, so they cannot drift apart.
+13. **Teleports are each room's to allow (5.1).** The lobby passes an ask to teleport to the room asked, and its
+    answer back, and a knock to teleport to its door; it answers no only for a room that takes none, is not ready, or
+    is gone. Who may come is the room's own rule, never the lobby's (SPEC 8.15).
 
 ## 3. From Battle.net (Diablo II's lobby)
 

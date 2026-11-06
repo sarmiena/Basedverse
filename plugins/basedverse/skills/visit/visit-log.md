@@ -28,6 +28,7 @@ container on the host's network, bound to 127.0.0.1>; its data in `VISIT_DATA_DI
 | landscapes, offline plots | vanilla | (what is marked `visitStatic`, and how) |
 | mounts | vanilla | (what they are is the room's: its possessions; riders drawn at their pose's height) |
 | physics (falling, flying, riders) | own | (the room's `spawn` and `move`: Visit has none; say what they do) |
+| teleports | vanilla | (where the pad is and what it looks like; who may come: Visit's rule, or the room's `allow`, in the user's words) |
 | the engine (the room's page inside `visit`, the person's page through the server's relay) | vanilla | (the server page's address, `ENGINE_ROOM_URL`) |
 
 State is one of:

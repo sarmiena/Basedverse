@@ -37,7 +37,7 @@ async fn hello(port: u16, name: &str, key: &SecretKey) -> (Value, impl Sized) {
     let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/")).await.unwrap();
     let public = key.public().to_string();
     let h = ToLobby::Hello { proto: PROTO4.into(), name: name.into(), key: Some(public.clone()), sim: json!({}), status: "available".into(), max_visitors: 3,
-                             resume: None, world: false, links: false, chat: false, whisper: false, voice: false, about: None };
+                             resume: None, world: false, links: false, chat: false, whisper: false, teleport: false, voice: false, about: None };
     ws.send(Message::Text(h.to_json().to_string().into())).await.unwrap();
     macro_rules! next {
         () => {

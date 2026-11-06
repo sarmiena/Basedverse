@@ -247,6 +247,9 @@ struct Session {
     whisper: bool,
     /// 4.0: it said it takes voice knocks and huddles.
     voice: bool,
+    /// 5.1: it said it takes asks and knocks to teleport; and the asks it made in the last minute.
+    teleport: bool,
+    asked: VecDeque<Instant>,
     about: Option<About>,
     admin: bool,
     said: VecDeque<Instant>,
@@ -281,6 +284,15 @@ struct Knock {
     link: bool,
     voice: bool,
     huddle: Option<String>,
+    /// 5.1, a watch's: to teleport in.
+    teleport: bool,
+}
+
+/// 5.1: an ask to teleport, waiting for its door's answer (TELEPORT_ASK_SECS at most).
+struct Ask {
+    from: String,
+    to: String,
+    until: Instant,
 }
 
 struct Visit {
@@ -293,6 +305,8 @@ struct Visit {
     /// 4.0: voice alone (no scene), and the huddle it joins, if one.
     voice: bool,
     huddle: Option<String>,
+    /// 5.1: a watch begun by a knock to teleport.
+    teleport: bool,
 }
 
 /// 4.0: a world's huddle going on: who started it (an office), and when.
@@ -311,6 +325,8 @@ pub struct Core {
     by_key: HashMap<String, String>,
     resumes: HashMap<String, String>,
     knocks: HashMap<String, Knock>,
+    /// 5.1: asks to teleport waiting for their doors' answers, by id.
+    asks: HashMap<String, Ask>,
     /// 4.0: the huddles going on, by their world's name as it is spelled.
     huddles: HashMap<String, Huddle>,
     /// The order knocks were made in, for a resumed office's replay.
@@ -393,7 +409,7 @@ impl Core {
         limits4.group_members = Some(cfg.world_size);
         Core {
             cfg, limits3, limits4, me, offices: HashMap::new(), by_name: HashMap::new(), by_key: HashMap::new(), resumes: HashMap::new(),
-            knocks: HashMap::new(), huddles: HashMap::new(), knock_order: Vec::new(), visits: HashMap::new(), visit_order: Vec::new(), bans, groups, lie: None, replying: None,
+            knocks: HashMap::new(), asks: HashMap::new(), huddles: HashMap::new(), knock_order: Vec::new(), visits: HashMap::new(), visit_order: Vec::new(), bans, groups, lie: None, replying: None,
             passes: HashMap::new(), links, browsers: HashMap::new(), pending: HashMap::new(), pending_from: HashMap::new(), awaiting: HashMap::new(), scan_misses: HashMap::new(), hashing: 0,
             wrong: HashMap::new(), announced: None, announce_held: false,
         }
@@ -542,6 +558,7 @@ impl Core {
             // Version 4 says nobody's whereabouts to everyone (LOBBY.md 3): those they visit know.
             visiting: if p == Proto::V4 { None } else { o.visiting.as_ref().and_then(|v| self.visits.get(v)).map(|v| v.host.clone()) },
             ready: o.link.is_some(), key: o.key.clone(), watchers: o.watched.len(), world: o.world, links: o.links, whisper: o.whisper, voice: o.voice,
+            teleport: o.teleport,
             about: if p == Proto::V4 { o.about.clone() } else { None },
         }).collect();
         FromLobby::Lobby { offices }
@@ -681,6 +698,7 @@ impl Core {
             id: id.clone(), proto: p, conn: Some(conn), name: name.to_string(), status: status.to_string(), sim: sim_of(m.get("sim")),
             max_visitors, resume: String::new(), link: None, key: key.clone(), world: flag("world"), links: flag("links"), chat: flag("chat"),
             whisper: flag("whisper"), voice: m.get("voice") == Some(&Value::Bool(true)), about, admin,
+            teleport: p == Proto::V4 && m.get("teleport") == Some(&Value::Bool(true)), asked: VecDeque::new(),
             said: VecDeque::new(), visiting: None, hosting: HashSet::new(), watching: HashSet::new(), watched: HashSet::new(), talking: HashSet::new(),
             knocked: VecDeque::new(), knocked_watch: VecDeque::new(), made: VecDeque::new(), passwords: VecDeque::new(), codes: VecDeque::new(),
             held: 0, holding: false, web: Vec::new(), turn_user: None,
@@ -728,6 +746,7 @@ impl Core {
             proto: o.proto.name().into(), id: o.id.clone(), name: o.name.clone(), key: if v4 { o.key.clone() } else { None },
             relays: self.cfg.relays.clone(), resume: fresh, resumed, visits, knocking, limits: self.limits(o.proto).clone(), chat: true,
             admin: o.admin, title: if v4 { self.cfg.title.clone() } else { None }, motd: if v4 { self.cfg.motd.clone() } else { None }, voice: true, ice,
+            teleport: v4,
         };
         self.tell(oid, &w);
     }
@@ -747,6 +766,13 @@ impl Core {
         if let Some(k) = &me.key {
             if self.by_key.get(k).map(String::as_str) == Some(oid) {
                 self.by_key.remove(k);
+            }
+        }
+        let asks: Vec<String> = self.asks.iter().filter(|(_, a)| a.from == oid || a.to == oid).map(|(id, _)| id.clone()).collect();
+        for id in asks {   // 5.1: its asks to teleport go with it; one on its door is answered no, `gone`
+            let a = self.asks.remove(&id).expect("there");
+            if a.to == oid && self.offices.contains_key(&a.from) {
+                self.tell(&a.from, &FromLobby::TeleportAnswered { to: oid.into(), key: me.key.clone(), ok: false, reason: Some("gone".into()) });
             }
         }
         for kid in self.knock_order.clone() {
@@ -1268,7 +1294,9 @@ impl Core {
             ToLobby::Knock { watch: false, .. } if p == Proto::V4 => {
                 self.error(oid, "not_supported", "Visit 4 has no knocks nor links: meet in a world (its members walk into each other's rooms)", Some("knock"))
             }
-            ToLobby::Knock { to, message, watch, link, .. } => self.on_knock(oid, to, message, watch, link),
+            ToLobby::Knock { to, message, watch, link, teleport, .. } => self.on_knock(oid, to, message, watch, link, teleport),
+            ToLobby::TeleportAsk { to } => self.on_teleport_ask(oid, to),
+            ToLobby::TeleportAnswer { ask, ok } => self.on_teleport_answer(oid, ask, ok),
             ToLobby::GroupHuddle { group, on } => self.on_huddle(oid, group, on),
             ToLobby::Answer { knock, accept, message } => self.on_answer(oid, knock, accept, message),
             ToLobby::KnockCancel { knock } => {
@@ -1370,8 +1398,12 @@ impl Core {
     /// a knock its door answers that starts a watch, let in). A watch is not stopped by `busy` (the door's
     /// visit-client decides), counts toward max_watchers rather than max_visitors, and its errors say `ref: watch`.
     /// To a door that does not take links, a link is an ordinary knock.
-    fn on_knock(&mut self, oid: &str, to: Option<String>, message: Option<String>, watch: bool, link: bool) {
-        let r = if watch { "watch" } else { "knock" };
+    /// 5.1: a watch's knock with `teleport`, to teleport into the door's room: to a door whose hello said `teleport`
+    /// only, and one watch past the knocker's `max_watching` (its world may be full; the room it goes to is let go once
+    /// it leaves it, ../visit/SPEC.md 8.15).
+    fn on_knock(&mut self, oid: &str, to: Option<String>, message: Option<String>, watch: bool, link: bool, teleport: bool) {
+        let teleport = teleport && watch;
+        let r = if teleport { "teleport" } else if watch { "watch" } else { "knock" };
         let p = self.offices[oid].proto;
         let target = to.filter(|t| self.offices.get(t).is_some_and(|o| o.proto == p));
         let link = link && !watch && target.as_ref().is_some_and(|t| self.offices[t].links);
@@ -1387,13 +1419,15 @@ impl Core {
             Some(("self_knock", "an office cannot knock on itself".into()))
         } else if watch && !t.world {
             Some(("not_supported", format!("{} cannot be watched (an older Visit)", t.name)))
+        } else if teleport && !t.teleport {
+            Some(("not_supported", format!("{} takes no teleports (an older Visit)", t.name)))
         } else if !watch && t.status != "available" {
             Some(("not_available", format!("{} is not available", t.name)))
         } else if !seen && t.hosting.len() >= t.max_visitors as usize {
             Some(("full", format!("{} has all the visitors it takes", t.name)))
         } else if seen && t.watched.len() >= l.max_watchers {
             Some(("full", format!("{} has all the watchers it takes", t.name)))
-        } else if seen && me.watching.len() >= l.max_watching {
+        } else if seen && me.watching.len() >= l.max_watching + usize::from(teleport) {
             Some(("too_many", format!("you watch {} plots already", l.max_watching)))
         } else if t.link.is_none() || me.link.is_none() {
             Some(("not_ready", format!("{} cannot be visited yet", if t.link.is_none() { t.name.as_str() } else { "you" })))
@@ -1421,7 +1455,7 @@ impl Core {
         knocked.push_back(now);
         let kid = format!("k{}", hex(6));
         let ttl = Duration::from_secs(l.knock_ttl);
-        self.knocks.insert(kid.clone(), Knock { id: kid.clone(), from: oid.into(), to: tid.clone(), message: msg, until: now + ttl, watch, link, voice: false, huddle: None });
+        self.knocks.insert(kid.clone(), Knock { id: kid.clone(), from: oid.into(), to: tid.clone(), message: msg, until: now + ttl, watch, link, voice: false, huddle: None, teleport });
         self.knock_order.push(kid.clone());
         let (me, k) = (self.me.clone(), kid.clone());
         tokio::spawn(async move {
@@ -1429,7 +1463,7 @@ impl Core {
             let _ = me.send(Ev::KnockExpired(k));
         });
         self.tell(&tid, &self.knock_msg(&kid));
-        self.tell(oid, &FromLobby::KnockSent { id: kid, to: tid, watch, link, voice: false });
+        self.tell(oid, &FromLobby::KnockSent { id: kid, to: tid, watch, link, voice: false, teleport });
     }
 
     /// 4.0: a knock to talk, voice alone: to an office that takes voice (its hello said so), however busy, full or
@@ -1485,7 +1519,7 @@ impl Core {
         knocked.push_back(now);
         let kid = format!("k{}", hex(6));
         let ttl = Duration::from_secs(l.knock_ttl);
-        self.knocks.insert(kid.clone(), Knock { id: kid.clone(), from: oid.into(), to: tid.clone(), message: msg, until: now + ttl, watch: false, link: false, voice: true, huddle });
+        self.knocks.insert(kid.clone(), Knock { id: kid.clone(), from: oid.into(), to: tid.clone(), message: msg, until: now + ttl, watch: false, link: false, voice: true, huddle, teleport: false });
         self.knock_order.push(kid.clone());
         let (me, k) = (self.me.clone(), kid.clone());
         tokio::spawn(async move {
@@ -1493,7 +1527,7 @@ impl Core {
             let _ = me.send(Ev::KnockExpired(k));
         });
         self.tell(&tid, &self.knock_msg(&kid));
-        self.tell(oid, &FromLobby::KnockSent { id: kid, to: tid, watch: false, link: false, voice: true });
+        self.tell(oid, &FromLobby::KnockSent { id: kid, to: tid, watch: false, link: false, voice: true, teleport: false });
     }
 
     /// 4.0: a huddle in one of this office's worlds, started or over. One at a time in a world: its starter's (their
@@ -1556,6 +1590,55 @@ impl Core {
         }
     }
 
+    /// 5.1 (../visit/SPEC.md 8.15): may `oid` teleport into `to`'s room? Passed to that door, whose room answers; the
+    /// lobby answers no itself to a door not here, not ready, that takes no teleports, or past the asker's limit. An
+    /// answer is only ever a hint for the asker's list: walking in takes a knock to teleport, which the door's
+    /// visit-client lets in by its room's word, and whose link proves who knocked.
+    fn on_teleport_ask(&mut self, oid: &str, to: Option<String>) {
+        let p = self.offices[oid].proto;
+        let no = |c: &mut Core, to: &str, reason: &str| c.tell(oid, &FromLobby::TeleportAnswered { to: to.into(), key: None, ok: false, reason: Some(reason.into()) });
+        let Some(tid) = to.clone().filter(|t| self.offices.get(t).is_some_and(|o| o.proto == p)) else { return no(self, &to.unwrap_or_default(), "not_found") };
+        let now = Instant::now();
+        self.asks.retain(|_, a| a.until > now);
+        let t = &self.offices[&tid];
+        let reason = if tid == oid { Some("self") } else if !t.teleport { Some("not_supported") } else if t.link.is_none() { Some("not_ready") } else { None };
+        if let Some(r) = reason {
+            return no(self, &tid, r);
+        }
+        let most = self.limits(p).teleport_asks_per_minute.unwrap_or(lobby_proto::TELEPORT_ASKS);
+        let me = self.offices.get_mut(oid).expect("here");
+        while me.asked.front().is_some_and(|t| now.duration_since(*t) > Duration::from_secs(60)) {
+            me.asked.pop_front();
+        }
+        if me.asked.len() >= most {
+            return no(self, &tid, "rate_limited");
+        }
+        me.asked.push_back(now);
+        let id = format!("t{}", hex(6));
+        self.asks.insert(id.clone(), Ask { from: oid.into(), to: tid.clone(), until: now + Duration::from_secs(lobby_proto::TELEPORT_ASK_SECS) });
+        let o = &self.offices[oid];
+        let key = match &self.lie {
+            Some(lie) => Some(lie.clone()),   // the test aid: a lobby that lies about who asks
+            None => o.key.clone(),
+        };
+        let ask = FromLobby::TeleportAsk { id, from: Knocker { id: o.id.clone(), name: o.name.clone(), sim: o.sim.clone(), key } };
+        self.tell(&tid, &ask);
+    }
+
+    /// 5.1: a door's answer to an ask on it, to its asker (if still here), with the door's key.
+    fn on_teleport_answer(&mut self, oid: &str, ask: Option<String>, ok: bool) {
+        let now = Instant::now();
+        self.asks.retain(|_, a| a.until > now);
+        let Some(id) = ask.filter(|a| self.asks.get(a).is_some_and(|a| a.to == oid)) else {
+            return self.error(oid, "not_found", "no ask to teleport on your door with that id (answered, or too late)", Some("teleport_answer"));
+        };
+        let a = self.asks.remove(&id).expect("there");
+        if self.offices.contains_key(&a.from) {
+            let key = self.offices[oid].key.clone();
+            self.tell(&a.from, &FromLobby::TeleportAnswered { to: oid.into(), key, ok, reason: None });
+        }
+    }
+
     fn knock_msg(&self, kid: &str) -> FromLobby {
         let k = &self.knocks[kid];
         let o = &self.offices[&k.from];
@@ -1566,7 +1649,7 @@ impl Core {
         FromLobby::Knock {
             id: kid.into(), from: Knocker { id: o.id.clone(), name: o.name.clone(), sim: o.sim.clone(), key }, message: k.message.clone(),
             expires_in: k.until.saturating_duration_since(Instant::now()).as_secs_f64().round() as u64, watch: k.watch, link: k.link,
-            voice: k.voice, huddle: k.huddle.clone(),
+            voice: k.voice, huddle: k.huddle.clone(), teleport: k.teleport,
         }
     }
 
@@ -1608,7 +1691,7 @@ impl Core {
             return self.error(oid, "full", format!("you have all the {} you take", if seen { "watchers" } else { "visitors" }), Some("answer"));
         }
         // The knocker's own watches as they are now: it may have made others meanwhile (30 knocks to watch a minute).
-        let lim = self.limits(them.proto).max_watching;
+        let lim = self.limits(them.proto).max_watching + usize::from(k.teleport);
         if seen && (them.watching.len() >= lim || them.watching.iter().any(|v| self.visits.get(v).is_some_and(|v| v.host == oid))) {
             return self.tell(&knocker, &answered(&k, false, Some("full"), &msg));
         }
@@ -1618,12 +1701,12 @@ impl Core {
             return self.error(oid, "not_ready", format!("{who} cannot be visited right now"), Some("answer"));
         }
         self.tell(&knocker, &answered(&k, true, None, &msg));
-        self.start_visit(oid, &knocker, k.watch, k.link);
+        self.start_visit(oid, &knocker, k.watch, k.link, k.teleport);
     }
 
     /// A visit agreed: the visitor leaves any room it is in, then both get `visit` with the other's link. A watch (a
     /// plot seen from outside) leaves nothing, and counts apart; so does a link (a watch let in by its door).
-    fn start_visit(&mut self, host: &str, visitor: &str, watch: bool, link: bool) {
+    fn start_visit(&mut self, host: &str, visitor: &str, watch: bool, link: bool, teleport: bool) {
         let watch = watch || link;
         if !watch {
             if let Some(v) = self.offices[visitor].visiting.clone() {
@@ -1631,7 +1714,7 @@ impl Core {
             }
         }
         let vid = format!("v{}", hex(6));
-        self.visits.insert(vid.clone(), Visit { id: vid.clone(), host: host.into(), visitor: visitor.into(), ticket: hex(16), watch, link, voice: false, huddle: None });
+        self.visits.insert(vid.clone(), Visit { id: vid.clone(), host: host.into(), visitor: visitor.into(), ticket: hex(16), watch, link, voice: false, huddle: None, teleport: teleport && watch });
         self.visit_order.push(vid.clone());
         if watch {
             self.offices.get_mut(host).expect("host").watched.insert(vid.clone());
@@ -1650,7 +1733,7 @@ impl Core {
     /// nobody, and counts toward neither visitors nor watchers.
     fn start_voice(&mut self, host: &str, visitor: &str, huddle: Option<String>) {
         let vid = format!("v{}", hex(6));
-        self.visits.insert(vid.clone(), Visit { id: vid.clone(), host: host.into(), visitor: visitor.into(), ticket: hex(16), watch: false, link: false, voice: true, huddle });
+        self.visits.insert(vid.clone(), Visit { id: vid.clone(), host: host.into(), visitor: visitor.into(), ticket: hex(16), watch: false, link: false, voice: true, huddle, teleport: false });
         self.visit_order.push(vid.clone());
         for o in [host, visitor] {
             self.offices.get_mut(o).expect("here").talking.insert(vid.clone());
@@ -1666,7 +1749,7 @@ impl Core {
         let p = &self.offices[peer];
         FromLobby::Visit {
             id: v.id.clone(), role: role.into(), peer: Peer { id: p.id.clone(), name: p.name.clone(), sim: p.sim.clone() }, ticket: v.ticket.clone(),
-            peer_link: p.link.clone(), watch: v.watch, link: v.link, voice: v.voice, huddle: v.huddle.clone(),
+            peer_link: p.link.clone(), watch: v.watch, link: v.link, voice: v.voice, huddle: v.huddle.clone(), teleport: v.teleport,
         }
     }
 
@@ -2015,7 +2098,7 @@ fn for_web(m: &FromLobby) -> bool {
 }
 
 fn is_type(t: &str) -> bool {
-    const TYPES: [&str; 33] = ["hello", "prove", "link", "status", "max_visitors", "knock", "answer", "end", "rename", "chat", "whisper", "bye",
+    const TYPES: [&str; 35] = ["teleport_ask", "teleport_answer", "hello", "prove", "link", "status", "max_visitors", "knock", "answer", "end", "rename", "chat", "whisper", "bye",
         "about", "door", "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set", "group_owner", "group_delete",
         "group_say", "groups", "admin", "browser_code", "browser_allow", "browsers", "browser_revoke", "browser_forget", "browser_verify", "group_huddle", "knock_cancel"];
     TYPES.contains(&t)
@@ -2023,7 +2106,7 @@ fn is_type(t: &str) -> bool {
 
 /// A knock's answer, for its knocker: a watch's says so, and a link's.
 fn answered(k: &Knock, accept: bool, reason: Option<&str>, msg: &str) -> FromLobby {
-    FromLobby::Answered { knock: k.id.clone(), accept, message: msg.into(), reason: reason.map(str::to_string), watch: k.watch, link: k.link, voice: k.voice }
+    FromLobby::Answered { knock: k.id.clone(), accept, message: msg.into(), reason: reason.map(str::to_string), watch: k.watch, link: k.link, voice: k.voice, teleport: k.teleport }
 }
 
 /// A handle to a running core.

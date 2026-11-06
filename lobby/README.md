@@ -3,7 +3,7 @@
 `lobby` is one program: **users and worlds**. Users are the workrooms in it (who is online, a line about each);
 worlds are groups of them whose members put each other's rooms round their own, public or with a password (4.0:
 the way into each other's rooms; a version-4 office's knock to walk in, or to link, is refused). Knocks to watch a
-plot and to talk (4.0), visits, the lobby's chat and whispers, world huddles, each world's chat, its own **relay** for links that
+plot and to talk (4.0), asks and knocks to teleport (5.1: each room answers who may come), visits, the lobby's chat and whispers, world huddles, each world's chat, its own **relay** for links that
 cannot go direct, and its **page**: read only for anyone with a browser, and, in a browser a workroom linked (its
 Visit panel's 🌐 Lobby, 📱 Phone, or Link a browser and the code the page shows), that workroom's own lobby,
 Battle.net style: its chat, who is here, its worlds. Workrooms join it with Visit

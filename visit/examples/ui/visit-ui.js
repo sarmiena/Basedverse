@@ -132,6 +132,9 @@
 .visit-panel button, .visit-panel select, .visit-panel input { font: inherit; color: inherit; background: #0d1117; border: 1px solid #2d333b; border-radius: 6px; padding: 2px 8px; }
 .visit-panel button { cursor: pointer; } .visit-panel button:disabled { opacity: .45; cursor: default; }
 .visit-panel button.go { background: #2f9e4f; border-color: #2f9e4f; color: #fff; }
+.visit-panel .row.tp { background: rgba(102, 221, 255, 0.07); }
+.visit-panel .row.tp.sub { display: flex; }
+.visit-panel .row.tp button.go { background: #1c7fa6; border-color: #1c7fa6; }
 .visit-panel .knock { display: block; background: #fff0d6; color: #7a4a00; } .visit-panel .knock .btns { display: flex; gap: 6px; margin-top: 4px; }
 .visit-panel button.wpick { padding: 0 4px; font-size: 11px; line-height: 16px; white-space: nowrap; }
 .visit-panel button.wpick.on { color: #3fb950; border-color: #3fb950; }
@@ -183,6 +186,7 @@
     let joining = null, passwording = null;   // a locked world's password asked (to join it; yours, to change it)
     let linking = false, qr = null;   // linked browsers shown, with a code's box; a QR code shown for your phone ({ svg, until })
     let ignoredOpen = false;   // whom you ignore in chat, listed (3.3)
+    let tpOpen = false, tpWhy = "";   // 5.1: the rooms that would take you by teleport, listed; why the last one did not
     const cw = withChat ? chat(v) : null;   // the chat window (8.9), bottom left (chat: false, none: your page has its own)
     const card = withCard ? targetCard(v, { chat: cw }) : null;   // your target's card (3.3, #48), top middle (card: false: your world draws its own)
     const pc = perf(v);   // the ⏱ corner, while v.perf measures
@@ -227,11 +231,31 @@
       }
     };
     v.on("seen", onSeen); v.on("call", onCall); v.on("model", onModel); v.on("body", onBody); v.on("browsers", onBrowsers);
+    // 5.1 (SPEC 8.15): a teleport's end: there (the list folds away), or why not.
+    const TP_WHY = { not_allowed: "that room said no", declined: "that room said no", timeout: "no answer in time", gone: "that room is gone",
+      full: "that room is full", not_supported: "that room takes no teleports", no_world: "this page draws no world", offline: "you are offline",
+      refused: "it did not let you in", no_pad: "your room has no pad", here: "you are there already", too_many: "your world watches all it can" };
+    v.on("teleport", e => {
+      if (e.state === "arrived") { tpOpen = false; tpWhy = ""; }
+      if (e.state === "failed") tpWhy = `✦ ${e.name}: ${TP_WHY[e.reason] || e.reason}`;
+      drawn = ""; draw();
+    });
     function draw() {
       if (root.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;   // never under a typing hand
       const me = v.office, rows = [];
       root.classList.toggle("folded", folded); element.classList.toggle("visit-folded", folded);
-      rows.push(`<div class="row hd"><button class="caret" data-v="fold" title="${folded ? "open the panel" : "fold the panel: its first line, and what asks you (a knock, a call)"} · Visit ${VERSION}">${folded ? "▸" : "▾"}</button><span class="dot ${v.state === "online" ? esc(v.status) : ""}"></span><span class="grow">Visit${me ? " · " + esc(me.name) : ""}</span><span class="muted">${esc(v.state)}</span><button data-v="perf" class="${v.perfOn ? "go" : ""}" title="how this page is doing: frames, stalls, and what Visit does (on or off)">⏱</button>${v.state === "online" ? `<button data-v="lobby" title="the lobby in a browser tab, as you: its chat, who is here, worlds (your door stays here)">🌐 Lobby</button>` : ""}${v.state === "online" ? `<button data-v="away" title="leave the lobby: nobody sees you or can link until you come back">Go offline</button>` : ""}</div>`);
+      rows.push(`<div class="row hd"><button class="caret" data-v="fold" title="${folded ? "open the panel" : "fold the panel: its first line, and what asks you (a knock, a call)"} · Visit ${VERSION}">${folded ? "▸" : "▾"}</button><span class="dot ${v.state === "online" ? esc(v.status) : ""}"></span><span class="grow">Visit${me ? " · " + esc(me.name) : ""}</span><span class="muted">${esc(v.state)}</span>${typeof v.findTeleports === "function" ? `<button data-v="tp" class="${tpOpen || v.teleporting ? "go" : ""}" title="Teleport: the rooms that would take you now (each room says who it takes), and your own">✦</button>` : ""}<button data-v="perf" class="${v.perfOn ? "go" : ""}" title="how this page is doing: frames, stalls, and what Visit does (on or off)">⏱</button>${v.state === "online" ? `<button data-v="lobby" title="the lobby in a browser tab, as you: its chat, who is here, worlds (your door stays here)">🌐 Lobby</button>` : ""}${v.state === "online" ? `<button data-v="away" title="leave the lobby: nobody sees you or can link until you come back">Go offline</button>` : ""}</div>`);
+      // 5.1 (SPEC 8.15): where you may teleport to, under the first line (folded or not, once you asked): each room that
+      // said yes to you just now, your own first, but the one you are in.
+      if (tpOpen || v.teleporting) {
+        const here = v.roomHere && v.roomHere.key, tp = v.teleporting, list = v.teleportTargets.filter(t => t.key !== here);
+        if (tp) rows.push(`<div class="row tp"><span class="grow">✦ teleporting to <b>${esc(tp.name)}</b>…</span></div>`);
+        else rows.push(`<div class="row tp"><span class="grow">✦ teleport to <span class="muted">· each room says whom it takes</span></span><button data-v="tp" title="close">✕</button></div>`);
+        for (const t of list) rows.push(`<div class="row tp sub"><span class="grow">${t.home ? "⌂ <b>your room</b>" : `✦ <b>${esc(t.name)}</b>${t.user && t.user !== t.name ? ` <span class="muted">· ${esc(t.user)}</span>` : ""}`}</span><button class="go" data-v="tp_go" data-key="${esc(t.key)}"${tp ? " disabled" : ""}>Teleport</button></div>`);
+        if (v.teleportAsking) rows.push(`<div class="row tp sub"><span class="grow muted">asking the rooms…</span></div>`);
+        else if (!tp && !list.length) rows.push(`<div class="row tp sub"><span class="grow muted">no room would take you just now${v.state === "online" && !v.teleportLobby ? " (this lobby carries no teleports)" : ""}</span><button data-v="tp_again">Ask again</button></div>`);
+        if (tpWhy && !tp) rows.push(`<div class="row tp sub note">${esc(tpWhy)}</div>`);
+      }
       if (folded) {
         for (const c of v.calls) if (c.state === "ringing") rows.push(`<div class="row lnk ring"><div>${c.voice ? "🎧" : "📞"} <b>${esc(c.name)}</b> ${c.voice ? "wants to talk" : "is calling"}</div><div class="btns"><button class="go" data-v="pick_up" data-key="${esc(c.key)}">${c.voice ? "Answer" : "Pick up"}</button><button data-v="hang_up" data-key="${esc(c.key)}">Not now</button></div></div>`);
         return paint(rows);
@@ -459,6 +483,9 @@
       }
       else if (act === "talk") { if (!v.talk(b.dataset.key)) note("They cannot talk now"); }
       else if (act === "map") (mapView || (mapView = map(v))).open();
+      else if (act === "tp") { tpOpen = !tpOpen; tpWhy = ""; if (tpOpen) v.findTeleports(); draw(); }
+      else if (act === "tp_again") { tpWhy = ""; v.findTeleports(); draw(); }
+      else if (act === "tp_go") { tpWhy = ""; v.teleport(b.dataset.key); draw(); }
       else if (act === "perf") v.perf(!v.perfOn);
       else if (act === "ride") v.ride(v.riding ? null : mountChosen());
       else if (act === "mic") v.setMic(!v.mic).catch(x => oops("mic", x));

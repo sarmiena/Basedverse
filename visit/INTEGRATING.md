@@ -53,7 +53,8 @@ defaults:
   your worlds (who of each is online, Leave; for one you own: ✕ out, ⛔ kept out, ♛ hand it on, its password, public,
   End it; **Find** the lobby's worlds, **New** one of your own, public or with a password), your line in the lobby's
   list, the people you can reach (your worlds', your visitors; 🎧 to talk, someone who wants to talk ringing), your door (open to your worlds, closed), your world's Map (and how many rooms you picked, of 8), the microphone and who is near, calls (📞 call, Pick up, speaker / handset, Hang up), notes (where
-  a friend's world put your room), and ⏱ (how this page is doing);
+  a friend's world put your room), ✦ Teleport (5.1: the rooms that would take your user now, your own among them, each
+  by its own rule, and Teleport to go; step 10), and ⏱ (how this page is doing);
 - **the chat window** (the panel's, `VisitUI.chat`): bottom left, as in a game. Enter to type, and say a line to
   everyone near you (within 45 m, as your voice carries: 3.4.2), whisper to one person (`/w name`), say it in your
   room's chat (`/room`: everyone in it and linked with it) or a linked friend's (`/room name`), to the lobby (`/1`), or to one of your worlds
@@ -779,6 +780,42 @@ on the Map, walking out of your door goes straight into theirs; and picking the 
 they have put you. With your landscapes marked: stop one `visit`, and the other's world keeps its plot,
 marked offline, walked into but not through its walls; start it again, and the plot is live.
 
+## Step 10 — Teleports: a pad in your room, and who may come (5.1)
+
+A teleport takes someone from wherever they are to a room that will have them, onto its pad, in Visit's beam of
+light: everyone in the room they leave sees them go, everyone in the room they reach sees them come (SPEC 8.15). Your
+room decides two things, and Visit does the rest.
+
+1. **A pad, your room's own.** Make it in your scene as you like: a platform, a ring of light, a doorway, a rug. Put it
+   somewhere deliberate (a corner, against a wall, where arrivals do not land in the middle of everything), facing
+   into the room. It is an Object3D like any other: its place and its facing are the group's own transform (never a
+   primitive geometry's `translate`, which does not travel, SPEC 8.1). Give it to `visit.host`:
+
+   ```js
+   visit.host({ ..., teleport: { pad: myPad } });   // or { x, y, z, yaw }, or who => one of those
+   ```
+2. **Who may come**, your user's call: `allow(who)`, true (or a Promise of true) for those your room takes. `who` has
+   `key` (their office's: the one to trust), `name`, `office`, `guest` (in a world with you) and `owner` (your own
+   user). Without `allow`: your guests and your user, as walking in has it. Visit asks it afresh as someone looks for
+   where to go, as they knock, and as they step in; your door shut is no without asking.
+
+   ```js
+   teleport: { pad: myPad, allow: who => who.owner || who.guest || FRIENDS.includes(who.key) }
+   ```
+3. **Your `spawn`** hears `{ at, teleport: true }` (`at`: your pad, in your terms). One that already puts a watcher
+   where it stepped in has them on the pad; one that ignores `at` uses it when `teleport` is set.
+4. **The beam is Visit's**, played in your scene in your `color` (`teleport: { color: 0xffaa33 }`). For one of your
+   own: `effect: false`, and play it on `visit.on("teleported", ({ way, id, visitor, at }) => …)`. A room that draws
+   its own model of a visitor (`look: "mine"`) can play the same event on it: Visit's beam covers the spot, not your
+   model.
+5. **Your copy of the reference UI** has ✦ Teleport (in the panel's first line), on `visit.findTeleports()` and
+   `visit.teleport(key)`; nothing to do but keep it.
+
+**Check:** with step 8's two rooms, each with a pad: ✦ Teleport lists your own room and the other's; Teleport there
+lands you on its pad, the beam in its room (seen from the other page too), and its `spawn` heard `teleport`; Teleport
+to your own room brings you home onto yours, the beam in the room you left; with `allow: () => false` in one, the other
+no longer lists it, and a teleport there (from code) leaves you where you were.
+
 ## Checklist
 
 - [ ] Your settings live in your workroom's own `.env` (or config), written by setup or started from
@@ -834,6 +871,9 @@ marked offline, walked into but not through its walls; start it again, and the p
 - [ ] Your world (step 9): your `plot` and `unit` are said, visitors can walk off your plot, `spawn` takes
       `at`, your user has a body of yours, you draw with `world.frame` and `world.render`, and step 9's check
       passes.
+- [ ] Teleports (step 10), if your room takes them: a pad of your own, in a deliberate place; `allow` as your user
+      wants it (or Visit's own: guests and you), written in your `VISIT.md`; `spawn` puts arrivals on the pad; step
+      10's check passes.
 
 ## Troubleshooting
 

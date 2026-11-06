@@ -10,6 +10,59 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v5.1.0 — 2026-11-06 — teleports: to any room that will take you, onto its pad, in a beam everyone there sees
+
+Nothing changes a protocol's name: offices on 5.0 and 5.1 meet and visit each other as before (a 5.0 office is neither
+asked nor knocked on to teleport). **The lobby takes new messages: redeploy it** (`bin/deploy-lobby`). Until it is, a
+page's teleport list has its own room alone.
+
+- **A room takes teleports** (visit/SPEC.md 8.15): `v.host({ teleport: { pad, allow, color, effect } })`. `pad` is where
+  arrivals stand: `{ x, y, z, yaw }` in the room's units, an Object3D of its scene (its place and the way it faces), or a
+  function of who comes. The pad's look is the room's own: Visit draws nothing of it. `allow(who)` says who may come, by
+  the room's own rule (`true`, or a Promise of it; `who`: `{ id, key, name, office, sim, guest, owner }`); without it,
+  its guests and its owner. It is asked afresh as someone makes their list, as they knock, and as they step in; a shut
+  door is no without asking it. A room without `teleport` takes none.
+- **The person goes** (section 9): `v.findTeleports()` asks every room in the lobby that takes teleports, and your own,
+  each answering by its own rule (a Promise of `v.teleportTargets`, your own room first; `"teleports"` as each yes
+  comes); `v.teleport(key)` goes there. A room your world shows is stepped into by teleport; any other is knocked on to
+  teleport, put in your world while you are in it, and let go 2 s after you leave it (unless you pick it). Its
+  `spawn` hears `{ at: <its pad>, teleport: true }`. `v.teleporting`, and `"teleport"` events: `leaving`, `arrived`,
+  `failed` (with why).
+- **The beam** is Visit's, played by each room in its own scene, so everyone who sees the room sees it: a column of light
+  at their feet, rings and sparks, a glow on the floor, 1.6 s, in the room's `color`; their body (Visit's model of
+  them) drawn up into it going, and down out of it coming. Going out of a friend's room, *their* room plays it.
+  `effect: false` turns Visit's off; `"teleported"` (`{ way, id, visitor, at }`) is there for a room's own effect, or its
+  own model of a visitor. The person's page draws a warp over its world's view, and a flash on arrival.
+- **The reference UI** ([visit/examples/ui/visit-ui.js](visit/examples/ui/visit-ui.js)): **✦** (Teleport) in the panel's
+  first line: the rooms that would take you, each with Teleport, but the one you are in; why one did not.
+- **Messages** (visit/SPEC.md): the page's `teleport_ask`, `teleport`, `teleport_answer`, and `enter`/`exit` with
+  `teleport`; visit-client's `teleport_ask` (to the room's page), `teleport_asked`, `teleport_answer`,
+  `teleport_failed`, `enter_refused` `"teleport"`, `visit_started` with `teleport`; the lobby's `teleport_ask`,
+  `teleport_answer`, `teleport_answered`, `teleport` on a hello, a knock (a watch's), its answer and its visit, and
+  on the lobby's office entries; the link's `{"enter": null, "teleport": true}` and `{"exit": true, "teleport": true}`
+  (a 5.0 host takes them for "where newcomers go" and an exit).
+- **Fixed:** a person's page that makes its world a moment after it connects (one that loads its three.js then), or
+  that comes back while its office watches plots, could get a plot's whole scene before it had a world to read it
+  with: that plot stayed missing from its world until the page loaded again. It is asked for again as the world is
+  made, as a host's page already did once it hosted.
+
+**What an integration does:**
+
+1. **Upgrade visit and its visit.js together**, as always. Redeploy the lobby if you run your own.
+2. **Give your room a pad** if it is to take teleports: make it in your scene as you like (an Object3D: a platform, a
+   ring, a doorway), somewhere deliberate (a corner, against a wall, out of the way), and pass it to `v.host` as
+   `teleport: { pad }`. Its place and its facing are the Object3D's (a group's transform, not a primitive geometry's
+   own translate, which does not travel: SPEC 8.1). Write where it is in your `VISIT.md`.
+3. **Decide who may come**, with your user: `allow(who)` (without it, your guests and you). Write the rule in your
+   `VISIT.md`, in their words. A room that takes no teleports gives no `teleport`, and needs nothing more.
+4. **Check your `spawn`**: by teleport it hears `{ at, teleport: true }`, `at` the pad. A spawn that already puts a
+   watcher where it stepped in (`at`) puts them on the pad; one that ignores `at` uses it when `teleport` is set.
+5. **Your copy of the reference UI**: bring over ✦ Teleport (diff `visit/examples/ui/visit-ui.js` between v5.0.0 and
+   v5.1.0: its `tp` rows, the `teleport` event's handler, two CSS lines), or make your own on `v.findTeleports` and
+   `v.teleport`.
+6. **Optional**: `color` for Visit's beam in your room; `effect: false` and the `"teleported"` event for one of your own;
+   the same event to play it on your own model of a visitor (a room that draws `look: "mine"`).
+
 ## v5.0.0 — 2026-11-05 — your page's UI is your own: visit.js draws none, and a reference UI to copy (#82)
 
 Nothing changes a protocol's name: offices on 4.x and 5.0 meet and visit each other as before. What changes is the

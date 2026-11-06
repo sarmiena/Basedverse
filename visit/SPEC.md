@@ -160,6 +160,15 @@ program listening on their machine.
     unlinked). A link never moves a browser already linked to another office unless its page asks its person first
     (someone else's link, sent to you, would otherwise make your browser theirs). And a visit-client passes a page
     only the lobby messages a page takes from a lobby (5.3): never a page's own answers, which a lobby could make up.
+16. **A teleport is its room's word, and the door's** (5.1, 8.15). Whoever may teleport into a room is that room's
+    own page's to say (`teleport.allow`), asked afresh each time: as someone makes their list (an ask through the
+    lobby, which only ever says who asks), as they knock to teleport, and as they step in. A shut door, or no page
+    hosting, is no without asking it. An answer to an ask lets nobody in: walking in takes a knock to teleport, which
+    the door's visit-client lets in only by its page's yes, and then only the key the lobby named, proved by the link
+    (point 9); and a watcher stepping in by teleport is asked about again, by the key its link proved. A room that
+    takes no teleports (no `teleport` in its `host`) answers every ask no. Those its page lets in are not its guests:
+    they are not let in to watch, nor see its plot, by anything else; the guest list does not end their watch, the
+    door shutting does.
 
 Visitors get the host's whole scene: a sim that shows issue titles or agent activity in its room shows them
 to its visitors, wherever they stand and whether they look or not. Letting someone in is the host's
@@ -411,6 +420,10 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `world` | `on` (bool) | on: this office watches the plots its user picked, of those online whose lobby entry says `world` and whose visit-clients let it (it is their guest, their door open) (8.4), by itself, and keeps doing so (a declined or refused watch is tried again after 20 s); off: its watches end. No page for a minute: off |
 | `enter` | `channel` (a watch's), `pose` {`x`, `y`, `z`, `yaw`, `air`} (in the watched room's terms; `air`: how far above its floor, flying, 8.2) | step into the room watched (8.4): out of any other room first (a visit there ends); refused by its host when full (`enter_refused`) |
 | `exit` | `channel` | step out of it again: the watch goes on |
+| `enter` / `exit` with `teleport: true` | `channel` | 5.1 (8.15), the user's: into that room by teleport (no `pose`: its page puts them on its pad, once it says yes), out of any other by teleport; out of it by teleport (a page that walks its user home itself). A watch begun to teleport is let go 2 s after its user leaves that room, unless they picked it |
+| `teleport_ask` | | 5.1, the user's: which rooms would take this office's user by teleport: its own (its host page asked, about its owner) and each office in the lobby whose entry says `teleport`, ready (at most 48), each asked once through the lobby. `teleport_asked` back, then a `teleport_answer` for each. One round every 1.5 s (`rate_limited`) |
+| `teleport` | `key` | 5.1, the user's: knock to teleport into that office's room, one this office's world does not watch (`teleport_failed` otherwise: `home`, `watching`, `no_world`, `offline`, `not_supported`, `not_found`): let in, a watch with `teleport` (`visit_started`), stepped into by the page as its scene comes |
+| `teleport_answer` | `ask`, `ok` | 5.1, the host's: its answer to a `teleport_ask` on it (none within 3 s: no) |
 | `place` / `unplace` | `key`, `x`, `z` (within 100 km), `turn` (0–3) / `key` | put a friend's plot in this office's world: its middle there, turned so many quarter turns (8.4); kept in the state file. At most 256; not this office's own key (4.3.0: its room is its world's middle; a state file from before that has it, or a pick of it, drops it as it is read) |
 | `seen` | `key`, `at` {`dx`, `dz` (m, within 100 km), `turn` (0–3), `size` ([w, d] m: this plot's)} \| null | where this office's world has that office's plot (8.4): its middle `dx`, `dz` metres from this plot's middle, turned `turn` quarter turns left; null, not in it. Told to that office over any link with it, and again over each new one (kept in memory, not in the state file). At most 256 |
 | `plot_keep` | `key`, `name`, `plot` {`center`, `size`}, `unit` | a picked plot in this office's world, to keep while its office is away (8.10): drawn from its last landscape. At most 64 |
@@ -508,14 +521,19 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `ignored` | `ignored` [{`key`, `npc`?, `name`}] | 3.3: whom this office's user ignores in chat (8.9), as it changes. `ready` has `ignored` |
 | `banned` | `key`, `name`, `voice`, `chat` | a room that keeps this office's user out of its voice or chat (8.9), or no longer (both false). `ready` has `banned_by` |
 | `enter` / `exit` | `channel`, `pose`? {`x`, `y`, `z`, `yaw`, `air`} (for `enter`) | a watcher stepped into this room, there (host side: spawn it, as a visitor), or out of it; no `pose`: a link going there, spawned where newcomers go. 4.3.2: to a user page too (engine/SPEC.md 3.4), which has them inside: heard in person, and in its panel's rows |
-| `enter_refused` | `channel`, `reason` (`"full"`, or `"moved"`: a visit to a room began, and this office stepped out) | stepping into a watched room was refused, or undone: outside it |
+| `enter_refused` | `channel`, `reason` (`"full"`, or `"moved"`: a visit to a room began, and this office stepped out; 5.1: `"teleport"`, its room said no to a teleport) | stepping into a watched room was refused, or undone: outside it |
+| `enter` / `exit` with `teleport: true` | `channel` | 5.1 (8.15): a watcher stepped in by teleport (no `pose`: the host page spawns it on its pad), its page having said yes; or went by teleport (its page plays it) |
+| `teleport_ask` | `ask`, `from` {`id`, `name`, `key`, `sim`, `guest`, `owner`, `user`} | 5.1, to the host page: may they teleport into this room? (`guest`: in a world with this office; `owner`: its own user; `user`: the name their user goes by, if a link says it.) Answer with `teleport_answer` within 3 s |
+| `teleport_asked` | `keys`, `lobby` | 5.1, to the user page: whom its `teleport_ask` waits on (this office's own key first, if its room is up), and whether this lobby carries teleports |
+| `teleport_answer` | `key`, `name`, `ok`, `home`?, `reason`? | 5.1: one room's answer (`home`: this office's own); `reason` when nobody's page said it (`not_supported`, `not_ready`, `timeout`, `gone`, `rate_limited`) |
+| `teleport_failed` | `key`, `reason`, `message`? | 5.1: a knock to teleport came to nothing (`declined`, `full`, `not_ready`, a lobby's refusal, or the user page's own `teleport` refused) |
 | `online` / `offline` | `office`, `knocking`, `lobby_info` {`title`, `motd`, `admin`}, `lobby_voice` (4.0: the lobby carries voice knocks and huddles) / `away`? | the lobby session came up (after a drop: the same office if it resumed), with this office's own knocks still waiting ([{`id`, `to`, `link`?}]) and what the lobby's welcome said of itself (`ready` has `lobby_info` too) / went down: `away: true` when the page took it out (`leave_lobby`), `false` when it is on its way back (`join_lobby`), absent when the lobby is out of reach |
 | `lobby` | `offices`: [{`id`, `name`, `status`, `sim`, `max_visitors`, `visitors`, `visiting`, `ready`, `key`, `watchers`, `world`, `links`, `whisper`, `voice`?, `about`}] | every change (6.3) |
 | `knock` | `id`, `from` {`id`, `name`, `sim`, `key`}, `message`, `expires_in`, `voice`: true | someone wants to talk with you (4.0): never let in without the page, never from someone your user ignores or keeps out of their room's voice (declined, unseen). 4.0: no other knock reaches a page (one to walk in or to link, from an older lobby, is declined) |
 | `perform` | `channel`, `act` {`clip`, `loop`, `secs`} \| null, `hold` | 4.0 (#59, #60): what the room this office's user is in (on that channel) has their own model do, and whether they hold something of its: for a page that draws their body to pose it the same. `visit_started` has it again (`perform`) for a page that reloads |
 | `huddle` | `group`, `from` {`id`, `name`, `key`}, `on`, `since` (seconds), `mine` | 4.0: a huddle in one of this office's worlds, started (`on`; `since`: how long ago, when told again) or over; `mine`: this office's own. `ready` has those going on (`huddles`) |
 | `knock_sent` / `knock_cancelled` / `answered` | as in section 6 (`voice`? on a knock to talk) | your knock's fate; a knock on you withdrawn |
-| `visit_started` | `id`, `channel`, `role` (`"host"` \| `"visitor"`), `peer` {`id`, `name`, `sim`, `key`}, `guest`?, `watch`?, `inside`?, `shared_adds`?, `state`? | a visit began (its link is up). `peer.key` is the other office's key, as the link proved it; `guest: true`, a guest let in through the open door, without asking the page; `watch: true` (and `inside`), a watch (8.4: since 4.0, every visit to a room is one); `phone: true`, the other office's room has a phone (8.8); in `ready`, a host's visit carries the last `state` its page sent. 4.0: `voice: true` (and `huddle`, a world), a voice visit (8.7): nothing of a room, only its `id`, `channel`, `role` and `peer`; the person's page only |
+| `visit_started` | `id`, `channel`, `role` (`"host"` \| `"visitor"`), `peer` {`id`, `name`, `sim`, `key`}, `guest`?, `watch`?, `inside`?, `shared_adds`?, `state`? | a visit began (its link is up). `peer.key` is the other office's key, as the link proved it; `guest: true`, a guest let in through the open door, without asking the page; `watch: true` (and `inside`), a watch (8.4: since 4.0, every visit to a room is one); `teleport: true` (5.1), a watch begun by a knock to teleport; `phone: true`, the other office's room has a phone (8.8); in `ready`, a host's visit carries the last `state` its page sent. 4.0: `voice: true` (and `huddle`, a world), a voice visit (8.7): nothing of a room, only its `id`, `channel`, `role` and `peer`; the person's page only |
 | `visit_ended` | `id`, `channel`, `reason` (6.5), `voice`? | a visit ended |
 | `host_paused` / `host_resumed` | `channel` | the host's page went away / came back (visitor side) |
 | `input` | `channel`, `seq`, `forward`, `strafe`, `run`, `yaw`, `pitch`, `t` | a visitor's latest input (host side) |
@@ -614,14 +632,16 @@ nobody has taken it meanwhile. Who someone is, is their key.
 
 | type | fields | effect |
 |---|---|---|
-| `hello` | `proto`: `"basedverse-lobby/4"`, `name`, `key`, `sim`?, `status`?, `max_visitors`? (default 3), `resume`?, `about`? (6.6), `voice`? (4.0, true: it takes knocks to talk and huddles) | join, or resume a dropped session (6.1) |
+| `hello` | `proto`: `"basedverse-lobby/4"`, `name`, `key`, `sim`?, `status`?, `max_visitors`? (default 3), `resume`?, `about`? (6.6), `voice`? (4.0, true: it takes knocks to talk and huddles), `teleport`? (5.1, true: it takes asks and knocks to teleport) | join, or resume a dropped session (6.1) |
 | `hello` (a browser, 3.1) | `proto`, `browser` (its own key: Ed25519, 64 hex), `pass`? {`key`, `expires`, `nonce`, `signature`} (a web pass), `switch`? (true: the page's person agreed that the pass moves this browser from the office it is linked to), `verify`? (3.2: a room's confirmation, 6 digits: a tab its QR code opened), `forget`? (3.2.3, true: unlink this browser, its office in the lobby or not; closed 1000, `unlinked`) | a browser, to speak for the office it is linked to (6.11); `challenge` back, as for an office |
 | `prove` | `signature` | the challenge signed (6.1) |
 | `link` | `endpoint` (its key), `addr` (an object, ≤ 2 KiB as JSON, passed through untouched: how to reach it); or both null | publish or update how to reach this office; both null: withdraw it (not ready, until published again) |
 | `status` | `status`: `"available"` \| `"busy"` | busy: no knocks to visit or link (watches go on) |
 | `max_visitors` | `n` (0–8) | change it |
-| `knock` | `to`, `message`?, `watch`? (true: to watch, 6.4), `link`? (true: a link, 6.4), `voice`? (4.0, true: to talk, 6.4), `huddle`? (with `voice`: a world whose huddle `to` started) | ask to visit, to watch, to link, or to talk |
+| `knock` | `to`, `message`?, `watch`? (true: to watch, 6.4), `link`? (true: a link, 6.4), `voice`? (4.0, true: to talk, 6.4), `huddle`? (with `voice`: a world whose huddle `to` started), `teleport`? (5.1, with `watch`: to teleport in, 6.4) | ask to visit, to watch, to link, to talk, or to teleport |
 | `knock_cancel` | `knock` | 4.0: withdraw a knock of yours still waiting (`not_found` if none): its door hears `knock_cancelled`, `"withdrawn"` |
+| `teleport_ask` | `to` (an office id) | 5.1 (8.15): may this office teleport into that one's room? To a door whose hello said `teleport`, ready, not this office: passed on as `teleport_ask` (its room's page answers); else `teleport_answered` with `ok: false` and why (`not_found`, `not_supported`, `not_ready`, `self`), and past 120 a minute `rate_limited`. Answered no (`gone`) if the door leaves first; nothing is kept but the ask, 5 s |
+| `teleport_answer` | `ask`, `ok` | 5.1: the door's answer to a `teleport_ask` on it (`not_found`: none waits, or not on this door) |
 | `answer` | `knock`, `accept`, `message`? | answer a knock on your door |
 | `end` | `visit`, `reason`? (`"left"`, `"kicked"`, `"link_failed"`) | end a visit you are in, either side |
 | `rename` | `name` | a new name, if it is free (`name_taken`, `name_invalid` otherwise; the office keeps its own) |
@@ -659,18 +679,20 @@ nobody has taken it meanwhile. Who someone is, is their key.
 | `browser_confirming` | `office` (its name), `expires_in` (s) | 3.2, to a waiting browser: that office would link it, once it shows its room's confirmation |
 | `browser_confirmed` | `office`, `agent`, `pictures` | 3.2.2, to a device that scanned a room's QR code for another browser: that browser is linked now; this one is not (closed 1000) |
 | `welcome` | `proto`, `id`, `name`, `key`, `relays`: [url], `resume` (32 hex), `resumed` (bool), `visits`: [id], `knocking`: [{`id`, `to`}], `limits` (6.10), `chat`: true, `admin`? (true: this key is one of the lobby's operators), `title`?, `motd`?, `voice`? (4.0, true: this lobby carries knocks to talk and huddles; an older one would pass a knock to talk on as a knock to visit, so a visit-client sends none to it), `ice`? (4.2, #71: its STUN and TURN server, for voice over WebRTC, 8.7: {`host`? (none: the lobby's own, as the visit-client reached it), `port` (UDP), `username`?, `credential`?: this office's own TURN login, good while it is in the lobby and ten minutes after; none: STUN only}) | after a good `hello` and `prove` |
-| `lobby` | `offices`: [{`id`, `name`, `status`, `sim`, `max_visitors`, `visitors` (count), `visiting` (version 4: always `null`, nobody's whereabouts being everyone's; version 3: the host's office id, or `null`), `ready`, `key`, `watchers` (count), `world`, `links`, `whisper` (true), `voice`? (4.0: its hello said `voice`), `about` ({`text`, `tags`} or null)}], you included | on any change (3.4.3: at most every 250 ms, what changed meanwhile together; a `status`, `max_visitors` or `about` that changes nothing, to the office that sent it alone) |
-| `knock` | `id`, `from` {`id`, `name`, `sim`, `key`}, `message`, `expires_in`, `watch`?, `link`?, `voice`?, `huddle`? | someone knocked (to watch, with `watch`; to link, with `link`; to talk, with `voice`, and to join your huddle in a world, with `huddle`) |
-| `knock_sent` | `id`, `to`, `watch`?, `link`?, `voice`? | your knock reached the door (a knock to link with a door that does not take links is an ordinary knock: no `link`) |
+| `lobby` | `offices`: [{`id`, `name`, `status`, `sim`, `max_visitors`, `visitors` (count), `visiting` (version 4: always `null`, nobody's whereabouts being everyone's; version 3: the host's office id, or `null`), `ready`, `key`, `watchers` (count), `world`, `links`, `whisper` (true), `voice`? (4.0: its hello said `voice`), `teleport`? (5.1: its hello said `teleport`), `about` ({`text`, `tags`} or null)}], you included | on any change (3.4.3: at most every 250 ms, what changed meanwhile together; a `status`, `max_visitors` or `about` that changes nothing, to the office that sent it alone) |
+| `knock` | `id`, `from` {`id`, `name`, `sim`, `key`}, `message`, `expires_in`, `watch`?, `link`?, `voice`?, `huddle`?, `teleport`? | someone knocked (to watch, with `watch`; to link, with `link`; to talk, with `voice`, and to join your huddle in a world, with `huddle`) |
+| `knock_sent` | `id`, `to`, `watch`?, `link`?, `voice`?, `teleport`? | your knock reached the door (a knock to link with a door that does not take links is an ordinary knock: no `link`) |
 | `knock_cancelled` | `id`, `reason`: `"timeout"` \| `"gone"` \| `"withdrawn"` (4.0) | a knock on you was withdrawn |
-| `answered` | `knock`, `accept`, `reason`? (`"declined"`, `"timeout"`, `"gone"`, `"full"`, `"not_ready"`), `message`, `watch`?, `link`?, `voice`? | your knock's answer |
-| `visit` | `id`, `role`, `peer` {`id`, `name`, `sim`}, `ticket` (32 hex), `peer_link` {`endpoint`, `addr`}, `watch`?, `link`?, `voice`?, `huddle`? | a visit (or a watch, or a link: a watch with `link`; or, 4.0, a voice visit, with `voice`, and the world whose huddle it joins) was agreed: the visitor dials, the host waits for it (section 7) |
+| `answered` | `knock`, `accept`, `reason`? (`"declined"`, `"timeout"`, `"gone"`, `"full"`, `"not_ready"`), `message`, `watch`?, `link`?, `voice`?, `teleport`? | your knock's answer |
+| `visit` | `id`, `role`, `peer` {`id`, `name`, `sim`}, `ticket` (32 hex), `peer_link` {`endpoint`, `addr`}, `watch`?, `link`?, `voice`?, `huddle`?, `teleport`? (5.1) | a visit (or a watch, or a link: a watch with `link`; or, 4.0, a voice visit, with `voice`, and the world whose huddle it joins) was agreed: the visitor dials, the host waits for it (section 7) |
 | `visit_ended` | `id`, `reason` (6.5) | a visit ended |
 | `lobby_chat` | `from` {`id`, `name`, `key`}, `text` | a line said in the lobby (8.9) |
 | `whisper` | `from` {`id`, `name`, `key`}, `text` | a line whispered to this office's user (8.9) |
 | `group` | `name`, `about`, `open` (public), `locked` (a password), `owner`, `ops` (always `[]`: 3.0's), `members` [{`key`, `name`, `since`}], `bans`? [keys] | one of this office's worlds, whole (6.6): after its welcome, and whenever it changes (its bans to its owner alone) |
 | `group_left` | `group`, `reason` (`"left"`, `"removed"`, `"banned"`, `"deleted"`) | no longer in a world |
 | `group_chat` | `group`, `from` {`id`, `name`, `key`}, `text` | a line said in one of this office's worlds |
+| `teleport_ask` | `id`, `from` {`id`, `name`, `sim`, `key`} | 5.1 (8.15): someone asks whether they may teleport into this office's room: `teleport_answer` within 5 s |
+| `teleport_answered` | `to` (the door's office id), `key`?, `ok`, `reason`? | 5.1: what `to`'s room said to this office's `teleport_ask` (with the door's key); `reason` when the lobby said no for it |
 | `huddle` | `group`, `from` {`id`, `name`, `key`}, `on`, `since` (seconds) | 4.0: a huddle in one of this office's worlds started (`on`) or over (its starter ended it, left the world, or left the lobby), to its members online whose hello said `voice`; one going on is told again after the worlds, on `welcome` (`since`: how long ago it started) |
 | `groups` | `groups` [{`name`, `about`, `open`, `locked`, `members`, `online`, `owner` (3.2: its owner's name)}] | the lobby's worlds, after `groups` (neither `open` nor `locked`: closed, 6.6) |
 | `browser_pending` | `code`, `key` (the browser's), `agent` ("Firefox on Mac"), `pictures` | the browser waiting with the code typed (3.1, 6.11) |
@@ -726,6 +748,12 @@ visit-client's built-in defaults.
 - **Huddles** (4.0): `group_huddle` starts one in a world (one a world at a time), or ends it. The lobby tells the
   world's members online whose hellos said `voice` (`huddle`), and again on `welcome` while it goes on; it ends when
   its starter ends it, leaves the world, or leaves the lobby. Nothing of it is kept.
+- **Knocks to teleport** (5.1, 8.15): a knock to watch with `teleport`, to a door whose hello said `teleport` (else
+  `not_supported`), refused as a watch is (its errors with `ref: "teleport"`), but one watch past the knocker's
+  `max_watching` (its world may be full: the one it teleports into is let go once it leaves it). The door's
+  visit-client asks its page (`teleport_ask`): yes, it lets the knocker in (its key, as a guest's: point 9); no, or a
+  shut door, declined. Its `knock`, `knock_sent`, `answered` and `visit` say `teleport`. Asks to teleport
+  (`teleport_ask`) are the lobby's to pass on, never to answer for a door that takes them.
 
 ### 6.5 Why visits end
 
@@ -917,6 +945,7 @@ Messages are JSON, each prefixed by its length (u32 big-endian). In order, relia
 | host | `{"perform": {"act": {"clip", "loop", "secs"} \| null, "hold"}}` | 4.0 (8.6): what the room has this visitor do and hold, to the visitor's page as `perform` (only while it is in the room) |
 | watcher | `{"enter": {"x", "y", "z", "yaw", "air"} \| null}` / `{"exit": true}` | stepping into the room watched, there (clamped, passed to the host's page as `enter`; null: a link going there, spawned where newcomers go), or out (8.4, 8.5); in, it counts toward `max_visitors` |
 | host | `{"enter_refused": "full"}` | the room is full: the watcher stays outside |
+| watcher | `{"enter": null, "teleport": true}` / `{"exit": true, "teleport": true}` | 5.1 (8.15): stepping in by teleport: the host's visit-client asks its page (`teleport_ask`, the link's key) and then passes it on as `enter` with `teleport` and no pose, or answers `{"enter_refused": "teleport"}`; out by teleport (`exit` with `teleport`, its page plays it). A host before 5.1 takes the first for a link's "go there" (where newcomers go), the second for an exit |
 | either | `{"seen": {"dx", "dz", "turn", "size"} \| null}` | where the sender's world has the receiver's plot (8.4), or not; sent when it changes and each time a link comes up. Passed to the page as `seen` with only those fields |
 | either | `{"bye": "<reason>"}` | ending the visit (also sent to the lobby as `end`) |
 
@@ -1624,6 +1653,47 @@ to nothing on the next.
   texture's; a mesh is unpacked (at most 64 MiB), checked as an inline one (cleanScene, the scene's budget of
   vertices) and copied into the geometry the scene has under that uuid.
 
+### 8.15 Teleports (5.1)
+
+Walking onto a friend's plot is one way into a room (8.4); a teleport is the other: from wherever your user is, to any
+room that will take them, onto its pad, in a beam of light that everyone in both rooms sees. Visit carries it and
+draws it; who may come is each room's own to say, by its own rule, and where they arrive is its pad, made and styled
+by the room as it likes.
+
+- **A room takes teleports** when its `host` says `teleport: { pad, allow, color, effect }` (section 9). `pad`: where
+  arrivals stand, in its units: `{ x, y, z, yaw }`, an Object3D of its scene (its place in the room, facing where it
+  faces), or a function of who comes giving either. What the pad looks like is the room's: Visit draws nothing of it.
+  Without `teleport`, a room answers every ask no.
+- **Who may come** is `allow(who)`'s to say: `true` (or a Promise of it, within 2.5 s) and nothing else is yes. `who`:
+  `{ id, key, name, office, sim, guest, owner }`: their office's key, as the lobby says it for an ask and as a link
+  proved it for a knock and stepping in; the name their user goes by; their office's; `guest`, in a world with this
+  office (3.3); `owner`, its own user. Without `allow`: its guests and its owner (Visit's rule for walking in). It is
+  asked afresh each time, and a shut door is no without asking it (section 3, point 16).
+- **The list.** The person's page asks (`teleport_ask`: `v.findTeleports()`): its visit-client asks its own room's
+  page about its owner, and through the lobby every office in it whose hello said `teleport`, ready (at most 48, one
+  round every 1.5 s), each door's page answering as above; a door silent for 3 s is no. The page lists those that
+  said yes (`v.teleportTargets`), its own room first. A page shows its list, and leaves out the room its user is in.
+- **Going** (`v.teleport(key)`). A room the person's world shows (picked, or home) is stepped into by teleport
+  (`enter` with `teleport`, no pose); any other is knocked on to teleport (6.4), watched once its page says yes,
+  placed in the world as an unplaced plot is, and stepped into as soon as its scene is in. Either way its host's
+  visit-client asks its page once more, by the key the link proved, then has it spawn them on its pad (`spawn` hears
+  `{ at: <the pad>, teleport: true }`); no: `enter_refused`, `teleport`, and they stay where they were. Stepping in,
+  their visit-client takes them out of the room they were in by teleport (`exit` with `teleport`), whose page plays
+  it. A room come to by teleport and not picked is let go 2 s after they leave it (its host plays them going first);
+  picked meanwhile, it stays in their world.
+- **The beam** is Visit's, played by each room's own visit.js in its own scene (so it travels as the scene does, to
+  everyone who sees the room, its owner too): a column of light at their feet, rings running along it, sparks round
+  it, a glow on the floor, 1.6 s, in the room's `color` (else cyan); going, their body (Visit's model of them, where
+  the room shows their own look) drawn up into it; coming, down out of it. A room that draws its own (`effect: false`)
+  hears `teleported` (`{ way: "in" | "out", id, visitor, at }`) and plays what it likes; so does any room, for its
+  own model of a visitor. The person's own page draws a warp over its world's view while they go (`teleport` events:
+  `leaving`, `arrived`, `failed` with why), and a flash as they arrive. A page that walks its user at home itself (no
+  engine) goes home onto its own pad at once, its own room playing the beam.
+- **Older Visits.** An office before 5.1 says nothing of `teleport`, so it is neither asked nor knocked on; a host
+  before 5.1 that is stepped into by teleport puts its visitor where newcomers go, and plays nothing. A lobby before
+  5.1 carries no teleports (its `welcome` does not say `teleport`): a page's list then has its own room alone (`v.teleport`
+  still takes its user into a room its world shows, over the link it has).
+
 ## 9. The library: `visit.js`
 
 The normative surface; INTEGRATING.md shows it in use. Loaded with
@@ -1819,7 +1889,14 @@ v.host({
                                                     //   it, from above its plot, going round
   beforeSample(now) {},                             // optional (4.0, #42): your room's own step, once before each sample of its
                                                     //   scene (30 a second while anyone sees it): where to move what visitors see
+  teleport: { pad, allow(who) {}, color, effect },  // optional (5.1, 8.15): this room takes teleports. pad: where they arrive
+                                                    //   ({ x, y, z, yaw }, an Object3D of yours, or a function of who); allow:
+                                                    //   true (or a Promise of it) if who ({ id, key, name, office, sim, guest,
+                                                    //   owner }) may come (without it: your guests and you); color: Visit's
+                                                    //   beam's here (0x66ddff); effect: false, none of Visit's
 });
+v.on("teleported", ({ way, id, visitor, at }) => …)   // 5.1, hosting: someone came ("in", on your pad) or went ("out") by
+                                                      //   teleport, there: for your own effect, or your own model of them
 // In the engine (engine/SPEC.md) your renderer's render() does nothing (4.0, #42): Visit reads your scene itself.
 
 // a world (8.4): after host(). Every frame, where your page has its user (in its room's terms) and what they press;
@@ -1879,6 +1956,15 @@ v.mayTalk(figure)           // whether your user may talk to it (its `talk`)
 v.homeView(element)         // your own room, first person, in element, for a page that draws no world (engine/SPEC.md 7):
                             //   WASD, Shift, Space/X and the mouse, a click pointing; { element, shown, release() }: it
                             //   draws only while shown (not while visiting, nor once your page makes a world)
+
+// 5.1 (8.15): teleports, as the person. findTeleports(): a Promise of the rooms that would take your user now (your own
+// first; at most 7 s; asked again within 1.6 s: what that round found), "teleports" as each yes comes; teleport(key):
+// there by teleport (a Promise of { ok, reason }).
+v.findTeleports(); v.teleportTargets   // [{ key, name, user, home }]: those that said yes to the last ask
+v.teleportAsking; v.teleportLobby      // an ask under way; this lobby carries teleports (else your own room alone)
+v.teleport(key); v.teleporting         // { key, name, home, since, entered } while one goes, else null
+v.on("teleport", ({ state, key, name, reason }) => …)   // "leaving" | "arrived" | "failed" (reason: not_allowed,
+                            //   declined, timeout, gone, full, here, no_world, no_pad, refused, not_supported, offline)
 ```
 
 **Poses** are the host's own: the library only stores them and passes them back. `Visit.walk` uses
@@ -1935,6 +2021,7 @@ slowly while its tab is hidden.
 | worlds | 20 a key, 50 members each (the lobby's `--world-size`), a password 4 to 64 characters, 5 passwords tried a minute (6.10) |
 | linked browsers | 10 an office, 4 in the lobby at once; a pass or a code good 10 minutes, once; a room's confirmation 5 minutes, 5 wrong tries (6.11) |
 | world | a plot not said: what its scene covers, at most 200 units a side; 4 units between plots in a ring; out of a plot 0.3 units past it; stepping in answered within 3 s |
+| teleports (5.1, 8.15) | a room's page answers an ask in 3 s (its `allow` in 2.5 s), else no; the lobby keeps an ask 5 s, 120 asks an office a minute; a page's round of asks one every 1.5 s, at most 48 rooms, over in 7 s; stepping in by teleport answered within 8 s, and a teleport not there in 20 s given up; a room come to by teleport let go 2 s after its user leaves it (20 s if never stepped into); the beam 1.6 s |
 | layout, seen | 256 each |
 | chat | a line at most 200 characters; 5 lines every 10 s, from a page and from each visitor, whatever the scope (the lobby counts its own, lobby lines and whispers, too); shown over a head 4 to 12 s, by its length; the chat window keeps 100 lines, and fades 20 s after the last |
 | pictures, voice messages | a picture at most 8 MiB, 4 a line; a voice message at most 2 MiB and 60 s, one a line |
