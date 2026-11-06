@@ -696,6 +696,61 @@ async def t_v4_no_knocks(L):
         await c_.send(type="bye")
 
 
+async def t_teleport(L):
+    """5.1 (../../visit/SPEC.md 8.15): asks to teleport, passed to the door (its room answers), its answer back with its
+    key; the lobby's own no for a door that takes none, is not ready, not here, or past the limit; a knock to teleport
+    is a watch's, passed with `teleport` to a door that takes them, and its visit says so."""
+    a, b = await join(L, "T A", proto=P4, teleport=True), await join(L, "T B", proto=P4, teleport=True)
+    old = await join(L, "T Old", proto=P4)
+    shy = await join(L, "T Shy", proto=P4, teleport=True, link=False)
+    check("welcome says this lobby carries teleports", a.welcome.get("teleport"), True)
+    lob = await a.last_lobby()
+    check("the lobby says who takes them", {o["name"]: o.get("teleport", False) for o in lob["offices"] if o["name"].startswith("T ")},
+          {"T A": True, "T B": True, "T Old": False, "T Shy": True})
+    await a.send(type="teleport_ask", to=b.id)
+    q = await b.expect("teleport_ask")
+    check("A asks about B's room: B hears it, from A (its key, as A proved it)", (q["from"]["id"], q["from"]["name"], q["from"]["key"], q["id"][0]), (a.id, "T A", a.key, "t"))
+    await b.send(type="teleport_answer", ask=q["id"], ok=True)
+    r = await a.expect("teleport_answered")
+    check("B's answer back to A, with B's key", (r["to"], r["key"], r["ok"], "reason" in r), (b.id, b.key, True, False))
+    await b.send(type="teleport_answer", ask=q["id"], ok=True)
+    check("answered twice: the second is no ask of B's now", ((await b.expect("error"))["code"]), "not_found")
+    await a.send(type="teleport_ask", to=b.id)
+    q = await b.expect("teleport_ask")
+    await a.send(type="teleport_answer", ask=q["id"], ok=True)
+    check("A cannot answer an ask on B's door", (await a.expect("error"))["code"], "not_found")
+    await b.send(type="teleport_answer", ask=q["id"], ok=False)
+    check("B says no", (await a.expect("teleport_answered"))["ok"], False)
+    for who, why in ((old, "not_supported"), (shy, "not_ready"), (a, "self")):
+        await a.send(type="teleport_ask", to=who.id)
+        r = await a.expect("teleport_answered")
+        check("the lobby answers no for %s: %s" % (who.name, why), (r["to"], r["ok"], r["reason"]), (who.id, False, why))
+    await a.send(type="teleport_ask", to="o-nobody")
+    check("and for nobody: not_found", ((r := await a.expect("teleport_answered"))["ok"], r["reason"]), (False, "not_found"))
+    check("and the doors asked nothing of those", [m["type"] for m in await old.quiet() + await shy.quiet() if m["type"] != "lobby"], [])
+    await a.send(type="teleport_ask", to=b.id)
+    await b.expect("teleport_ask")
+    await b.send(type="bye")
+    r = await a.expect("teleport_answered")
+    check("B leaves with A's ask on it: no, gone", (r["to"], r["ok"], r["reason"]), (b.id, False, "gone"))
+    b = await join(L, "T B", proto=P4, teleport=True)
+    await a.quiet()
+    await a.send(type="knock", to=b.id, watch=True, teleport=True)
+    k, ks = await b.expect("knock"), await a.expect("knock_sent")
+    check("a knock to teleport: a watch's, B and A told so", (k.get("watch"), k.get("teleport"), ks.get("watch"), ks.get("teleport")), (True, True, True, True))
+    await b.send(type="answer", knock=k["id"], accept=True)
+    an, va, vb = await a.expect("answered"), await a.expect("visit"), await b.expect("visit")
+    check("let in: its answer and both visits say teleport, a watch", (an.get("teleport"), va.get("watch"), va.get("teleport"), vb.get("teleport"), va["id"] == vb["id"]), (True, True, True, True, True))
+    await a.send(type="knock", to=old.id, watch=True, teleport=True)
+    e = await a.expect("error")
+    check("to a door that takes no teleports: refused, its ref teleport", (e["code"], e.get("ref")), ("not_supported", "teleport"))
+    await a.send(type="knock", to=b.id, teleport=True)
+    e = await a.expect("error")
+    check("teleport without watch: a knock to walk in, refused as Visit 4 refuses one", (e["code"], e.get("ref")), ("not_supported", "knock"))
+    for c_ in (a, b, old, shy):
+        await c_.send(type="bye")
+
+
 async def t_huddle(L):
     """4.0: a huddle in a world: its members online who take voice hear it start and end; one at a time in a world;
     joining is a voice knock to its starter, saying the world."""
@@ -1368,7 +1423,7 @@ async def main():
     T = await Lobby("--v3", "--knock-ttl", "1").start()
     tests = [(t, L) for t in (t_hello, t_hello_rules, t_knock_refusals, t_visit, t_end_and_full, t_announce, t_resume, t_resume_replays_visits, t_rename,
                                t_link_withdrawn, t_keys, t_watch, t_link, t_chat, t_whisper, t_v4_hello, t_v4_takeover_and_resume, t_browsers, t_browsers_guarded, t_browsers_confirmed, t_flood, t_v4_directory,
-                               t_v4_groups, t_voice, t_huddle, t_v4_no_knocks)]
+                               t_v4_groups, t_voice, t_huddle, t_v4_no_knocks, t_teleport)]
     tests += [(t_resume_window_and_bye, S), (t_world_size, S), (t_knock_timeout_and_health, T)]
     try:
         for t, lob in tests:

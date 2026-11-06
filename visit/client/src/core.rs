@@ -199,6 +199,14 @@ struct Visit {
     near_keys: Vec<String>,
     /// The name the other office's user goes by (8.9: `user`, as their page said), if they gave one.
     peer_user: Option<String>,
+    /// 5.1 (8.15): a watch begun by a knock to teleport, by its door's room's word; and when it was agreed. Visitor
+    /// side: let go once its user leaves that room (unless they pick it meanwhile). Host side: the guest list does
+    /// not end it (the room let it in), the door shutting does.
+    teleport: bool,
+    tp_since: Instant,
+    /// When its user left that room (visitor side): let go TP_LINGER later, so its host hears them go before the
+    /// watch ends (the link's word and the lobby's race), and plays it.
+    tp_left: Option<Instant>,
 }
 
 /// Where everyone in this office's room is (8.7), in metres, as its page last said: its own user (none while they
@@ -283,6 +291,28 @@ const WORLD_NO_PAGE: Duration = Duration::from_secs(60);
 /// After a welcome, how long the lobby has to say this office's groups again before those it does not say are gone.
 const GROUPS_SETTLE: Duration = Duration::from_secs(3);
 const WORLD_ASK: Duration = Duration::from_secs(10);
+/// 5.1, teleports (SPEC 8.15): this room's page answers an ask within TP_ANSWER, or it is no; the person's page hears
+/// no from a door silent for TP_WAIT; one round of asks every TP_ROUND, to at most TP_ASKS doors; at most TP_PENDING
+/// asks wait on this room's page at once; a watch begun to teleport, never stepped into, is let go after TP_IDLE.
+const TP_ANSWER: Duration = Duration::from_secs(3);
+const TP_WAIT: Duration = Duration::from_secs(6);
+const TP_ROUND: Duration = Duration::from_millis(1500);
+const TP_ASKS: usize = 48;
+const TP_PENDING: usize = 64;
+const TP_IDLE: Duration = Duration::from_secs(20);
+const TP_LINGER: Duration = Duration::from_secs(2);
+
+/// 5.1: where this room's page's answer to an ask to teleport goes (SPEC 8.15).
+enum TpAsk {
+    /// An ask through the lobby (its id there).
+    Lobby(String),
+    /// This office's own user, asking whether their room takes them home.
+    Home,
+    /// A watcher stepping in by teleport (the visit's id): let in, or `enter_refused`.
+    Enter(String),
+    /// A knock to teleport on this door: let in, or declined.
+    Knock { kid: String, fid: String, key: String },
+}
 
 pub struct Core {
     /// The lobby's address (VISIT_LOBBY), for a web pass to its page (3.1).
@@ -328,6 +358,19 @@ pub struct Core {
     /// Guests let in through the open door (knocker's office id -> its key, and when), until the lobby agrees
     /// their visit: then the visitor's link must be that key.
     admitted: HashMap<String, (String, Instant)>,
+    /// 5.1 (SPEC 8.15): offices this room let in to teleport (by id; in `admitted` too, until their watch is agreed).
+    tp_admitted: HashSet<String>,
+    /// This lobby carries teleports (its welcome said so).
+    lobby_teleport: bool,
+    /// Asks this room's page has yet to answer, by the id it was given (`a<n>`): where its answer goes, and since when.
+    tp_asks: HashMap<String, (TpAsk, Instant)>,
+    tp_seq: u64,
+    /// The person's last round of asks, and the doors it waits on (office id: its key, since when).
+    tp_round: Option<Instant>,
+    tp_waiting: HashMap<String, (String, Instant)>,
+    /// The person's knocks to teleport (office ids): sent, in order, until the lobby says it has them; then by knock id.
+    tp_order: VecDeque<String>,
+    tp_knocks: HashMap<String, String>,
     /// The page draws a world (../WORLD.md): this office watches the plots its user picked, by itself. After a page
     /// connects, until it asks for the world again (or WORLD_ASK passes, and the world goes off).
     world: bool,
@@ -471,6 +514,8 @@ impl Core {
             state_file,
             key,
             admitted: HashMap::new(),
+            tp_admitted: HashSet::new(), lobby_teleport: false, tp_asks: HashMap::new(), tp_seq: 0, tp_round: None, tp_waiting: HashMap::new(),
+            tp_order: VecDeque::new(), tp_knocks: HashMap::new(),
             world: false,
             world_ask: None,
             watch_pending: HashMap::new(),
@@ -560,6 +605,8 @@ impl Core {
                     self.media_expire();
                     self.assets_expire();
                     self.admitted.retain(|_, (_, at)| at.elapsed() < ADMITTED_FOR);
+                    self.tp_admitted.retain(|f| self.admitted.contains_key(f));
+                    self.tp_expire();
                     if self.world && self.user_page.is_none() && self.page_gone.elapsed() >= WORLD_NO_PAGE {
                         info!("no page for a minute: its world's watches end");
                         self.set_world(false);
@@ -903,6 +950,7 @@ impl Core {
                 points: (Instant::now(), 0), guest: false, watch: true, inside: false, shared_adds: false, link: false, in_world: false, avatar_asked: false, possessions_asked: Vec::new(), peer_possessions: json!([]), peer_phone: false,
                 call_on: false, speaker: false, ring: None, voice: false, huddle: None, performs: (Instant::now(), 0), performed: Value::Null, wants: (Instant::now(), 0), says: (Instant::now(), 0),
                 landscapes: false, land_sent: None, land_hash: None, assets: false, asset_wants: (Instant::now(), 0), near_keys: Vec::new(), peer_user: None,
+                teleport: false, tp_since: Instant::now(), tp_left: None,
             });
         }
         info!("the owner's visit: the room has its owner");
@@ -1032,6 +1080,9 @@ impl Core {
                     }
                     self.save_state();
                     self.tell_picks();
+                    for v in self.visits.values_mut().filter(|v| v.role == Role::Visitor && v.teleport && v.peer.get("key").and_then(Value::as_str) == Some(k.as_str())) {
+                        v.teleport = false;   // 5.1: a room come to by teleport, picked: the world's now, kept when they leave it
+                    }
                     self.watch_declined.remove(&k);   // asked anew
                     self.watch_picks();
                 }
@@ -1224,20 +1275,26 @@ impl Core {
                 let Some(id) = self.visits.values().find(|v| v.channel == ch && v.up && v.role == Role::Visitor && v.watch).map(|v| v.id.clone()) else {
                     return self.page_error("no_such_visit", "you are not watching on that channel", Some("enter"));
                 };
+                // 5.1 (8.15): by teleport, onto the room's pad (its page says where), out of the one before by teleport.
+                let teleport = m.get("teleport") == Some(&json!(true));
                 // In one room at a time: out of any other first (a visit there ends, as moving rooms ends one).
                 let others: Vec<(String, bool)> = self.visits.values().filter(|v| v.role == Role::Visitor && v.inside && v.id != id).map(|v| (v.id.clone(), v.watch)).collect();
                 for (other, watch) in others {
                     if watch {
-                        self.step_out(&other);
+                        self.step_out_how(&other, teleport);
+                        self.tp_let_go(&other);
                     } else {
                         self.to_lobby(end(&other, None));
                     }
                 }
                 // Where it steps in, in the room's terms; none (a link's "go there"): where the room puts newcomers.
-                let pose = m.get("pose").filter(|p| p.is_object()).map(clamp_pose).unwrap_or(Value::Null);
+                let pose = m.get("pose").filter(|p| p.is_object() && !teleport).map(clamp_pose).unwrap_or(Value::Null);
                 if let Some(v) = self.visits.get_mut(&id) {
                     v.inside = true;
-                    let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "enter": pose })));
+                    v.tp_left = None;   // (back in a room come to by teleport, before it was let go: kept)
+                    // (a host before 5.1 takes a teleport for a link's "go there": where its newcomers go)
+                    let ctl = if teleport { json!({ "enter": null, "teleport": true }) } else { json!({ "enter": pose }) };
+                    let _ = v.cmd.try_send(LinkCmd::Ctl(ctl));
                 }
             }
             // Where this office has put a friend's plot in its world (kept in the state file).
@@ -1828,8 +1885,28 @@ impl Core {
             "exit" => {
                 let ch = m.get("channel").and_then(Value::as_u64).unwrap_or(0) as u16;
                 match self.visits.values().find(|v| v.channel == ch && v.role == Role::Visitor && v.watch).map(|v| v.id.clone()) {
-                    Some(id) => self.step_out(&id),
+                    Some(id) => {
+                        self.step_out_how(&id, m.get("teleport") == Some(&json!(true)));   // (5.1: by teleport, home)
+                        self.tp_let_go(&id);
+                    }
                     None => self.page_error("no_such_visit", "you are not watching on that channel", Some("exit")),
+                }
+            }
+            // 5.1 (8.15): the person's page asks which rooms would take them by teleport (their own among them), and
+            // knocks to teleport into one their world does not watch; the room's page answers asks on this door.
+            "teleport_ask" => self.teleport_round(),
+            "teleport" => match m.get("key").and_then(Value::as_str).filter(|k| state::key_ok(k)) {
+                Some(k) => {
+                    let k = k.to_string();
+                    self.teleport_knock(&k);
+                }
+                None => self.page_error("bad_message", "key is an office's key, as the lobby lists it", Some("teleport")),
+            },
+            "teleport_answer" => {
+                let ok = m.get("ok") == Some(&json!(true));
+                match m.get("ask").and_then(Value::as_str).and_then(|a| self.tp_asks.remove(a)) {
+                    Some((why, _)) => self.tp_answered(why, ok),
+                    None => debug!("an answer to an ask to teleport that waits no more"),
                 }
             }
             // The lobby renames the office if the name is free; if not, it stays as it was (and says why).
@@ -3182,6 +3259,14 @@ impl Core {
                 self.online = true;
                 self.lobby_chat = m.get("chat") == Some(&json!(true));
                 self.lobby_voice = m.get("voice") == Some(&json!(true));
+                self.lobby_teleport = m.get("teleport") == Some(&json!(true));
+                for (_, (key, _)) in std::mem::take(&mut self.tp_waiting) {   // (what the last connection waited on gets no answer)
+                    self.to_page(json!({ "type": "teleport_answer", "key": key, "ok": false, "reason": "gone" }));
+                }
+                for to in std::mem::take(&mut self.tp_order).into_iter().chain(std::mem::take(&mut self.tp_knocks).into_values()) {
+                    let key = self.office_key(&to);
+                    self.to_page(json!({ "type": "teleport_failed", "key": key, "reason": "gone" }));
+                }
                 if !resumed {   // a new session: no huddle of this office's goes on (and those going on are told again)
                     self.huddle = None;
                     self.huddles.clear();
@@ -3242,6 +3327,49 @@ impl Core {
                 self.to_page(m);
                 self.watch_picks();
                 self.deliver_held();   // someone a whisper was left for, in it now
+            }
+            // 5.1 (8.15): the person's knocks to teleport, and what became of them; asks on this door, and answers to theirs.
+            "knock_sent" if m.get("teleport") == Some(&json!(true)) => {
+                if let (Some(kid), Some(to)) = (m.get("id").and_then(Value::as_str), m.get("to").and_then(Value::as_str)) {
+                    self.tp_order.retain(|x| x != to);
+                    self.tp_knocks.insert(kid.to_string(), to.to_string());
+                }
+            }
+            "answered" if m.get("teleport") == Some(&json!(true)) => {
+                let to = m.get("knock").and_then(Value::as_str).and_then(|k| self.tp_knocks.remove(k));
+                if let Some(to) = to.filter(|_| m.get("accept") != Some(&json!(true))) {
+                    let reason = m.get("reason").and_then(Value::as_str).unwrap_or("declined").chars().take(40).collect::<String>();
+                    let key = self.office_key(&to);
+                    self.to_page(json!({ "type": "teleport_failed", "key": key, "reason": reason }));
+                }
+            }
+            "error" if m.get("ref").and_then(Value::as_str) == Some("teleport") => {
+                if let Some(to) = self.tp_order.pop_front() {
+                    let reason = m.get("code").and_then(Value::as_str).unwrap_or("refused").chars().take(40).collect::<String>();
+                    let key = self.office_key(&to);
+                    self.to_page(json!({ "type": "teleport_failed", "key": key, "reason": reason, "message": m.get("message") }));
+                }
+            }
+            "knock" if m.get("watch") == Some(&json!(true)) && m.get("teleport") == Some(&json!(true)) => self.teleport_knocked(&m),
+            "teleport_ask" => {
+                let Some(id) = m.get("id").and_then(Value::as_str).map(str::to_string) else { return };
+                if self.hosting.is_none() || !self.saved.door_open {   // no room to come into, or its door shut: no, the page not asked
+                    return self.to_lobby(ToLobby::TeleportAnswer { ask: Some(id), ok: false });
+                }
+                let who = self.tp_who(m.get("from").unwrap_or(&Value::Null), false);
+                self.tp_ask_page(TpAsk::Lobby(id), who);
+            }
+            "teleport_answered" => {
+                let to = m.get("to").and_then(Value::as_str).unwrap_or("");
+                if let Some((key, _)) = self.tp_waiting.remove(to) {
+                    // (the lobby's word for whose door it was: the one asked, or nothing)
+                    let ok = m.get("ok") == Some(&json!(true)) && m.get("key").and_then(Value::as_str).is_none_or(|k| k == key);
+                    let mut a = json!({ "type": "teleport_answer", "key": key, "name": self.office_name(to), "ok": ok });
+                    if let Some(r) = m.get("reason").and_then(Value::as_str) {
+                        a["reason"] = json!(r.chars().take(40).collect::<String>());
+                    }
+                    self.to_page(a);
+                }
             }
             // This office's own knocks to watch, and what became of them: never the page's.
             "knock_sent" if m.get("watch").and_then(Value::as_bool) == Some(true) => {
@@ -3454,6 +3582,7 @@ impl Core {
         let watch = m.get("watch").and_then(Value::as_bool) == Some(true);
         let link = watch && m.get("link").and_then(Value::as_bool) == Some(true);
         let voice = !watch && m.get("voice").and_then(Value::as_bool) == Some(true);
+        let mut teleport = watch && !link && m.get("teleport") == Some(&json!(true));
         if (!watch || link) && !voice {   // 4.0 (#57): a visit by a knock, or a link: none (this office asks for none, and lets none in)
             warn!(visit = id, "a visit by a knock, or a link: Visit 4 has none: ended");
             return self.to_lobby(end(id, Some(if role == Role::Host { "kicked" } else { "left" })));
@@ -3486,12 +3615,17 @@ impl Core {
         let mut guest = false;
         if role == Role::Host && !voice {
             let pid = peer.get("id").and_then(Value::as_str).unwrap_or("");
+            let tp = self.tp_admitted.remove(pid);
             if let Some((key, _)) = self.admitted.remove(pid) {
                 if endpoint.as_deref() != Some(key.as_str()) {
                     warn!(visit = id, "a guest let in whose link is another key: ended");
                     return self.to_lobby(end(id, Some("kicked")));
                 }
-                guest = true;
+                // 5.1: one let in to teleport is a guest only if in a world with this office; the room let them in
+                guest = !tp || self.is_guest(&key);
+                teleport = tp && teleport;
+            } else {
+                teleport = false;   // (a watch to teleport this room did not let in: as any watch, which ends below)
             }
         }
         let cmd = match role {
@@ -3508,6 +3642,7 @@ impl Core {
                     points: (Instant::now(), 0), guest, watch, inside: !watch && !voice, shared_adds: false, link, in_world: false, avatar_asked: false, possessions_asked: Vec::new(), peer_possessions: json!([]), peer_phone: false,
                     call_on: voice && huddle.is_none(), speaker: false, ring: None, voice, huddle, performs: (Instant::now(), 0), performed: Value::Null, wants: (Instant::now(), 0), says: (Instant::now(), 0),
                     landscapes: false, land_sent: None, land_hash: None, assets: false, asset_wants: (Instant::now(), 0), near_keys: Vec::new(), peer_user: None,
+                    teleport, tp_since: Instant::now(), tp_left: None,
                 });
             }
             Err(e) => {
@@ -3640,6 +3775,185 @@ impl Core {
             .get("id").and_then(Value::as_str).map(str::to_string)
     }
 
+    // ---------- teleports (5.1, SPEC 8.15) ----------
+
+    /// Who asks to teleport into this room, as its page's `teleport` hook is told: the lobby's (or the link's) word for
+    /// their office, whether they are a guest (in a world with this office), whether they are its owner.
+    fn tp_who(&self, from: &Value, owner: bool) -> Value {
+        let s = |k: &str, n: usize| from.get(k).and_then(Value::as_str).map(|s| s.chars().filter(|c| !c.is_control()).take(n).collect::<String>());
+        let key = s("key", 100).filter(|k| state::key_ok(k));
+        let guest = !owner && key.as_deref().is_some_and(|k| self.is_guest(k));
+        let user = key.as_deref().and_then(|k| self.visits.values().find(|v| v.peer.get("key").and_then(Value::as_str) == Some(k) && v.peer_user.is_some())).map(person);
+        let sim = from.get("sim").filter(|x| x.is_object()).cloned().unwrap_or(json!({}));
+        json!({ "id": s("id", 40), "name": s("name", 24), "key": key, "sim": sim, "guest": guest, "owner": owner, "user": user })
+    }
+
+    /// This room's page asked (its answer goes where `why` says), or no at once: no page hosts, or too many wait on it.
+    fn tp_ask_page(&mut self, why: TpAsk, from: Value) {
+        if self.hosting.is_none() || self.tp_asks.len() >= TP_PENDING {
+            return self.tp_answered(why, false);
+        }
+        self.tp_seq += 1;
+        let ask = format!("a{}", self.tp_seq);
+        self.tp_asks.insert(ask.clone(), (why, Instant::now()));
+        self.to_page(json!({ "type": "teleport_ask", "ask": ask, "from": from }));
+    }
+
+    /// What this room's page said (no, if it said nothing in TP_ANSWER), where it goes.
+    fn tp_answered(&mut self, why: TpAsk, ok: bool) {
+        match why {
+            TpAsk::Lobby(id) => self.to_lobby(ToLobby::TeleportAnswer { ask: Some(id), ok }),
+            TpAsk::Home => {
+                let name = self.office.get("name").cloned().unwrap_or(Value::Null);
+                let key = self.key.clone();
+                self.to_page(json!({ "type": "teleport_answer", "key": key, "name": name, "ok": ok, "home": true }));
+            }
+            TpAsk::Enter(id) => {
+                let full = self.visits.values().filter(|x| x.role == Role::Host && x.inside && !x.local).count() >= self.max_visitors as usize;
+                let Some(v) = self.visits.get_mut(&id).filter(|v| v.up && v.role == Role::Host && v.watch && !v.inside) else { return };
+                if !ok || (full && !v.local) {
+                    let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "enter_refused": if ok { "full" } else { "teleport" } })));
+                    return;
+                }
+                v.inside = true;
+                let ch = v.channel;
+                self.to_page(json!({ "type": "enter", "channel": ch, "teleport": true }));
+            }
+            TpAsk::Knock { kid, fid, key } => {
+                let ok = ok && self.saved.door_open && self.hosting.is_some();
+                if ok {
+                    info!(knock = kid, from = fid, "a knock to teleport: let in, by this room's word");
+                    self.admitted.insert(fid.clone(), (key, Instant::now()));
+                    self.tp_admitted.insert(fid);
+                }
+                self.to_lobby(ToLobby::Answer { knock: Some(kid), accept: Some(ok), message: None });
+            }
+        }
+    }
+
+    /// A knock to teleport on this door: its room's page decides (its door shut, or no room hosted: no, unasked).
+    fn teleport_knocked(&mut self, m: &Value) {
+        let from = m.get("from").cloned().unwrap_or(Value::Null);
+        let Some(kid) = m.get("id").and_then(Value::as_str).map(str::to_string) else { return };
+        let (Some(fid), Some(key)) = (from.get("id").and_then(Value::as_str).map(str::to_string), from.get("key").and_then(Value::as_str).filter(|k| state::key_ok(k)).map(str::to_string)) else {
+            return self.to_lobby(ToLobby::Answer { knock: Some(kid), accept: Some(false), message: None });
+        };
+        if self.hosting.is_none() || !self.saved.door_open {
+            return self.to_lobby(ToLobby::Answer { knock: Some(kid), accept: Some(false), message: None });
+        }
+        let who = self.tp_who(&from, false);
+        self.tp_ask_page(TpAsk::Knock { kid, fid, key }, who);
+    }
+
+    /// The person's round of asks: their own room (its page says whether it takes them home), and each office in the
+    /// lobby whose hello said `teleport`, ready, at most TP_ASKS. The page hears whom it waits on (`teleport_asked`),
+    /// then each answer (`teleport_answer`), a door silent for TP_WAIT a no.
+    fn teleport_round(&mut self) {
+        let now = Instant::now();
+        if self.tp_round.is_some_and(|t| now.duration_since(t) < TP_ROUND) {
+            return self.page_error("rate_limited", "one round of asks to teleport at a time: a moment", Some("teleport_ask"));
+        }
+        self.tp_round = Some(now);
+        let lobby = self.online && self.lobby_teleport;
+        let me = self.office.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+        let doors: Vec<(String, String)> = if !lobby { Vec::new() } else {
+            self.lobby_view.as_ref().and_then(|l| l.get("offices")).and_then(Value::as_array).into_iter().flatten()
+                .filter(|o| o.get("teleport") == Some(&json!(true)) && o.get("ready") == Some(&json!(true)))
+                .filter_map(|o| Some((o.get("id")?.as_str()?.to_string(), o.get("key")?.as_str()?.to_string())))
+                .filter(|(id, key)| *id != me && *key != self.key).take(TP_ASKS).collect()
+        };
+        let home = self.hosting.is_some();
+        let mut keys: Vec<Value> = doors.iter().map(|(_, k)| json!(k)).collect();
+        if home {
+            keys.insert(0, json!(self.key));
+        }
+        self.to_page(json!({ "type": "teleport_asked", "keys": keys, "lobby": lobby }));
+        if home {
+            let mine = json!({ "id": self.office.get("id"), "name": self.office.get("name"), "key": self.key });
+            let who = self.tp_who(&mine, true);
+            self.tp_ask_page(TpAsk::Home, who);
+        }
+        for (id, key) in doors {
+            self.tp_waiting.insert(id.clone(), (key, now));
+            self.to_lobby(ToLobby::TeleportAsk { to: Some(id) });
+        }
+    }
+
+    /// The person teleports into a room their world does not watch (one it watches, their page steps into itself:
+    /// `enter` with `teleport`): a knock to teleport, a watch once its room lets them in, stepped into as soon as its
+    /// scene is in (their page does it), let go once they leave it.
+    fn teleport_knock(&mut self, key: &str) {
+        let fail = |c: &mut Core, reason: &str| c.to_page(json!({ "type": "teleport_failed", "key": key, "reason": reason }));
+        if key == self.key {
+            return fail(self, "home");   // (its own room: its page steps into its home)
+        }
+        if self.visits.values().any(|v| v.role == Role::Visitor && v.watch && v.peer.get("key").and_then(Value::as_str) == Some(key)) {
+            return fail(self, "watching");   // (in its world already: its page steps in)
+        }
+        if !self.online || !self.lobby_teleport {
+            return fail(self, if self.online { "not_supported" } else { "offline" });
+        }
+        if !self.world {
+            return fail(self, "no_world");
+        }
+        let Some(id) = self.lobby_view.as_ref().and_then(|l| l.get("offices")).and_then(Value::as_array).into_iter().flatten()
+            .find(|o| o.get("key").and_then(Value::as_str) == Some(key)).and_then(|o| o.get("id")).and_then(Value::as_str).map(str::to_string) else {
+            return fail(self, "not_found");
+        };
+        if self.tp_order.contains(&id) || self.tp_knocks.values().any(|x| *x == id) {
+            return;   // knocking already
+        }
+        self.tp_order.push_back(id.clone());
+        self.to_lobby(ToLobby::Knock { to: Some(id), message: None, watch: true, link: false, voice: false, huddle: None, teleport: true });
+    }
+
+    /// A watch begun to teleport, its user out of that room now: let go (its plot leaves their world) TP_LINGER from
+    /// now, unless they picked it meanwhile, or are back in it by then.
+    fn tp_let_go(&mut self, id: &str) {
+        let picks = &self.saved.picks;
+        let Some(v) = self.visits.get_mut(id).filter(|v| v.role == Role::Visitor && v.teleport && !v.inside) else { return };
+        if picks.iter().any(|p| v.peer.get("key").and_then(Value::as_str) == Some(p.key.as_str())) {
+            v.teleport = false;
+            return;
+        }
+        v.tp_left.get_or_insert_with(Instant::now);
+    }
+
+    /// Asks this room's page did not answer in time: no. Doors silent too long: no, to the person's page. Watches begun
+    /// to teleport and never stepped into: let go.
+    fn tp_expire(&mut self) {
+        let late: Vec<String> = self.tp_asks.iter().filter(|(_, (_, at))| at.elapsed() >= TP_ANSWER).map(|(k, _)| k.clone()).collect();
+        for k in late {
+            if let Some((why, _)) = self.tp_asks.remove(&k) {
+                self.tp_answered(why, false);
+            }
+        }
+        let silent: Vec<(String, String)> = self.tp_waiting.iter().filter(|(_, (_, at))| at.elapsed() >= TP_WAIT).map(|(id, (k, _))| (id.clone(), k.clone())).collect();
+        for (id, key) in silent {
+            self.tp_waiting.remove(&id);
+            let name = self.office_name(&id);
+            self.to_page(json!({ "type": "teleport_answer", "key": key, "name": name, "ok": false, "reason": "timeout" }));
+        }
+        let picks = &self.saved.picks;
+        let done: Vec<String> = self.visits.values()
+            .filter(|v| v.role == Role::Visitor && v.teleport && !v.inside)
+            .filter(|v| v.tp_left.map_or(v.tp_since.elapsed() >= TP_IDLE, |t| t.elapsed() >= TP_LINGER))
+            .filter(|v| !picks.iter().any(|p| v.peer.get("key").and_then(Value::as_str) == Some(p.key.as_str())))
+            .map(|v| v.id.clone()).collect();
+        for id in done {
+            if let Some(v) = self.visits.get_mut(&id) {
+                v.teleport = false;   // (once)
+            }
+            info!(visit = id, "out of a room come to by teleport: let go");
+            self.to_lobby(end(&id, Some("left")));
+        }
+    }
+
+    fn office_name(&self, id: &str) -> Value {
+        self.lobby_view.as_ref().and_then(|l| l.get("offices")).and_then(Value::as_array).into_iter().flatten()
+            .find(|o| o.get("id").and_then(Value::as_str) == Some(id)).and_then(|o| o.get("name")).cloned().unwrap_or(Value::Null)
+    }
+
     fn office_key(&self, id: &str) -> Option<String> {
         self.lobby_view.as_ref()?.get("offices")?.as_array()?.iter()
             .find(|o| o.get("id").and_then(Value::as_str) == Some(id))?
@@ -3674,7 +3988,8 @@ impl Core {
         let me = self.office.get("id").and_then(Value::as_str).unwrap_or("").to_string();
         let watched: Vec<String> = self.visits.values().filter(|v| v.role == Role::Visitor && v.watch)
             .filter_map(|v| v.peer.get("id").and_then(Value::as_str).map(str::to_string)).collect();
-        let mut room = MAX_WATCHING.saturating_sub(watched.len() + self.watch_pending.len());
+        let tp = self.visits.values().filter(|v| v.role == Role::Visitor && v.watch && v.teleport).count();   // (5.1: one past the picks)
+        let mut room = MAX_WATCHING.saturating_sub(watched.len().saturating_sub(tp) + self.watch_pending.len());
         // Nobody's plot by itself: only those picked, in the order picked.
         let all: Vec<Value> = self.lobby_view.as_ref().and_then(|l| l.get("offices")).and_then(Value::as_array).cloned().unwrap_or_default();
         let offices: Vec<Value> = self.saved.picks.iter()
@@ -3694,7 +4009,7 @@ impl Core {
             debug!(to = id, "a knock to watch a picked plot");
             self.watch_pending.insert(id.to_string(), now);
             self.watch_order.push_back(id.to_string());
-            let _ = self.lobby.send(LobbyOut::Msg(ToLobby::Knock { to: Some(id.to_string()), message: None, watch: true, link: false, voice: false, huddle: None }));
+            let _ = self.lobby.send(LobbyOut::Msg(ToLobby::Knock { to: Some(id.to_string()), message: None, watch: true, link: false, voice: false, huddle: None, teleport: false }));
             room -= 1;
         }
     }
@@ -3702,7 +4017,9 @@ impl Core {
     /// The watches of this office's plot by someone no longer its guest (in none of its worlds): ended.
     fn watchers_still_allowed(&mut self) {
         let allowed: HashSet<String> = self.co_members();
-        self.end_watchers(|k| !allowed.contains(k));
+        let tp: HashSet<String> = self.visits.values().filter(|v| v.role == Role::Host && v.teleport)
+            .filter_map(|v| v.peer.get("key").and_then(Value::as_str).map(str::to_string)).collect();
+        self.end_watchers(|k| !allowed.contains(k) && !tp.contains(k));   // (5.1: one let in to teleport, the room's word)
     }
 
     /// The watches of this office's plot whose watcher's key passes `which`: ended (`kicked`). Not links: their
@@ -3718,10 +4035,16 @@ impl Core {
 
     /// Out of a watched plot's room (visitor side): its host no longer has this office; the watch goes on.
     fn step_out(&mut self, id: &str) {
+        self.step_out_how(id, false);
+    }
+
+    /// Out by teleport (5.1, 8.15): its host plays it for everyone in the room.
+    fn step_out_how(&mut self, id: &str, teleport: bool) {
         if let Some(v) = self.visits.get_mut(id).filter(|v| v.inside) {
             v.inside = false;
             v.performed = Value::Null;   // (4.0: out of the room, nothing it had this office's user do)
-            let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "exit": true })));
+            let ctl = if teleport { json!({ "exit": true, "teleport": true }) } else { json!({ "exit": true }) };
+            let _ = v.cmd.try_send(LinkCmd::Ctl(ctl));
         }
     }
 
@@ -4003,6 +4326,17 @@ impl Core {
         match v.role {
             // From a watcher: stepping into this room (where, in its terms), or out of it. In, it counts toward
             // max_visitors: one past it is refused, and stays outside.
+            // 5.1 (8.15): stepping in by teleport: this room's page says whether they may (as it answers any ask), and
+            // where (its pad); the owner coming home by teleport too (the owner's visit, local).
+            Role::Host if v.watch && m.get("enter").is_some() && m.get("teleport") == Some(&json!(true)) => {
+                let waiting = self.tp_asks.values().any(|(w, _)| matches!(w, TpAsk::Enter(x) if x == id));
+                if v.inside || waiting {
+                    return;
+                }
+                let (peer, local) = (v.peer.clone(), v.local);
+                let who = self.tp_who(&peer, local);
+                self.tp_ask_page(TpAsk::Enter(id.to_string()), who);
+            }
             Role::Host if v.watch && m.get("enter").is_some() => {
                 if v.inside {
                     return;
@@ -4024,7 +4358,11 @@ impl Core {
             Role::Host if v.watch && m.get("exit").is_some() => {
                 if v.inside {
                     v.inside = false;
-                    self.to_page(json!({ "type": "exit", "channel": ch }));
+                    let mut exit = json!({ "type": "exit", "channel": ch });
+                    if m.get("teleport") == Some(&json!(true)) {   // 5.1: gone by teleport (the room plays it for everyone in it)
+                        exit["teleport"] = json!(true);
+                    }
+                    self.to_page(exit);
                     self.voice.visitors.remove(&ch);
                     self.tell_near();
                 }
@@ -4269,6 +4607,9 @@ fn started(v: &Visit) -> Value {
     if v.guest {
         m["guest"] = json!(true);
     }
+    if v.teleport {
+        m["teleport"] = json!(true);
+    }
     if v.shared_adds {
         m["shared_adds"] = json!(true);
     }
@@ -4334,12 +4675,13 @@ fn page_for(v: &Value) -> PageRole {
         }
         // (4.3.2: "enter" and "exit" to both: a user page's visitors, in person, are those inside, as its panel lists them)
         "input" | "point" | "keyframe" | "scene_resync" | "shared_adds" | "landscapes" | "addressed" | "act"
-        | "avatar" | "avatar_none" | "possessions" | "possession" | "assets" | "asset_want" | "asset_kept" => PageRole::Host,
+        | "avatar" | "avatar_none" | "possessions" | "possession" | "assets" | "asset_want" | "asset_kept" | "teleport_ask" => PageRole::Host,
         "chat" | "chat_log" | "unseen" | "held" | "held_sent" | "media_none" | "preview" | "history" | "shared"
         | "voice_near" | "room_voice" | "voice_members" | "user" | "banned" | "seen" | "layout" | "landscape"
         | "plot_forgotten" | "knock" | "knock_sent" | "knock_cancelled" | "answered" | "link_stats" | "scene"
         | "scene_lost" | "host_paused" | "host_resumed" | "enter_refused" | "body" | "call" | "phone" | "lobby_pass" | "browser_pending"
-        | "browser_confirm" | "browsers" | "ignored" | "sound" | "huddle" | "perform" | "asset_none" => PageRole::User,
+        | "browser_confirm" | "browsers" | "ignored" | "sound" | "huddle" | "perform" | "asset_none" | "teleport_asked" | "teleport_answer"
+        | "teleport_failed" => PageRole::User,
         _ => PageRole::Both,
     }
 }
@@ -4347,12 +4689,13 @@ fn page_for(v: &Value) -> PageRole {
 /// Whether a page of this role may send a message of this type (../../engine/SPEC.md 3.3). A page without a role
 /// may send them all.
 fn role_may(role: PageRole, t: &str) -> bool {
-    const HOST: &[&str] = &["host", "pose", "avatar_want", "possession_want", "phone", "body", "say_as", "sound_at", "perform"];
+    const HOST: &[&str] = &["host", "pose", "avatar_want", "possession_want", "phone", "body", "say_as", "sound_at", "perform", "teleport_answer"];
     const USER: &[&str] = &["input", "point", "keyframe", "scene_resync", "avatar_clear", "possessions", "user", "say", "attention", "read",
         "unhold", "media_get", "preview", "history", "shared", "voice_join", "call", "speaker", "world", "enter", "exit", "pick", "unpick", "place", "unplace", "ignore", "unignore", "ignore_clear", "act",
         "seen", "plot_keep", "plot_load", "plot_forget", "knock", "answer", "leave_lobby", "join_lobby", "status", "rename",
         "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set", "group_owner", "group_delete", "groups", "admin",
-        "lobby_pass", "browser_code", "browser_allow", "browsers", "browser_revoke", "huddle", "knock_cancel", "asset_want", "rtc_offer", "rtc_close", "mic"];
+        "lobby_pass", "browser_code", "browser_allow", "browsers", "browser_revoke", "huddle", "knock_cancel", "asset_want", "rtc_offer", "rtc_close", "mic",
+        "teleport_ask", "teleport"];
     match role {
         PageRole::Both => true,
         PageRole::Host => !USER.contains(&t),

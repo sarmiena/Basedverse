@@ -72,6 +72,14 @@ async function build(v) {
   // Something a visitor may click (userData.visitPoint: an interaction this room takes, "spin"); and what a room
   // keeps for itself, which never leaves it. And a box marked with a type the room does not take: nothing.
   spinner.userData = { visitPoint: "spin", secret: "A's own" };
+  // 5.1 (SPEC 8.15): a teleport pad, the room's own (an amber ring in its north-east corner, its look the room's): where
+  // those who teleport in arrive, facing south-west into the room. Its place and facing are the group's, never its
+  // geometry's (SPEC 8.1).
+  const pad = new THREE.Group();
+  pad.name = "pad"; pad.position.set(ROOM.w - 1.4, 0, 1.4); pad.rotation.y = Math.PI * 0.75;
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.45, 0.6, 32), new THREE.MeshBasicMaterial({ color: 0xffaa33, side: THREE.DoubleSide }));
+  ring.rotation.x = -Math.PI / 2; ring.position.y = 0.01; ring.userData.visitStatic = true;
+  pad.add(ring); scene.add(pad);
   const vault = box(0.4, 0.4, 0.4, lambert(0x8957e5), 9, 1.2, 1.2);
   vault.name = "vault"; vault.userData = { visitPoint: "open-vault" };
   const movers = [...Array(MOVERS)].map((_, i) => box(0.15, 0.15, 0.15, lambert(0xe3b341), 5, 0.5 + (i % 10) * 0.15, 4));
@@ -135,7 +143,7 @@ async function build(v) {
     } else renderer.render(scene, top);
     window.renders++;
   })(0);
-  return { THREE, scene, renderer };
+  return { THREE, scene, renderer, pad };
 }
 
 // The person's page (engine/SPEC.md 8.2): no room of its own. Its world draws its room as its host sends it, as the
@@ -227,6 +235,9 @@ async function buildView(v) {
     walk: { speed: 2.5, mounts: true },   // as move() walks: the visitor's page walks at once, before the answer (a rider at its mount's pace)
     plot: { center: [ROOM.w / 2, ROOM.d / 2], size: [ROOM.w, ROOM.d] },   // its land, in a world: the room's floor
     unit: 1,   // metres
+    // 5.1 (SPEC 8.15): it takes teleports, onto its pad; who may: room.tpAllow, the test's to set (without it, Visit's
+    // own rule: its guests and its owner); Visit's beam in amber here.
+    teleport: { pad: t.pad, get allow() { return window.room.tpAllow; }, color: 0xffaa33 },
   });
   if (v.role === "host") {   // the room's page alone (engine/SPEC.md 8.1): its hooks and interactions, nothing of the person's
     window.visitErrors = [];
