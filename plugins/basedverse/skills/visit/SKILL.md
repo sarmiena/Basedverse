@@ -73,7 +73,12 @@ feature in a workroom's code. If the changelog has something newer than the tabl
   or no, in their words, with the date). With it, **every page and route checks the session with the sign-in,
   unless the user says otherwise**: ask what, if anything, must work signed out (usually nothing), and keep that list
   in `VISIT.md` too. Never add a sign-up page; accounts are made in a terminal (`visit auth user add <name>`), by
-  the user, who types the password: never type, choose or log one for them.
+  the user, who types the password: never type, choose or log one for them. The owner's account is made by the
+  launcher's first run (auth/INTEGRATING.md step 3).
+- **The user's start is one command: `bin/start`**, typed in a terminal of their own. Whatever they run is a script of
+  the workroom's: `bin/start` (its first run makes their account, and it prints the page's address) and `bin/visit …`
+  for the rest (INTEGRATING.md step 2). Never hand them a command line to copy (loading the `.env` by hand, `set -a`,
+  `"$VISIT_PATH"`, a second window). If they need one, the workroom is missing a script: add it.
 - A variant the user wants (a cell phone instead of a desk phone, voice without panning) either fits today's API or
   needs Visit to change. Say which, from SPEC.md. If it needs a Visit change, record it in `VISIT.md` as an open request
   for basedverse. Do not work around the contract.
@@ -198,10 +203,11 @@ Write the plan in the conversation:
   - where the panel goes.
 - **Getting `visit`**: as INTEGRATING.md step 1 says (setup, a release's file, or a build), within their rules.
 - **The launcher**: INTEGRATING.md step 2: the token files, new each run; `visit` started in the background, its pid
-  and log in the workroom's own directory; its ready line awaited; SIGTERM to stop it.
+  and log in the workroom's own directory; its ready line awaited; SIGTERM to stop it; with the sign-in, the owner's
+  account asked for on its first run; the page's address printed last; `bin/visit` beside it.
 - **Sign-in**, offered (the rules above): its steps from auth/INTEGRATING.md, each with its check; the public routes the
-  user named (or none); the owner's account made by the user in a terminal (`visit auth user add`); the route test
-  (its step 12) added to the workroom's tests.
+  user named (or none); the owner's account made by the launcher's first run, in the user's terminal (its step 3); the
+  route test (its step 12) added to the workroom's tests.
 - **From another device** (auth/INTEGRATING.md steps 9 and 10), once there is a sign-in: ask whether they want it, and
   which proxy (Tailscale if they have it; Caddy on the LAN; their own). Local services the page used directly (a
   console) connect out to the server instead. With the engine, Visit comes along through the server's relay.
@@ -217,12 +223,18 @@ Wait for "go" (or the user's own word for it).
    - **Upgrade**: follow each release's steps in order, re-applying `VISIT.md`'s deviations.
 2. **Check it**: each step's check, each widget's check (`visit/widgets/`), then step 8 and step 9's checks, as far as this machine lets you (a second
    `visit` for step 8, never a second page on theirs). Say plainly what you could not check.
-3. **Write `VISIT.md`** at the workroom's root, from `${CLAUDE_SKILL_DIR}/visit-log.md`, or bring it up to date:
+3. **Hand the start over.** Stop every `visit` and server you started for your checks. Only one `visit` runs on a data
+   directory, so the user's own start is refused while yours runs. The first start is the user's: `cd <workroom> &&
+   bin/start`, in a terminal of their own. Tell them what it will ask the first time: a name for their account, and a
+   password typed twice (at least 12 characters, not shown as they type). Then it prints the address to open. Checks
+   that need the workroom running and signed in (auth's route test) wait until they say it is up, and then run
+   against theirs.
+4. **Write `VISIT.md`** at the workroom's root, from `${CLAUDE_SKILL_DIR}/visit-log.md`, or bring it up to date:
    - the version it is now integrated at;
    - each feature's state;
    - each widget: the reference's (as it came, or changed: how), their own (where), or none (why, in their words);
    - each deviation, with the user's words and the date;
    - open requests for basedverse;
    - a line of history for this run (an upgrade to 2.0: from what, what was imported, what is kept for going back).
-4. **Report**: what changed, what was checked (and the results), what differs from vanilla, what is still open. Don't
-   commit unless asked.
+5. **Report**: what changed, what was checked (and the results), what differs from vanilla, what is still open. End
+   with the one command the user runs (`cd <workroom> && bin/start`). Don't commit unless asked.

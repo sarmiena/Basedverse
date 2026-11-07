@@ -39,7 +39,7 @@ There is no sign-up page, ever: having a terminal on the machine is the proof of
 
 | command | does |
 |---|---|
-| `visit auth user add <name>` | makes an account; asks for the password twice, without echo. `bin/setup` offers it |
+| `visit auth user add <name>` | makes an account; asks for the password twice, without echo. A workroom's launcher runs it on its first run (INTEGRATING.md step 3); `bin/setup` offers it |
 | `visit auth passwd <name>` | sets a new password, and ends that user's sessions |
 | `visit auth user list` / `user remove <name>` | the accounts; removing one ends its sessions |
 | `visit auth sessions [<name>]` | the signed-in sessions (since when, from where, last seen, the browser), and the last ten sign-ins tried |

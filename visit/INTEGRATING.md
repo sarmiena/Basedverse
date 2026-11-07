@@ -122,7 +122,7 @@ Run again, it offers what the `.env` already says. Python 3.8 or later is all it
 If they would rather answer you, ask them the same things and run it yourself with flags and `--yes`:
 `--lobby wss://… --name "…" --sim my-workroom/1.0 --page http://localhost:3000` (`--help` lists the rest;
 deploying a lobby, `--deploy user@host`, is best left to them, since ssh may ask them for a password; with
-`--yes` it makes no account: they make it later, in a terminal, with `visit auth user add <name>`).
+`--yes` it makes no account: your launcher's first run asks them for one, step 2).
 
 Without setup, by hand: [`../.env.example`](../.env.example) is the template. Copy its first section (the
 `VISIT_*` lines, with their comments) into your workroom's own settings, its `.env` if it has one (make one
@@ -233,7 +233,9 @@ until grep -q '"ready"' .visit/visit.out; do                     # its first lin
 done
 stop_visit() { kill -TERM "$(cat .visit/visit.pid)"; while kill -0 "$(cat .visit/visit.pid)" 2>/dev/null; do sleep 0.2; done; }
 trap stop_visit EXIT
-# ... then start your sim
+# with the sign-in: the owner's account on the first run (../auth/INTEGRATING.md step 3)
+# ... then start your sim, and say where it is
+echo "Your workroom: http://localhost:3000 (Ctrl-C stops it)"
 ```
 
 ```js
@@ -265,6 +267,22 @@ if not json.loads(visit.stdout.readline() or "{}").get("ready"):   # its first l
     raise SystemExit("visit did not start: see .visit/visit.log")
 atexit.register(lambda: (visit.terminate(), visit.wait(30)))
 ```
+
+**Your user starts it, in a terminal of their own.** The launcher is the one thing your user runs: `bin/start` (or a
+desktop shortcut), and Ctrl-C to stop it. Everything else they need goes into the launcher or beside it, never into a
+command line for them to copy. With the sign-in on, its first run makes their account
+([../auth/INTEGRATING.md](../auth/INTEGRATING.md) step 3). The last thing it prints is the page's address. For the
+rest, put `bin/visit` beside it: `visit` run with the workroom's `.env` loaded, as in `bin/visit status` or
+`bin/visit auth user add <name>`:
+
+```sh
+#!/bin/sh
+# bin/visit: visit with this workroom's settings (bin/visit status, bin/visit auth user add <name>)
+cd "$(dirname "$0")/.." && set -a && . ./.env && set +a && exec "${VISIT_PATH:-visit}" "$@"
+```
+
+Did you start the workroom yourself to check your work (a coding agent, say)? Stop it before you hand over. Only one
+`visit` runs on a data directory, so your user's own start is refused while yours runs.
 
 Every setting is a flag too (`VISIT_LOBBY` is `--lobby`, `VISIT_ORIGINS` is `--origins`; `visit --help` lists
 them), for a launcher that would rather pass them that way; a flag wins over the environment.
@@ -847,6 +865,9 @@ both go at once and nothing plays; with `allow: () => false` in one, the other n
       `../.env.example`; that `.env` is not committed, and `.env.example` keeps no real values.
 - [ ] `visit` starts with your launcher, on the machine, in the background, with a new token each run; the
       launcher waits for its ready line, and stops it with your sim (SIGTERM, waited for).
+- [ ] Your user's start is one command, run in a terminal of their own (`bin/start`). With the sign-in on, its first
+      run makes their account. It prints the page's address. `bin/visit` runs `visit` with the `.env` loaded. Your
+      user is never handed a command line to copy.
 - [ ] Whatever talks to `visit` reaches it on `127.0.0.1`: your server on the machine too (no Docker), or its
       container on the host's network, bound to `127.0.0.1`.
 - [ ] It listens on 127.0.0.1 only; the token is in a 0600 file, not on the command line or in `.env`;
