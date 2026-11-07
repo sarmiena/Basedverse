@@ -69,12 +69,41 @@ start (SPEC.md 5). There is nothing to run, and no database address and no super
 
 ## Step 3 — The owner's account
 
-In a terminal, on the machine, with your workroom's `.env` loaded (`set -a; . ./.env; set +a` in a shell: its
-`VISIT_DATA_DIR` says which workroom), or with `--data-dir` right after `auth`: `visit auth user add <name>`. It
-asks for the password twice, without echo (at least 12 characters). It works whether `visit` runs or not.
-`bin/setup` offers to do it. There is no sign-up page, and you never add one.
+Accounts are made on the machine, in a terminal, by your user, who types the password: `visit auth user add <name>`
+asks for it twice, without echo (at least 12 characters). It works whether `visit` runs or not. Which workroom's
+account it makes depends on the `.env`'s `VISIT_DATA_DIR`, so it runs with the `.env` loaded (`bin/visit`, beside
+your launcher, does that: [../visit/INTEGRATING.md](../visit/INTEGRATING.md) step 2), or with `--data-dir` right
+after `auth`. There is no sign-up page, and you never add one.
 
-**Check:** `visit auth user list` shows the account.
+**Your launcher makes the first account.** When the launcher runs for the first time, there is no account yet, so
+nobody can sign in. The launcher asks for the owner's name right there, has `visit` ask for the password, and then
+goes on. Your user's whole start is then one command they type in a terminal of their own (`bin/start`). Nobody hands
+them a command line to copy into a second window. Put the check after `visit`'s ready line (step 4): `visit auth`
+then uses the database `visit` already runs, so a start with an account costs a few milliseconds. Before the ready
+line, the check would start the database just for itself. In step 2's shell launcher:
+
+```sh
+# the first run: the owner's account, made in this terminal (the sign-in has none yet)
+if "${VISIT_PATH:-visit}" auth user list | grep -q '^no users yet'; then
+  if [ -t 0 ]; then
+    echo "No account yet: make the one you will sign in with."
+    while :; do                                  # a bad name or two passwords that differ: asked again
+      printf 'Your name [%s]: ' "$USER"; read -r name || exit 1
+      "${VISIT_PATH:-visit}" auth user add "${name:-$USER}" && break
+    done
+  else
+    echo "No account yet, so nobody can sign in: run bin/visit auth user add <name> in a terminal." >&2
+  fi
+fi
+```
+
+A launcher in another language does the same: it runs `visit auth user list`, and on `no users yet`, when it has a
+terminal, it runs `visit auth user add <name>` with its own stdin, stdout and stderr, so the password prompt is in
+that terminal. `bin/setup` offers the same when the user runs it in a terminal of their own. With an account already
+there, the launcher asks nothing.
+
+**Check:** on a new `VISIT_DATA_DIR`, the launcher's first run asks for a name and a password, and then
+`bin/visit auth user list` shows the account. The next run asks nothing.
 
 ## Step 4 — Start it from your launcher
 
@@ -354,7 +383,8 @@ for method, path in ROUTES:
 
 - [ ] The sign-in is `visit`'s (2.0 on): no auth-client, and no database address or superuser in the `.env` or
       passed to anything; `visit psql -c '\dn'` lists `auth`.
-- [ ] The owner's account made in a terminal; no sign-up page anywhere.
+- [ ] The owner's account made by the launcher's first run, in the user's own terminal (they type the password);
+      no sign-up page anywhere.
 - [ ] The launcher makes a new service token each start (mode 0600) and gives it to `visit` (`AUTH_TOKEN_FILE`) and
       the server.
 - [ ] One check, in the one place every request passes (and in each other place that answers requests: WebSocket
