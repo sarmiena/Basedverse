@@ -119,7 +119,6 @@ SERVED = {
     # -- agents: the roster strip
     "agents": (K, "DATA.agents"),
     "agents_error": (K, "DATA.agents_error"),
-    "agents_issue": (L, 'd0.get("agents_issue")'),
     "agents[].name": (K, "a.name"),
     "agents[].session": (K, "a.session"),
     "agents[].local": (X, "the agent's second session id, for pick.widen; no person reads it"),

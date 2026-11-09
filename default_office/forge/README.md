@@ -127,7 +127,7 @@ read and says why on its tab; the others go on.
 Above the columns:
 
 - **Agents**: your agents as a party, as the Agent Room's list draws them (one `board/party.js`, both pages'): a row per
-  session on the roster (the `AGENTS…` issue in `REPO_HOME`, one comment per agent, written by `forge.py agent`), in the
+  session on the roster (the board's own, in its database: one entry per agent, written by `forge.py agent`), in the
   order they joined, so nothing moves under the pointer. Each is its head as the room makes it (its face, its halo of
   context, slumped when idle, grey when dead, dressed for the room's environment) with what it is up to drawn on it, and
   its card: name, seat and board, what it waits on you for, what it is doing, what it is up to between turns, a command

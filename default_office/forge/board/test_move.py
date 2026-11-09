@@ -47,7 +47,7 @@ LABELS = {1: ["bug"], 2: ["bug", "In Progress"], 3: []}
 WRITES = []
 AGENT = ("<!-- board-agent -->\nname: amber\nsession: S-a\nlocal: \nmsgname: \nseat: linux\nhost: h\nlink: \n"
          "seen: %s\nclaims: app#3\ndoing: \nctx: \nblocked: \n" % ISO)
-ROSTER = [(9, AGENT)]  # the AGENTS issue's comments: (id, body)
+ROSTER = [(9, AGENT)]  # the roster's rows (the board's table, faked: FakeRoster): (id, body)
 
 
 def issue(n):
@@ -61,10 +61,7 @@ def fake_api(path, method="GET", body=None):
     if path == "/repos/acme/app/issues?state=open":
         return [issue(n) for n in LABELS]
     if "labels=off-board" in path:
-        return [{"number": 50, "title": "AGENTS", "state": "open", "labels": [{"name": "off-board"}],
-                 "repository_url": "https://api.github.com/repos/acme/app"}]
-    if path == "/repos/acme/app/issues/50/comments":
-        return [{"id": cid, "body": body, "updated_at": ISO} for cid, body in ROSTER]
+        return []
     if path == "/repos/acme/app/labels":
         return [{"name": x} for x in ("bug", "In Progress", "off-board")]
     m = re.fullmatch(r"/repos/acme/app/issues/(\d+)/labels/(.+)", path)
@@ -74,10 +71,6 @@ def fake_api(path, method="GET", body=None):
         WRITES.append((n, "-" + name))
         LABELS[n] = [x for x in LABELS[n] if x != name]
         return [{"name": x} for x in LABELS[n]]
-    m = re.fullmatch(r"/repos/acme/app/issues/comments/(\d+)", path)
-    if m and method == "DELETE":
-        WRITES.append(("roster", "-" + m.group(1)))
-        return None
     m = re.fullmatch(r"/repos/acme/app/issues/(\d+)(/labels)?", path)
     if m and int(m.group(1)) in LABELS:
         n = int(m.group(1))
@@ -91,7 +84,17 @@ def fake_api(path, method="GET", body=None):
     raise AssertionError("unfaked forge call %s %s" % (method, path))
 
 
+class FakeRoster:
+    """The board's roster table (rosterdb.Store), faked from ROSTER: a delete is recorded in WRITES."""
+    def rows(self):
+        return [{"id": cid, "body": body, "updated_at": ISO} for cid, body in ROSTER]
+
+    def delete(self, rid):
+        WRITES.append(("roster", "-%d" % rid))
+
+
 server.api = fake_api
+server.ROSTER = FakeRoster()
 server.publish(server.snapshot(True))
 col = lambda ref: next(r["col"] for r in server.SNAP["rows"] if r["id"] == ref)  # noqa: E731
 
@@ -135,20 +138,22 @@ names = lambda: sorted(a["name"] for a in server.SNAP["agents"])  # noqa: E731
 DELETES = []
 
 
-def failing(path, method="GET", body=None):
-    if method == "DELETE" and path.endswith("/comments/9"):
-        DELETES.append(path)
-        raise server.HTTPError(path, 502, "Bad Gateway", {}, None)
-    return fake_api(path, method, body)
+class FailingRoster(FakeRoster):
+    """amber's delete fails (the database busy past its timeout): the reap must keep her, and try again later."""
+    def delete(self, rid):
+        if rid == 9:
+            DELETES.append(rid)
+            raise server.rosterdb.sqlite3.OperationalError("database is locked")
+        super().delete(rid)
 
 
-server.api = failing
+server.ROSTER = FailingRoster()
 server.publish(server.snapshot(True))
 case("a restart's reap whose delete fails keeps the entry, and its claim's label",
      lambda: (len(DELETES), names(), LABELS[3]), (1, ["amber", "wren"], ["bug", "In Progress"]))
 server.publish(server.snapshot(True))
 case("...and is not tried again at the next read", lambda: len(DELETES), 1)
-server.api = fake_api
+server.ROSTER = FakeRoster()
 server.REAP_FAILED.clear()   # REAP_RETRY_S later
 n = len(WRITES)
 server.publish(server.snapshot(True))

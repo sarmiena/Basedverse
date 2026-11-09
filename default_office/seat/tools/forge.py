@@ -21,7 +21,7 @@ board when they run as the same user. Reads are fine; do not loop forge.py in a 
 
 WHICH PROJECT: the `.env` in the root above seat/ and forge/ (or $REPO_ENV) — REPO_OWNER,
 REPO_NAMES (the repos the board spans; blank = every repo of the owner), REPO_HOME (where the
-RESUME and AGENTS issues live; defaults to the one repo), REPO_RANK, REPO_BOARD_URL, REPO_BOARD_KEY (the board's
+RESUME issue lives; defaults to the one repo; the roster is the board's own), REPO_RANK, REPO_BOARD_URL, REPO_BOARD_KEY (the board's
 sign-in: its API key for the agents, which bin/start makes), REPO_TOKEN. The same file configures the board container. A process env var of
 the same name wins over it; with no token anywhere, GH_TOKEN / GITHUB_TOKEN, then `gh auth token`.
 
@@ -100,7 +100,7 @@ GITHUB_API = "https://api.github.com"
 
 BASE = HDR = None
 # `repos`: the repos the board spans ([] = every live repo of the owner). `home`: the repo holding
-# the RESUME and AGENTS issues, under `home_owner`. Both come from the .env.
+# the RESUME issue, under `home_owner`. Both come from the .env.
 # WHICH BOARD: REPO_BOARD, set in the session's environment by its directory's .claude/settings.local.json (bin/init-agent
 # writes it for a checkout of a repo off the home board): `owner/repo` makes `owner`, `repos` and `repo` that repo's,
 # while `home` stays the home board's (another board's bookkeeping lives there: the one roster, its own RESUME issue);
@@ -176,7 +176,7 @@ def configure():
     """Point forge.py at its project and log it in, from the .env (env_path()). The token: REPO_TOKEN,
     GH_TOKEN / GITHUB_TOKEN, then `gh auth token`, so a machine where `gh` is logged in needs
     nothing more. REPO_URL only for GitHub Enterprise (`https://<host>/api/v3`)."""
-    global BASE, HDR, RESUME_REPO, AGENTS_REPO, HOME_OWNER
+    global BASE, HDR, RESUME_REPO, HOME_OWNER
     DOTENV.clear()
     DOTENV.update(read_env(env_path()))
     CFG["owner"] = opt("owner")
@@ -188,7 +188,7 @@ def configure():
     CFG["home"] = opt("home", CFG["repo"] or "")
     if not CFG["home"]:
         raise OSError("REPO_HOME is not set (in %s), and REPO_NAMES names more than one repo" % env_path())
-    RESUME_REPO = AGENTS_REPO = CFG["home"]
+    RESUME_REPO = CFG["home"]
     HOME_OWNER = CFG["home_owner"] = CFG["owner"]
     CFG["boards"] = {k.split("/")[1].lower(): k.split("/")[0]
                      for k in re.split(r"[\s,]+", opt("boards")) if BOARD_NAME.fullmatch(k)}
@@ -553,7 +553,7 @@ def board_read(extra=None):
 
 
 ROSTER_UNKNOWN = ("AGENTS: COULD NOT BE READ (%s) — who holds what is UNKNOWN, never 'nobody'.\n"
-                  "Read the AGENTS issue in the home repo before offering any item or PR.")
+                  "Ask the owner, or look at the kanban, before offering any item or PR.")
 
 
 def roster_lines(d, verbose=False):
@@ -744,7 +744,7 @@ def cmd_dump(a):
     if os.path.exists(a.out):
         os.remove(a.out)  # a failed run must not leave an older dump looking current
     issues = open_listing()
-    # The board's own rule: work ruled off the backlog (RESUME, AGENTS, …) is not a row to rate,
+    # The board's own rule: work ruled off the backlog (RESUME, …) is not a row to rate,
     # and neither is a PR (GitHub lists those as issues). Dedup by ref, because a row that changes
     # while paging can shift onto the next page.
     seen, rows_in = set(), []
@@ -1218,8 +1218,10 @@ def cmd_resume(a):
 
 # WHO is working, and on WHAT. Every agent posts as the same GitHub user and ListAgents cannot see
 # another machine, so without a roster one agent offers another's live PRs as left-behind work. The
-# roster lives where every agent already looks: ONE `off-board` issue in the home repo, and ONE
-# comment on it per agent, which only that agent rewrites.
+# roster lives on the board every agent already reads: ONE entry per agent in the board's database
+# (forge/board/rosterdb.py, through /api/roster), which only that agent rewrites. Until 2026-11-09 it was
+# a comment per agent on an `AGENTS` issue in the home repo: each new one (every /go) emailed everyone who
+# watches that repo, and every touch spent the account's API quota.
 # `/go` enters, `claim`/`release` say what it holds, `/stop` exits (deletes the comment). Every
 # forge.py call made from inside a session touches its entry (`seen`), and so does the seat's hook
 # while it works, so the age the board shows is time since the agent last DID something. A session
@@ -1227,8 +1229,6 @@ def cmd_resume(a):
 # off by the next agent on the same machine to report, once Claude Code no longer runs it (reap). One
 # that a shutdown of its machine ended the board itself takes off, after the machine starts again
 # (server.reap_rebooted). Any other stale entry (another machine's) the owner removes with the × on the kanban.
-AGENTS_REPO = None  # the .env's REPO_HOME, set by configure()
-AGENTS_TITLE = "AGENTS — who is working, and on what"
 AGENT_MARK = "<!-- board-agent -->"
 # `msgname` is the name ListAgents shows for the session on ITS machine (`app-6d [82b1bf]`),
 # which is what SendMessage takes there. Nothing in a session's environment carries it, so the
@@ -1335,7 +1335,7 @@ def my_name():
     if not s:
         return None
     try:
-        mine = next((d for d in agents_now()[1] if is_me(d, my_ids())), None)
+        mine = next((d for d in roster_now() if is_me(d, my_ids())), None)
         if mine and mine.get("name"):
             return mine["name"]
     except Exception:
@@ -1386,9 +1386,9 @@ def agent_body(d):
 
 
 def roster(comments, dupes=None):
-    """PURE: every agent entry on the AGENTS issue, freshest first, each with its comment `id`.
-    A session with two entries (two first-touches racing, or one entered under each of its ids)
-    shows once, merged: the fresher wins, and the loser's comment id goes into `dupes` so the next
+    """PURE: every agent entry among the roster's rows (the board's: roster_rows), freshest first, each with its row
+    `id`. A session with two entries (two first-touches racing, or one entered under each of its ids)
+    shows once, merged: the fresher wins, and the loser's id goes into `dupes` so the next
     write can delete it — left alone, it would resurface as a dead agent holding claims the moment
     the fresher one exits."""
     out = []
@@ -1449,35 +1449,37 @@ def utcnow():
 
 
 def off_board(o, r):
-    """Repo r's open `off-board` issues (RESUME, AGENTS, ...). A repo's own listing, not search:
+    """Repo r's open `off-board` issues (RESUME, ...). A repo's own listing, not search:
     no index to lag a fresh issue. PRs left out: GitHub lists them as issues."""
     return [i for i in api_all("/repos/%s/%s/issues?state=open&labels=off-board" % (o, r)) if not is_pr(i)]
 
 
-def agents_issue(create=False):
-    """The open AGENTS issue, found by LABEL (never search, same reason as cmd_resume). Created
-    only by an explicit `agent` verb, never by a touch. Two (a create race) are TOLERATED,
-    not refused: every reader takes the LOWEST number, so all agents converge on one and the
-    kanban keeps working; the stray is closed by hand at leisure."""
-    hits = sorted((i for i in off_board(HOME_OWNER, AGENTS_REPO)
-                   if (i.get("title") or "").startswith("AGENTS")), key=lambda i: i["number"])
-    if hits or not create:
-        return hits[0] if hits else None
-    i = api("/repos/%s/%s/issues" % (HOME_OWNER, AGENTS_REPO), "POST",
-            {"title": AGENTS_TITLE,
-             "body": "The agent roster. One comment per working agent, written by `forge.py agent`;"
-                     " the kanban shows it live. Not work — never offered by the board.",
-             "labels": label_names(["off-board"], HOME_OWNER, AGENTS_REPO)})
-    return i
+# The roster's rows, on the board (forge/board/rosterdb.py): each {id, body, updated_at}, the body agent_body's record.
+# Every one is a board() call: an agent on another machine reaches them as it reaches its messages (REPO_BOARD_URL).
+def roster_rows():
+    return board("/api/roster")["rows"]
 
 
-def agents_now(create=False, dupes=None):
-    """(issue, roster) — the issue is None when no agent has ever entered."""
-    i = agents_issue(create)
-    if not i:
-        return None, []
-    return i, roster(api_all("/repos/%s/%s/issues/%d/comments"
-                             % (HOME_OWNER, AGENTS_REPO, i["number"])), dupes)
+def roster_get(rid):
+    """Row `rid`, read fresh, or None when it is gone."""
+    got = board("/api/roster?id=%d" % rid, allow=(404,))
+    return got["row"] if got else None
+
+
+def roster_put(body, rid=None):
+    """A new entry (`rid` None: the row back, with the id the board gave it), or row `rid` rewritten. A row taken off
+    meanwhile is not brought back: the board refuses (404), and this exits saying so."""
+    return board("/api/roster", {"body": body} if rid is None else {"body": body, "id": rid})
+
+
+def roster_del(rid, gone_ok=False):
+    """Row `rid` taken off; already gone is no fault when `gone_ok` (a reap racing the owner's x or its own /stop)."""
+    board("/api/roster/delete", {"id": rid}, allow=(404,) if gone_ok else ())
+
+
+def roster_now(dupes=None):
+    """The roster from the board, freshest first (roster())."""
+    return roster(roster_rows(), dupes)
 
 
 def new_entry(session, seat=None, host=None, local=None):
@@ -1486,15 +1488,12 @@ def new_entry(session, seat=None, host=None, local=None):
             "link": agent_link(session), "claims": [], "board": CFG.get("board") or ""}
 
 
-def upsert_agent(session, mutate=None, create=True, **fresh):
-    """Create or rewrite `session`'s entry, stamping `seen`. Returns the entry as written, or
-    None when there is no AGENTS issue and `create` is off."""
+def upsert_agent(session, mutate=None, **fresh):
+    """Create or rewrite `session`'s entry, stamping `seen`. Returns the entry as written."""
     dupes = []
-    i, agents = agents_now(create, dupes)
-    if not i:
-        return None
+    agents = roster_now(dupes)
     for cid in dupes:
-        api("/repos/%s/%s/issues/comments/%d" % (HOME_OWNER, AGENTS_REPO, cid), "DELETE")
+        roster_del(cid, gone_ok=True)
     mine = my_entry(agents, session, session_ids(session))
     d = dict(mine) if mine else new_entry(session, **fresh)
     if d["session"] != session and session.startswith("session_"):
@@ -1518,10 +1517,9 @@ def upsert_agent(session, mutate=None, create=True, **fresh):
     d["seen"] = utcnow()
     body = agent_body(d)
     if mine:
-        api("/repos/%s/%s/issues/comments/%d" % (HOME_OWNER, AGENTS_REPO, mine["id"]), "PATCH", {"body": body})
+        roster_put(body, mine["id"])
     else:
-        d["id"] = api("/repos/%s/%s/issues/%d/comments" % (HOME_OWNER, AGENTS_REPO, i["number"]),
-                      "POST", {"body": body})["id"]
+        d["id"] = roster_put(body)["id"]
     return d
 
 
@@ -1531,23 +1529,24 @@ def local_id(session):
     return loc if loc and loc != session else None
 
 
-# A touch is a roster read and a write on GitHub (about 4 requests), and every forge.py call and
-# every round of a mailbox waiter wants one: done each time, that was most of the account's hourly
-# quota. So a session touches at most once per TOUCH_EVERY_S (a stamp file beside the hook's state),
-# and `seen` is then that old at most for a live agent: under the board's 300 s mark for idle.
+# A touch is a roster read and a write (three board requests), and every forge.py call and every round of
+# a mailbox waiter wants one. On GitHub, where the roster was, that was most of the account's hourly
+# quota; on the board it is cheap, but a session still touches at most once per TOUCH_EVERY_S (a stamp
+# file beside the hook's state), and `seen` is then that old at most for a live agent: under the board's
+# 300 s mark for idle.
 TOUCH_EVERY_S = 180
 
 
 def touch(force=False):
     """Bump this session's `seen`, at most once per TOUCH_EVERY_S unless `force`, so the board's age
     is time since the agent last acted, to within that. Only the `seen` line is rewritten, from a
-    fresh read of the comment, so a touch racing a `claim` cannot put back the old claims. It never
-    creates the AGENTS issue (two first calls would each create one), and it never creates an ENTRY:
+    fresh read of the entry, so a touch racing a `claim` cannot put back the old claims. It never
+    creates an ENTRY:
     only an explicit `agent` verb does (/go's `agent enter`). A touch that re-created a missing entry
     undid every `agent exit` and every owner x on the very next forge.py call, the leaver's own
     included. True when it touched, False when this session is not on the roster, None when it was
     skipped or could not tell. BEST-EFFORT, BY CONSTRUCTION: it rides every other verb, so a failure
-    must never cost the caller its command — api() exits on HTTP errors, hence BaseException."""
+    must never cost the caller its command — board() exits on HTTP errors, hence BaseException."""
     s = agent_session()
     if not s:
         return None
@@ -1558,16 +1557,12 @@ def touch(force=False):
     except OSError:
         pass
     try:
-        i, agents = agents_now()
-        if not i:
-            return None
-        mine = my_entry(agents, s, my_ids())
+        mine = my_entry(roster_now(), s, my_ids())
         if not mine:
             return False
-        path = "/repos/%s/%s/issues/comments/%d" % (HOME_OWNER, AGENTS_REPO, mine["id"])
-        body = (api(path) or {}).get("body") or ""
+        body = (roster_get(mine["id"]) or {}).get("body") or ""
         if parse_agent(body):
-            api(path, "PATCH", {"body": with_seen(body, utcnow())})
+            roster_put(with_seen(body, utcnow()), mine["id"])
         try:
             os.makedirs(os.path.dirname(stamp), exist_ok=True)
             with open(stamp, "w"):
@@ -1600,13 +1595,12 @@ def agent_line(d, ids=()):
 def cmd_agents(a):
     # The board serves the roster; every display reads it there.
     d0 = board_read()
-    agents, num = d0.get("agents") or [], d0.get("agents_issue")
+    agents = d0.get("agents") or []
     lines = roster_lines(d0, a.verbose)
     if not agents:
         print("\n".join(lines) if lines else "AGENTS: nobody has entered (forge.py agent enter; /go does it)")
         return
-    print("AGENTS — %d in the project, freshest first (%s/%s#%s)"
-          % (len(agents), HOME_OWNER, AGENTS_REPO, num))
+    print("AGENTS — %d in the project, freshest first (the board's roster, %s)" % (len(agents), board_url()))
     for line in lines:
         print(line)
     print("A claim is another agent's work: never offer, review or merge it as yours. One held by a\n"
@@ -1622,14 +1616,13 @@ def agent_state(a):
     `--ended` (SessionEnd: the session exited, or /clear began another conversation) takes the entry
     off instead, as /stop would. Every call then clears the roster of sessions that have left (reap)."""
     ids = my_ids(a.hook_session)
-    i, agents = agents_now()
-    mine = next((d for d in agents if is_me(d, ids)), None) if i else None
+    agents = roster_now()
+    mine = next((d for d in agents if is_me(d, ids)), None)
     if mine and a.ended:
         leave(mine, "its session ended")
     elif mine:
         write_state(a, mine)
-    if i:
-        reap(agents, ids)
+    reap(agents, ids)
 
 
 def write_state(a, mine):
@@ -1646,15 +1639,14 @@ def write_state(a, mine):
         fields["dir"] = a.dir
     if not fields:
         return
-    path = "/repos/%s/%s/issues/comments/%d" % (HOME_OWNER, AGENTS_REPO, mine["id"])
-    body = (api(path) or {}).get("body") or ""
+    body = (roster_get(mine["id"]) or {}).get("body") or ""
     d = parse_agent(body)
     now = dict(d or {}, subs=subs_line((d or {}).get("subs")))
     # The heartbeat: nothing changed, but a working session's `seen` is moved once it is this old.
     due = a.beat_after is not None and seen_age((d or {}).get("seen")) >= a.beat_after
     if not d or (all((now.get(k) or "") == " ".join(str(v).split()) for k, v in fields.items()) and not due):
         return
-    api(path, "PATCH", {"body": with_fields(body, dict(fields, seen=utcnow()))})
+    roster_put(with_fields(body, dict(fields, seen=utcnow())), mine["id"])
 
 
 # A roster entry whose session has LEFT is taken off by any agent on the same machine, at its next
@@ -1717,7 +1709,7 @@ def reap_targets(agents, live, ids, host, age=None):
 def leave(d, why):
     """Take entry `d` off the roster and free its claims (the claim label too), as /stop and the
     kanban's remove do."""
-    api("/repos/%s/%s/issues/comments/%d" % (HOME_OWNER, AGENTS_REPO, d["id"]), "DELETE", allow=(404,))
+    roster_del(d["id"], gone_ok=True)
     mark_claims(d.get("claims") or [], False)
     print("%s left the roster (%s)%s" % (d.get("name") or d.get("session"), why,
                                          "; released " + " ".join(d["claims"]) if d.get("claims") else ""))
@@ -1793,8 +1785,7 @@ def cmd_agent(a):
              else {"local": local_id(s)})
     ids = session_ids(s)
     if a.action == "exit":
-        i, agents = agents_now()
-        mine = my_entry(agents, s, ids)
+        mine = my_entry(roster_now(), s, ids)
         if not mine:
             print("%s was not on the roster — nothing to remove" % (my_name() if s == agent_session() else agent_name(s)))
             return
@@ -1804,7 +1795,7 @@ def cmd_agent(a):
             # Removing ANOTHER agent (a crashed session) is the owner's act, from their own shell;
             # the kanban's × does the same.
             acting(a) if a.owner else sys.exit("removing another agent is the owner's: add --owner, from your own shell")
-        api("/repos/%s/%s/issues/comments/%d" % (HOME_OWNER, AGENTS_REPO, mine["id"]), "DELETE")
+        roster_del(mine["id"])
         print("%s left%s" % (mine["name"], ("; released " + " ".join(mine["claims"]))
                              if mine["claims"] else ""))
         mark_claims(mine["claims"], False)
@@ -1834,8 +1825,7 @@ def cmd_agent(a):
                              % (t, h["name"], h["seat"], h["host"], ago(h["seen"])))
                 for h in held:  # --steal: take it off the other entry, which is the owner's call
                     h2 = dict(h, claims=[c for c in h["claims"] if c != t])
-                    api("/repos/%s/%s/issues/comments/%d" % (HOME_OWNER, AGENTS_REPO, h["id"]), "PATCH",
-                        {"body": agent_body(h2)})
+                    roster_put(agent_body(h2), h["id"])
                     print("  took %s from %s" % (t, h["name"]))
                 if t not in d["claims"]:
                     d["claims"].append(t)
@@ -1855,7 +1845,7 @@ def cmd_agent(a):
         # The refusal above checked a snapshot; two agents claiming in the same second both pass it.
         # Re-read AFTER the write: on a tie the OLDER entry (lower comment id) keeps the item and the
         # newer one backs off, so exactly one wins and neither needs to retry blind.
-        lost = [(t, h) for t in refs for h in claim_holders(agents_now()[1], t, ids) if h["id"] < d["id"]]
+        lost = [(t, h) for t in refs for h in claim_holders(roster_now(), t, ids) if h["id"] < d["id"]]
         if lost:
             gone = {t for t, _ in lost}
             upsert_agent(s, lambda e, _: e.update(claims=[c for c in e["claims"] if c not in gone]))
@@ -1886,11 +1876,11 @@ def board_url():
         return BOARD_DEFAULT
 
 
-def board(path, body=None, timeout=BOARD_HOLD_S, quiet=False, net=False):
+def board(path, body=None, timeout=BOARD_HOLD_S, quiet=False, net=False, allow=()):
     """One board call: its JSON, or exit with the board's reason (409 refused by the rules, 422
     refused for good). `quiet` returns None on ANY failure: for the notice every call prints.
     `net` returns None only when the board did not answer (a waiter retries that); an answer that
-    refuses still exits, so a typo is said, not retried forever."""
+    refuses still exits, so a typo is said, not retried forever. A code in `allow` returns None (a roster row gone)."""
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json"}
     if opt("board_key"):   # the board's sign-in: the agents' API key (bin/start makes it: REPO_BOARD_KEY)
@@ -1904,7 +1894,7 @@ def board(path, body=None, timeout=BOARD_HOLD_S, quiet=False, net=False):
             return None
         sys.exit("the board (%s) answered badly: %s" % (board_url(), e))
     except HTTPError as e:
-        if quiet or (net and e.code >= 500):
+        if quiet or (net and e.code >= 500) or e.code in allow:
             return None
         raw = e.read().decode("utf-8", "replace")
         try:
@@ -1915,7 +1905,7 @@ def board(path, body=None, timeout=BOARD_HOLD_S, quiet=False, net=False):
     except OSError as e:
         if quiet or net:
             return None
-        sys.exit("the board (%s) did not answer: %s — is the board container up? (forge/: docker compose up -d board)"
+        sys.exit("the board (%s) did not answer: %s — is it up? bin/start starts it (the roster and messages live there)"
                  % (board_url(), e))
 
 
@@ -1939,7 +1929,7 @@ def cmd_tell(a):
     if to not in ("owner", "all"):
         # A message is addressed to SESSIONS: a handle can name two (handles collide) and recurs
         # across sessions, so it is resolved here, on the roster, to the sessions it names now.
-        sessions = [[mail_to(e), e["name"]] for e in agents_now()[1] if e["name"] == to]
+        sessions = [[mail_to(e), e["name"]] for e in roster_now() if e["name"] == to]
         if not sessions:
             sys.exit("no agent %r on the roster (forge.py agents); or send to owner / all" % to)
     sent = board("/api/mail", {"actor": acting(a)[0], "session": mail_id() or "owner", "to": to,

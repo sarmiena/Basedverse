@@ -59,7 +59,7 @@ EVERYDAY
 
 SETTINGS                  .env, beside bin/ (.env.example explains every one; never commit .env)
   REPO_OWNER, REPO_NAMES  which GitHub repos the board shows
-  REPO_HOME, REPO_RANK    the repo holding the Up next and roster issues; the labels that order each column
+  REPO_HOME, REPO_RANK    the repo holding the Up next issue; the labels that order each column
   REPO_TOKEN              the GitHub token: bin/start fills a blank one from `gh auth token`
   AGENTS                  the agents' directories (bin/init-agent keeps it)
   LOBBY_URL, LOBBY_NAME   the lobby, and this office's name there (bin/start asks; blank LOBBY_URL: none)

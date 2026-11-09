@@ -53,10 +53,19 @@ WRITES = []
 AGENTS = [(9, "<!-- board-agent -->\nname: amber\nsession: S-a\nlocal: \nseat: linux\nhost: h\nseen: %s\nclaims: app#2\n" % ISO),
           (10, "<!-- board-agent -->\nname: brisk\nsession: S-b\nlocal: \nseat: linux\nhost: h\nseen: %s\nclaims: Tool#5\n"
                "board: sam/Tool\n" % ISO)]
-OFF = [{"number": 50, "title": "AGENTS — who is working", "labels": [{"name": "off-board"}]},
-       {"number": 60, "title": "RESUME — the next session's critical path", "body": "1) app#1 first", "labels": [{"name": "off-board"}]},
+OFF = [{"number": 60, "title": "RESUME — the next session's critical path", "body": "1) app#1 first", "labels": [{"name": "off-board"}]},
        {"number": 61, "title": "RESUME [sam/Tool] — the next session's critical path", "body": "1) Tool#1 tool's first",
         "labels": [{"name": "off-board"}]}]
+
+
+
+class FakeRoster:
+    """The board's roster table (rosterdb.Store), faked from AGENTS: (id, body) rows."""
+    def rows(self):
+        return [{"id": cid, "body": b, "updated_at": ISO} for cid, b in AGENTS]
+
+    def delete(self, rid):
+        WRITES.append(("roster", "-%d" % rid))
 
 
 def issue(owner, repo, n):
@@ -75,8 +84,6 @@ def fake_api(path, method="GET", body=None):
         return [issue(m.group(1), m.group(2), n) for n in OPEN[(m.group(1), m.group(2))]]
     if path == "/repos/acme/app/issues?state=open&labels=off-board":
         return [dict(i, state="open") for i in OFF]
-    if path == "/repos/acme/app/issues/50/comments":
-        return [{"id": cid, "body": b, "updated_at": ISO} for cid, b in AGENTS]
     if re.fullmatch(r"/repos/(\w+)/(\w+)/labels", path):
         return [{"name": x} for x in ("status: doing", "off-board")]
     if path == "/repos/acme/app/issues" and method == "POST":   # a new plan issue
@@ -102,6 +109,7 @@ def fake_api(path, method="GET", body=None):
 
 
 server.api = fake_api
+server.ROSTER = FakeRoster()
 ids = lambda rows: sorted(r["id"] for r in rows)  # noqa: E731
 
 # Which boards the .env names.

@@ -179,7 +179,7 @@ def main():
     plan(NOW, [{"kind": "session", "percent": "lots"}])
     check("plan: a garbled row: the notes", server.usage(NOW)["from"], "status lines")
     # -- a page's long-poll: a change in the bars is a change of the board's (its `ver`); only a later hearing of the same is not
-    keep = ("rows", "plan", "agents", "agents_error", "agents_issue", "prs", "prs_error", "truncated", "gone", "columns", "columns_error", "boards", "boards_error")
+    keep = ("rows", "plan", "agents", "agents_error", "prs", "prs_error", "truncated", "gone", "columns", "columns_error", "boards", "boards_error")
     snap = lambda u: dict({k: server.SNAP.get(k) for k in keep}, usage=u)
     server.publish(snap({})); v0 = server.SNAP["ver"]
     plan(NOW, rows); u1 = server.usage(NOW); server.publish(snap(u1)); v1 = server.SNAP["ver"]

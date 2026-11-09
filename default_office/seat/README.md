@@ -25,7 +25,7 @@ wins over it, and a blank value counts as unset.
 |---|---|
 | `REPO_OWNER` | the GitHub org or user |
 | `REPO_NAMES` | the repos the board spans, comma or space separated; blank = every repo of the owner. With exactly one, a bare `#87` means it. |
-| `REPO_HOME` | the repo holding the Up next (`RESUME`) and roster (`AGENTS`) issues; defaults to the single repo |
+| `REPO_HOME` | the repo holding the Up next (`RESUME`) issue; defaults to the single repo. The roster is the board's own, in its database |
 | `REPO_RANK` | label names, highest rank first, comma separated (`severity: high, severity: medium, severity: low`): the order inside each column; a row with none is unranked, last |
 | `REPO_WORKFLOW` | optional: where the board's columns are defined (default `workflow.json` beside the `.env`; see `forge/README.md`) |
 | `REPO_TOKEN` | a GitHub token with issues and pull requests read/write. Blank: `GH_TOKEN` / `GITHUB_TOKEN`, then `gh auth token`. The board container needs it set. |
@@ -62,8 +62,8 @@ Its roster entries and Up next stay in `REPO_HOME`. A directory with no GitHub r
 a console in the Agent Room, no board. Then:
 
 1. Fill the `.env` (`gh auth login` is enough of a token for `forge.py`), and the columns in `workflow.json`.
-2. Once per home repo: `python3 ~/.claude/tools/forge.py newlabel off-board`. The `RESUME` and
-   `AGENTS` issues carry it, and an `off-board` issue is never a board row.
+2. Once per home repo: `python3 ~/.claude/tools/forge.py newlabel off-board`. The `RESUME` issue
+   carries it, and an `off-board` issue is never a board row.
 3. Start the board: `bin/start` (<http://localhost:3001>, the Agent Room at `/room`).
 4. In a Claude Code session in one of the AGENTS directories: `/go`.
 
