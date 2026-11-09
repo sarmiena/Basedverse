@@ -336,21 +336,35 @@ case("ago", lambda: [forge.ago(s, NOW) for s in ("2026-10-22T22:59:48Z", "2026-1
 print("\ntouch() — at most once per TOUCH_EVERY_S, so agents do not spend the quota on `seen`")
 
 
+def stub_store(roster_now, on_call, row_body=None):
+    """forge.py's roster store stubbed (no board): `roster_now` as given, and each row read or write reported to
+    on_call(verb, id, body) in the verbs of the GitHub comments the roster was (GET, PATCH, POST, DELETE), so every case
+    reads as it did. A read returns `row_body()`'s entry. Returns the restore."""
+    saved = forge.roster_now, forge.roster_get, forge.roster_put, forge.roster_del
+    forge.roster_now = roster_now
+    forge.roster_get = lambda rid: on_call("GET", rid, None) or ({"id": rid, "body": row_body()} if row_body else None)
+    forge.roster_put = lambda body, rid=None: on_call("POST" if rid is None else "PATCH", rid, body) or {"id": 99 if rid is None else rid}
+    forge.roster_del = lambda rid, gone_ok=False: on_call("DELETE", rid, None)
+
+    def restore():
+        forge.roster_now, forge.roster_get, forge.roster_put, forge.roster_del = saved
+    return restore
+
+
 def touch_run(force=False, entered=True, ent=None):
-    """One touch() against a fake forge, as session sess-t with HOME in a temp dir: (result, calls)."""
+    """One touch() against a stubbed roster, as session sess-t with HOME in a temp dir: (result, calls)."""
     calls = []
-    saved = (forge.agents_now, forge.api, os.environ.get("HOME"), os.environ.get("CLAUDE_CODE_SESSION_ID"),
-             os.environ.get("CLAUDE_CODE_BRIDGE_SESSION_ID"))
+    saved = (os.environ.get("HOME"), os.environ.get("CLAUDE_CODE_SESSION_ID"), os.environ.get("CLAUDE_CODE_BRIDGE_SESSION_ID"))
     ent = ent or dict(AG, session="sess-t", id=5)
-    forge.agents_now = lambda *a, **k: calls.append("roster") or ({"number": 1}, [ent] if entered else [])
-    forge.api = lambda path, method="GET", body=None, **k: calls.append(method) or ({"body": forge.agent_body(ent)} if method == "GET" else {})
+    restore = stub_store(lambda dupes=None: calls.append("roster") or ([ent] if entered else []),
+                         lambda verb, rid, body: calls.append(verb), lambda: forge.agent_body(ent))
     os.environ.update(HOME=TOUCH_HOME, CLAUDE_CODE_SESSION_ID="sess-t")
     os.environ.pop("CLAUDE_CODE_BRIDGE_SESSION_ID", None)
     try:
         return forge.touch(force), calls
     finally:
-        forge.agents_now, forge.api = saved[0], saved[1]
-        for k, v in zip(("HOME", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_BRIDGE_SESSION_ID"), saved[2:]):
+        restore()
+        for k, v in zip(("HOME", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_BRIDGE_SESSION_ID"), saved):
             os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
 
 
@@ -358,7 +372,7 @@ import os
 import tempfile
 TOUCH_HOME = tempfile.mkdtemp()
 case("the first touch reads the roster and writes seen", lambda: touch_run(), (True, ["roster", "GET", "PATCH"]))
-case("another within TOUCH_EVERY_S costs GitHub nothing", lambda: touch_run(), (None, []))
+case("another within TOUCH_EVERY_S costs the board nothing", lambda: touch_run(), (None, []))
 case("a forced touch (the waiter's, on its own clock) touches", lambda: touch_run(force=True), (True, ["roster", "GET", "PATCH"]))
 case("a session not on the roster: False, nothing written", lambda: touch_run(force=True, entered=False), (False, ["roster"]))
 case("a process with only the local id (a waiter started before the link) touches the entry the bridge id keys",
@@ -387,18 +401,12 @@ def upsert_with(stored_local, new_local):
                          "seat": "windows", "host": "h", "link": "", "claims": ["forge#1"], "id": 7,
                          "doing": "old task", "ctx": "500000", "blocked": "a question",
                          "seen": "2026-01-01T00:00:00Z"}
-    saved = forge.agents_now, forge.api
-
-    def api(path, method="GET", body=None):
-        if method == "PATCH":
-            writes.append(forge.parse_agent(body["body"]))
-        return {}
-    forge.agents_now = lambda create=False, dupes=None: ({"number": 1}, [entry])
-    forge.api = api
+    restore = stub_store(lambda dupes=None: [entry],
+                         lambda verb, rid, body: writes.append(forge.parse_agent(body)) if verb == "PATCH" else None)
     try:
-        forge.upsert_agent("session_X", create=False, local=new_local)
+        forge.upsert_agent("session_X", local=new_local)
     finally:
-        forge.agents_now, forge.api = saved
+        restore()
     if not writes:
         return "no write"
     w = writes[-1]
@@ -418,24 +426,22 @@ case("an entry with no local id only gains one: never renamed mid-life",
 
 def upsert_as(comments, bridge, local):
     """One `agent` write by a process that has `bridge` (or none) and `local` for ids, against a stubbed
-    forge holding `comments`: [(method, comment, (session, local, claims) written)]."""
+    roster holding `comments` (rows): [(verb, row id, or "comments" for a new one, (session, local, claims) written)]."""
     calls, keys = [], ("CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_BRIDGE_SESSION_ID")
-    saved = forge.agents_now, forge.api, {k: os.environ.get(k) for k in keys}
+    saved = {k: os.environ.get(k) for k in keys}
 
-    def api(path, method="GET", body=None):
-        d = forge.parse_agent((body or {}).get("body"))
-        calls.append((method, path.rsplit("/", 1)[1], d and (d["session"], d["local"], d["claims"])))
-        return {"id": 99}
-    forge.agents_now = lambda create=False, dupes=None: ({"number": 1}, forge.roster(comments, dupes))
-    forge.api = api
+    def on_call(verb, rid, body):
+        d = forge.parse_agent(body)
+        calls.append((verb, "comments" if rid is None else str(rid), d and (d["session"], d["local"], d["claims"])))
+    restore = stub_store(lambda dupes=None: forge.roster(comments, dupes), on_call)
     os.environ["CLAUDE_CODE_SESSION_ID"] = local
     os.environ.pop("CLAUDE_CODE_BRIDGE_SESSION_ID", None) if not bridge else os.environ.update(CLAUDE_CODE_BRIDGE_SESSION_ID=bridge)
     try:
         s = forge.agent_session()
         forge.upsert_agent(s, local=forge.local_id(s))
     finally:
-        forge.agents_now, forge.api = saved[0], saved[1]
-        for k, v in saved[2].items():
+        restore()
+        for k, v in saved.items():
             os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
     return calls
 
@@ -507,9 +513,9 @@ case("a board whose forge read failed reads as unknown",
 def touch_writes(entries):
     import os as _os
     writes = []
-    saved = forge.agents_now, forge.api, _os.environ.get("CLAUDE_CODE_BRIDGE_SESSION_ID")
-    forge.agents_now = lambda create=False, dupes=None: ({"number": 1}, entries)
-    forge.api = lambda path, method="GET", body=None: writes.append(method) or ({"body": forge.agent_body(entries[0])} if entries else {})
+    saved = _os.environ.get("CLAUDE_CODE_BRIDGE_SESSION_ID")
+    restore = stub_store(lambda dupes=None: entries, lambda verb, rid, body: writes.append(verb),
+                         (lambda: forge.agent_body(entries[0])) if entries else None)
     _os.environ["CLAUDE_CODE_BRIDGE_SESSION_ID"] = "session_LEFT"
     home = _os.environ.get("HOME")
     _os.environ["HOME"] = TOUCH_HOME  # its stamp file goes there, never in the real home
@@ -517,11 +523,11 @@ def touch_writes(entries):
         forge.touch(force=True)
     finally:
         _os.environ["HOME"] = home
-        forge.agents_now, forge.api = saved[0], saved[1]
-        if saved[2] is None:
+        restore()
+        if saved is None:
             _os.environ.pop("CLAUDE_CODE_BRIDGE_SESSION_ID", None)
         else:
-            _os.environ["CLAUDE_CODE_BRIDGE_SESSION_ID"] = saved[2]
+            _os.environ["CLAUDE_CODE_BRIDGE_SESSION_ID"] = saved
     return [w for w in writes if w != "GET"]
 
 
@@ -531,7 +537,7 @@ case("a touch on a live entry still bumps its seen",
                             "seen": "2026-01-01T00:00:00Z"}]), ["PATCH"])
 
 
-print("\nboards — REPO_BOARD picks this session's board; the roster and every plan stay in the home repo")
+print("\nboards — REPO_BOARD picks this session's board; every plan stays in the home repo (the roster is the board's)")
 
 
 def configured(board=None, boards="acme2/Tool, sam/Lib"):
@@ -544,7 +550,7 @@ def configured(board=None, boards="acme2/Tool, sam/Lib"):
     os.environ.pop("REPO_BOARD", None) if board is None else os.environ.__setitem__("REPO_BOARD", board)
     try:
         forge.configure()
-        return dict(forge.CFG), forge.HOME_OWNER, forge.AGENTS_REPO, forge.RESUME_REPO
+        return dict(forge.CFG), forge.HOME_OWNER, forge.RESUME_REPO
     finally:
         for k, v in saved.items():
             os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
@@ -553,7 +559,7 @@ def configured(board=None, boards="acme2/Tool, sam/Lib"):
 pick = lambda c: (c[0]["owner"], c[0]["repos"], c[0]["repo"], c[0]["board"], c[1], c[2])  # noqa: E731
 case("no REPO_BOARD: the home board, as ever", lambda: pick(configured()), ("acme", ["app"], "app", "", "acme", "app"))
 case("the home board named is the home board", lambda: pick(configured("acme/app")), ("acme", ["app"], "app", "", "acme", "app"))
-case("another board: its owner and repo; the roster and plans stay home",
+case("another board: its owner and repo; the plans stay home",
      lambda: pick(configured("sam/Lib")), ("sam", ["Lib"], "Lib", "sam/Lib", "acme", "app"))
 case("no board: no repo of its own for a bare #N", lambda: pick(configured("none")), ("acme", ["app"], None, "none", "acme", "app"))
 def refused(fn):
@@ -596,15 +602,14 @@ case("by default, this session's board's", lambda: as_board("sam/Lib", lambda: f
 def entry_board(board):
     """The `board` an own-session roster write records, on `board`."""
     def run():
-        writes, saved = [], (forge.agents_now, forge.api, os.environ.get("CLAUDE_CODE_SESSION_ID"))
-        forge.agents_now = lambda create=False, dupes=None: ({"number": 1}, [])
-        forge.api = lambda path, method="GET", body=None: writes.append(forge.parse_agent(body["body"])) or {"id": 5}
+        writes, saved = [], os.environ.get("CLAUDE_CODE_SESSION_ID")
+        restore = stub_store(lambda dupes=None: [], lambda verb, rid, body: writes.append(forge.parse_agent(body)))
         os.environ["CLAUDE_CODE_SESSION_ID"] = "sess-board"
         try:
             forge.upsert_agent("sess-board", local=None)
         finally:
-            forge.agents_now, forge.api = saved[0], saved[1]
-            os.environ.pop("CLAUDE_CODE_SESSION_ID", None) if saved[2] is None else os.environ.__setitem__("CLAUDE_CODE_SESSION_ID", saved[2])
+            restore()
+            os.environ.pop("CLAUDE_CODE_SESSION_ID", None) if saved is None else os.environ.__setitem__("CLAUDE_CODE_SESSION_ID", saved)
         return writes[-1]["board"]
     return as_board(board, run)
 

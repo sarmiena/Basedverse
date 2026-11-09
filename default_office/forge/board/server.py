@@ -16,11 +16,13 @@ test_views.py fails on a key served and not classed.
 RANK: within a column, and in the ready set and the Agent Room's wall, rows are ordered by REPO_RANK,
 an ordered list of label names (highest first); a row carrying none is `unranked`, last.
 
-The AGENTS strip is the roster: one comment per working agent on the one open `AGENTS…` issue in the
-home repo, written by `forge.py agent` (seat/tools/forge.py). roster.py reads it, and every display
-of it (forge.py agents, the hook, the kanban, the Agent Room) reads what is served here, each agent
-with its `fresh` class. Its one write here is the owner's ×, which deletes a dead session's entry and
-with it the session's claims (no expiry: the owner clears crashes).
+The AGENTS strip is the roster: one entry per working agent in the board's own database (rosterdb.py, the
+`roster` table), written by `forge.py agent` (seat/tools/forge.py) through /api/roster. roster.py reads it, and
+every display of it (forge.py agents, the hook, the kanban, the Agent Room) reads what is served here, each agent
+with its `fresh` class. Its own write here is the owner's ×, which deletes a dead session's entry and with it the
+session's claims (no expiry: the owner clears crashes). Until 2026-11-09 the roster was a comment per agent on an
+`AGENTS…` issue in the home repo, and every new one emailed that repo's watchers: adopt_github_roster() copies such
+a roster in once, at the first start with an empty table.
 
 Live: every POLL seconds one issue listing (issues and PRs) + the plan and roster; dependencies are
 re-read only for issues whose updated_at moved, and for all of them every FULL seconds (an edge added
@@ -67,6 +69,7 @@ import gone
 import mail
 import pick
 import roster
+import rosterdb
 import tarot
 import workflow
 
@@ -99,7 +102,7 @@ PUBLIC = os.environ.get("REPO_PUBLIC_URL", "https://github.com").rstrip("/")
 TOKEN = os.environ["REPO_TOKEN"]
 OWNER = (os.environ.get("REPO_OWNER") or "").strip()
 # The repos the board spans ([] = every repo of OWNER, one org listing), and the one holding the
-# RESUME and AGENTS issues (a single repo in scope is it).
+# RESUME issue (a single repo in scope is it).
 REPOS = [r for r in re.split(r"[\s,]+", os.environ.get("REPO_NAMES") or "") if r]
 HOME_REPO = (os.environ.get("REPO_HOME") or "").strip() or (REPOS[0] if len(REPOS) == 1 else "")
 if not OWNER or not HOME_REPO:
@@ -323,6 +326,7 @@ TAROT_CARD = re.compile(r"/tarot/(?:(m(?:0\d|1\d|2[01])|[wcsp](?:0[1-9]|1[0-4]))
 TAROT = tarot.Readings(os.environ.get("TAROT_FILE") or os.path.join(os.path.dirname(ROOM_FILE), "tarot.json"))
 # The readings the owner saved (her card's Save; its Saved list): in the board's SQLite file (tarot.Kept), the owner's alone.
 KEPT = tarot.Kept(os.environ.get("BOARD_DB", "/data/board.db"))
+ROSTER = rosterdb.Store(os.environ.get("BOARD_DB", "/data/board.db"))   # the agent roster (rosterdb.py)
 # The ticket each agent held last (roster.lasts), served as its `last` while it holds none: a click on its name card in
 # the Agent Room opens it, and the kanban's strip names it. Kept beside the room's settings, so a restart keeps it.
 LAST_FILE = os.environ.get("LAST_FILE") or os.path.join(os.path.dirname(ROOM_FILE), "last.json")
@@ -716,29 +720,43 @@ def plan_issue(b=HOME, offb=None):
     return hits[0] if hits else None
 
 
-def agents_issue():
-    """The open AGENTS issue. Two (a create race) are tolerated the way forge.py does: the LOWEST
-    number is the roster, so the kanban and every agent agree on it."""
+def agent_comments():
+    """[(row, entry)] for every agent entry in the roster's table (rosterdb: each row shaped as the GitHub comment it
+    replaced: id, body, updated_at)."""
+    return roster.entries(ROSTER.rows())
+
+
+def agents_view():
+    """The roster freshest first (roster.agents). The same read the owner's × makes (agent_comments), so the two
+    cannot see different entries. The sessions this machine's restart ended are taken off it first (reap_rebooted)."""
+    return roster.agents(reap_rebooted(agent_comments()))
+
+
+def github_agents_issue():
+    """The open AGENTS issue on GitHub, where the roster was kept before the board's database had it (the LOWEST
+    number, as forge.py read it), or None. Read only by adopt_github_roster."""
     hits = sorted((i for i in off_board() if (i.get("title") or "").startswith("AGENTS")),
                   key=lambda i: i["number"])
     return hits[0] if hits else None
 
 
-def agent_comments():
-    """(issue, [(comment, entry)]) for every agent entry on the AGENTS issue."""
-    i = agents_issue()
-    if not i:
-        return None, []
-    cs, _ = api_all("/repos/%s/%s/issues/%d/comments" % (OWNER, RESUME_REPO, i["number"]))
-    return i, roster.entries(cs)
-
-
-def agents_view():
-    """(AGENTS issue number or None, the roster freshest first: roster.agents). The same read the
-    owner's × makes (agent_comments), so the two cannot see different comment sets. The sessions this
-    machine's restart ended are taken off it first (reap_rebooted)."""
-    i, ents = agent_comments()
-    return (i["number"] if i else None), roster.agents(reap_rebooted(ents))
+def adopt_github_roster():
+    """Once, at a start with an empty roster table: the entries of the AGENTS issue on GitHub copied in, so the move
+    keeps who holds what. The issue itself is left as it is (closing it is the owner's: forge.py no longer writes it).
+    Never raises: a board that cannot read GitHub starts with an empty roster, which /go fills."""
+    try:
+        if not ROSTER.empty():
+            return
+        i = github_agents_issue()
+        if not i:
+            return
+        cs, _ = api_all("/repos/%s/%s/issues/%d/comments" % (OWNER, RESUME_REPO, i["number"]))
+        n = ROSTER.adopt(cs)
+        print("board: the roster is in the board's database now: %d entr%s copied from %s/%s#%d, which nothing writes "
+              "any more (close it)" % (n, "y" if n == 1 else "ies", OWNER, RESUME_REPO, i["number"]), flush=True)
+    except Exception as e:
+        print("board: could not copy the roster from GitHub (%s: %s); it starts empty, and /go fills it"
+              % (type(e).__name__, e), flush=True)
 
 
 # Self-healing after this machine was turned off with its agents running: none of them ran its SessionEnd (the
@@ -797,7 +815,7 @@ def ran_here(sid):
 
 
 def reap_rebooted(ents, now=None):
-    """`ents` ([(comment, entry)], agent_comments') less the entries of sessions this machine's restart ended
+    """`ents` ([(row, entry)], agent_comments') less the entries of sessions this machine's restart ended
     (roster.rebooted), each taken off the roster with its claims, as the owner's × would, and said in the board's log.
     One whose delete fails stays, and is tried again REAP_RETRY_S later. Never raises: the roster is still served."""
     now = time.time() if now is None else now
@@ -811,15 +829,7 @@ def reap_rebooted(ents, now=None):
     out = {}
     for c, d in gone:
         try:
-            drop([(c, d)])
-        except HTTPError as e:
-            if e.code == 404:   # already gone (another machine's forge.py, the owner's ×)
-                out[c["id"]] = d
-                continue
-            REAP_FAILED[c["id"]] = now
-            print("board: could not take %s off the roster (HTTP %d); trying again in %d min"
-                  % (d.get("name") or d.get("session"), e.code, REAP_RETRY_S // 60), flush=True)
-            continue
+            drop([(c, d)])   # (already gone, by its own /stop or the owner's ×, is no fault: drop says so)
         except Exception as e:
             REAP_FAILED[c["id"]] = now
             print("board: could not take %s off the roster (%s: %s); trying again in %d min"
@@ -917,9 +927,8 @@ def issue_view(ref):
 
 def remove_agent(cid):
     """The owner's ×: delete one agent entry, and any other its session holds (the roster shows them as
-    one: roster.merge). Refuses anything that is not an agent entry on the AGENTS issue, so a stray id
-    cannot delete an ordinary comment anywhere on the forge."""
-    _, entries = agent_comments()
+    one: roster.merge). Refuses an id that is not an entry on the roster."""
+    entries = agent_comments()
     hit = next(((c, d) for c, d in entries if c["id"] == cid), None)
     if not hit:
         raise LookupError("comment %r is not an agent on the roster (already gone?)" % cid)
@@ -928,10 +937,14 @@ def remove_agent(cid):
 
 
 def drop(gone):
-    """Agent entries [(comment, entry)] deleted from the AGENTS issue, then the label each of their claims put on
-    its issue: the owner's × (remove_agent) and a restart's reap (reap_rebooted)."""
+    """Agent entries [(row, entry)] deleted from the roster, then the label each of their claims put on its issue:
+    the owner's × (remove_agent) and a restart's reap (reap_rebooted). One already gone (its own /stop, a moment
+    earlier) is no fault."""
     for c, _ in gone:
-        api("/repos/%s/%s/issues/comments/%d" % (OWNER, RESUME_REPO, c["id"]), "DELETE")
+        try:
+            ROSTER.delete(c["id"])
+        except LookupError:
+            pass
     # Its claims go with it, and so does the label each claim put on its issue (the workflow's
     # claim_label), AFTER the entry is gone: a failed delete strips nothing. Best-effort per issue.
     lab = WF["wf"].get("claim_label")
@@ -1113,9 +1126,9 @@ def snapshot(full):
     # The roster is a STRIP, not the board: if it cannot be read, keep the last good one and say
     # so, rather than letting it stall the rows and the plan.
     try:
-        (agents_num, agents), agents_error = agents_view(), None
+        agents, agents_error = agents_view(), None
     except Exception as e:
-        agents_num, agents = SNAP.get("agents_issue"), [dict(d) for d in SNAP["agents"]]
+        agents = [dict(d) for d in SNAP["agents"]]
         agents_error = "%s: %s" % (type(e).__name__, e)
     # Freshness is judged HERE, every poll, so it moves with time: publish() bumps `ver` when an
     # agent crosses a threshold (a class CHANGE, not every poll), and every reader redraws. So is
@@ -1136,7 +1149,7 @@ def snapshot(full):
     except Exception:
         offb = None   # each board's own read then says why
     return {"rows": rows, "plan": plan_view(plan_issue()), "agents": agents,
-            "agents_issue": agents_num, "agents_error": agents_error, "prs": prs, "prs_error": prs_error,
+            "agents_error": agents_error, "prs": prs, "prs_error": prs_error,
             "truncated": truncated, "gone": dropped(rows, every, truncated, now),
             "columns": workflow.served(WF["wf"]), "columns_error": columns_error, "usage": usage(now),
             "boards": {b.key: other_part(b, full, agents, agents_error is None, offb, now) for b in others},
@@ -1205,7 +1218,6 @@ def publish(s):
     with CHANGED:
         same = (s["rows"] == SNAP["rows"] and s["plan"] == SNAP["plan"]
                 and s["agents"] == SNAP["agents"] and s["agents_error"] == SNAP.get("agents_error")
-                and s["agents_issue"] == SNAP.get("agents_issue")
                 and s["prs"] == SNAP["prs"] and s["prs_error"] == SNAP.get("prs_error")
                 and s.get("truncated") == SNAP["truncated"] and s.get("gone") == SNAP.get("gone")
                 and s.get("columns") == SNAP.get("columns")
@@ -1449,13 +1461,14 @@ MAIL_POST = {
 
 
 # Each API key reaches only the routes its holder uses; anything else is the owner's (their session, on their page).
-# agents: seat/tools/forge.py (the board, moving a card, refreshing, messages). engine: the room's server page (the
+# agents: seat/tools/forge.py (the board, moving a card, refreshing, messages, its roster entry). engine: the room's server page (the
 # page, its scripts and pictures, the board, the tarot reader's reading and the lines meant for her, the room's
 # settings: an agent at the wall's switch; the owner's chips and record at the casino, kept and read back). consoles: bin/consoles taking jobs and answering them. A key of any other
 # name reaches nothing.
 KEY_ROUTES = {
     "agents": {("GET", "/api/board"), ("POST", "/api/refresh"), ("POST", "/api/move"), ("GET", "/api/mail"), ("GET", "/api/mail/recent"),
-               ("POST", "/api/mail"), ("POST", "/api/mail/read")},
+               ("POST", "/api/mail"), ("POST", "/api/mail/read"), ("GET", "/api/roster"), ("POST", "/api/roster"),
+               ("POST", "/api/roster/delete")},
     "engine": {("GET", "/room"), ("GET", "/common.js"), ("GET", "/motion.js"), ("GET", "/console.js"), ("GET", "/party.js"), ("GET", "/visit/visit.js"), ("GET", "/visit/mode"), ("GET", "/vendor/three.min.js"),
                ("GET", "/vendor/OrbitControls.js"), ("GET", "/teleport-beam.js"), ("GET", "/api/board"), ("GET", "/api/tarot"), ("POST", "/api/tarot/ask"), ("POST", "/api/room"),
                ("GET", "/api/casino"), ("POST", "/api/casino")},
@@ -1686,6 +1699,15 @@ class H(BaseHTTPRequestHandler):
         if u.path.startswith("/api/mail"):
             q = {k: v[0] for k, v in parse_qs(u.query).items()}
             return self.store_call(lambda: mail_get(u.path, q))
+        if u.path == "/api/roster":   # the roster's rows, for forge.py's writes (every display reads /api/board's `agents`)
+            rid = (parse_qs(u.query).get("id") or [None])[0]
+            if rid is None:
+                return self.send(200, {"rows": ROSTER.rows()})
+            try:
+                r = ROSTER.get(int(rid))
+            except ValueError:
+                return self.send(400, {"error": "id is a number"})
+            return self.send(200, {"row": r}) if r else self.send(404, {"error": "no roster entry %s" % rid})
         if u.path == "/api/issue":  # the quick view
             try:
                 return self.send(200, issue_view((parse_qs(u.query).get("id") or [""])[0]))
@@ -2013,6 +2035,26 @@ class H(BaseHTTPRequestHandler):
                 return self.send(502, {"error": "forge: HTTP %d %s" % (e.code, e.read()[:200].decode("utf-8", "replace"))})
             except Exception as e:  # never a dropped connection: the drop must say why
                 return self.send(502, {"error": "%s: %s" % (type(e).__name__, e)})
+        if route in ("/api/roster", "/api/roster/delete"):   # forge.py's writes of its own entry (rosterdb.py)
+            try:
+                b = json.loads(self.rfile.read(self.length()) or b"{}")
+                if not isinstance(b, dict):
+                    raise ValueError("the body is a JSON object")
+                rid = b.get("id")
+                if rid is not None and (isinstance(rid, bool) or not isinstance(rid, int)):
+                    raise ValueError("id is a number")
+                if route == "/api/roster":
+                    return self.send(200, ROSTER.put(b.get("body"), rid))
+                if rid is None:
+                    raise ValueError("need {\"id\": <the entry's id>}")
+                ROSTER.delete(rid)
+                return self.send(200, {"ok": True})
+            except rosterdb.Refused as e:
+                return self.send(422, {"error": str(e)})
+            except ValueError as e:
+                return self.send(400, {"error": str(e)})
+            except LookupError as e:
+                return self.send(404, {"error": str(e)})
         if self.path not in ("/api/plan", "/api/agent/remove"):
             return self.send(404, {"error": "not found"})
         try:
@@ -2022,7 +2064,7 @@ class H(BaseHTTPRequestHandler):
                 try:
                     cid = int(b["id"])
                 except (KeyError, TypeError, ValueError):
-                    return self.send(400, {"error": "need a numeric comment id"})
+                    return self.send(400, {"error": "need a numeric entry id"})
                 try:
                     remove_agent(cid)
                 except LookupError as e:
@@ -2137,6 +2179,7 @@ class Server(ThreadingHTTPServer):
 
 
 if __name__ == "__main__":
+    adopt_github_roster()   # once: a roster still on GitHub (the AGENTS issue) moves into the database
     threading.Thread(target=refresher, daemon=True).start()
     port = int(os.environ.get("BOARD_PORT", "3001"))
     print("board on :%d  forge %s  owner %s  repos %s  home %s  rank %s  columns %s  poll %gs  other boards %s"

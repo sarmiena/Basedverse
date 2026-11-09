@@ -306,7 +306,7 @@ function status() {
 }
 setInterval(status, 1000);
 
-// ---- the agent roster: who is working, on what (the AGENTS issue, written by forge.py agent)
+// ---- the agent roster: who is working, on what (the board's database, written by forge.py agent)
 // Freshness is the whole point of the strip: a session that crashed just stops acting, and turns red.
 // The server judges it (each agent's served `fresh`, board/roster.py) and redraws the page when a
 // class changes; the ticker here only keeps the "Xm ago" text moving between redraws.

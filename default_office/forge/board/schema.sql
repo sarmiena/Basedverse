@@ -25,3 +25,13 @@ CREATE TABLE IF NOT EXISTS reads (reader TEXT PRIMARY KEY, last INTEGER, since_a
 
 -- The tarot readings the owner saved (tarot.Kept): each a reading's JSON, newest first, at most 500.
 CREATE TABLE IF NOT EXISTS tarot_kept (reading TEXT PRIMARY KEY, kept REAL, body TEXT);
+
+-- The agent roster (rosterdb.py): one row per working agent, the entry forge.py writes (agent_body: the
+-- `<!-- board-agent -->` record, roster.py's parse_agent reads it), which only that agent rewrites; the owner's ×,
+-- /stop and a reap delete it. `created` and `updated` are this server's clock (epoch seconds). Until 2026-11-09 these
+-- were comments on an `AGENTS` issue on GitHub, and each new one emailed everyone who watches that repository.
+CREATE TABLE IF NOT EXISTS roster (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    body TEXT,
+    created REAL,
+    updated REAL);

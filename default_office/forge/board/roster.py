@@ -1,4 +1,4 @@
-"""The agent roster, read: one parse of the AGENTS issue's entries and one freshness rule.
+"""The agent roster, read: one parse of its entries (the board's `roster` table: rosterdb.py) and one freshness rule.
 Pure, stdlib, no network.
 
 forge.py WRITES the entries (seat/tools/forge.py agent_body) and keeps its own parse for its

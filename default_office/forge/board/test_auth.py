@@ -384,6 +384,27 @@ def main():
     check("the agents' key: its own routes (the board, a card's move, refresh, messages)",
           [ask(port, m, path, key="K1", origin=None, body={} if m == "POST" else None)[0] not in (401, 403) for m, path in
            (("GET", "/api/board"), ("POST", "/api/move"), ("POST", "/api/refresh"), ("GET", "/api/mail?for=x"), ("POST", "/api/mail/read"))], [True] * 5)
+    # Its roster entry, in the board's database (rosterdb.py) since 2026-11-09: made, read, rewritten, taken off, over HTTP.
+    entry = "<!-- board-agent -->\n```\nname: amber-otter\nsession: sess-http\nclaims: docs#1\nseen: 2026-11-09T21:00:00Z\n```\n"
+    st, _, raw = ask(port, "POST", "/api/roster", key="K1", origin=None, body={"body": entry})
+    rid = json.loads(raw).get("id") if st == 200 else None
+    check("the agents' key: a roster entry made (an id back)", (st, isinstance(rid, int)), (200, True))
+    check("…read back among the rows, and alone by its id",
+          (any(r["id"] == rid for r in json.loads(ask(port, "GET", "/api/roster", key="K1", origin=None)[2])["rows"]),
+           json.loads(ask(port, "GET", "/api/roster?id=%d" % rid, key="K1", origin=None)[2])["row"]["body"]), (True, entry))
+    check("…rewritten in place", json.loads(ask(port, "POST", "/api/roster", key="K1", origin=None,
+                                                 body={"body": entry.replace("docs#1", "docs#2"), "id": rid})[2])["id"], rid)
+    check("…served on the board as an agent with its claim (the kanban, forge.py agents, the hook)",
+          [(d["name"], d["claims"]) for d in server.agents_view() if d["id"] == rid], [("amber-otter", ["docs#2"])])
+    check("…what is no entry is refused (422), a missing id is 404, a bad one 400",
+          [ask(port, "POST", "/api/roster", key="K1", origin=None, body=b)[0] for b in
+           ({"body": "just words"}, {"body": entry, "id": 10 ** 9}, {"body": entry, "id": "7"})], [422, 404, 400])
+    check("…taken off, then gone", [ask(port, "POST", "/api/roster/delete", key="K1", origin=None, body={"id": rid})[0],
+                                    ask(port, "GET", "/api/roster?id=%d" % rid, key="K1", origin=None)[0],
+                                    ask(port, "POST", "/api/roster/delete", key="K1", origin=None, body={"id": rid})[0]], [200, 404, 404])
+    check("…and neither the engine's key nor bin/consoles' reaches the roster",
+          [ask(port, m, "/api/roster", key=k, origin=None, body={} if m == "POST" else None)[0] for k in ("KE", "KC") for m in ("GET", "POST")],
+          [403] * 4)
     check("…and none of the owner's: the plan, the roster's ×, the room, an issue, the tarot reader, the room's server page, pages",
           [ask(port, m, path, key="K1", origin=None, body={} if m == "POST" else None)[0] for m, path in
            (("POST", "/api/plan"), ("POST", "/api/agent/remove"), ("POST", "/api/room"), ("GET", "/api/issue?id=docs%231"), ("GET", "/api/tarot"),

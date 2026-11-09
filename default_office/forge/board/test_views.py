@@ -59,7 +59,6 @@ ISSUES = [issue("host", 1, "a ready row", ROW),
           issue("host", 5, "a row that will close", ROW)]
 RESUME = issue("docs", 100, "RESUME", ["off-board"])
 RESUME["body"] = "1) host#1 first\n2) host#2 ✋ second"
-AGENTS = issue("docs", 101, "AGENTS", ["off-board"])
 AGENT = ("<!-- board-agent -->\nname: amber-zebu\nsession: session_A\nlocal: local-a\nmsgname: app-1\n"
          "seat: windows\nhost: host-a\nlink: https://claude.ai/code/session_A\nseen: %s\n"
          "claims: host#1\ndoing: testing\nctx: 1234\nblocked: a call\n"
@@ -72,16 +71,21 @@ PRS = [{"number": 9, "title": "for host#1", "body": "", "html_url": "u", "user":
 STATE = {"issues": ISSUES}
 
 
+
+class FakeRoster:
+    """The board's roster table (rosterdb.Store), faked: one agent, every field written."""
+    def rows(self):
+        return [{"id": 7, "body": AGENT, "updated_at": ISO}]
+
+
 def fake_api(path, method="GET", body=None):
     path = re.sub(r"[?&]per_page=\d+&page=1$", "", path)  # api_all's first page; the fixture is short
     if path.startswith("/orgs/%s/issues" % OWNER):  # GitHub lists issues and PRs together
-        return STATE["issues"] + [RESUME, AGENTS] + PRS
+        return STATE["issues"] + [RESUME] + PRS
     if "labels=off-board" in path:
-        return [RESUME, AGENTS]
+        return [RESUME]
     if path == "/repos/sam/tool/issues?state=open":   # the other board: one row, nothing gone
         return [dict(issue("tool", 1, "a row on the other board", ROW), repository={"full_name": "sam/tool", "name": "tool"})]
-    if path.endswith("/issues/101/comments"):
-        return [{"id": 7, "body": AGENT, "updated_at": ISO}]
     if path.endswith("/host/issues/2/dependencies/blocked_by"):
         return [{"repository_url": "https://api.github.com/repos/%s/host" % OWNER, "number": 1}]
     if path.endswith("/dependencies/blocked_by"):
@@ -95,6 +99,7 @@ def fake_api(path, method="GET", body=None):
 def body():
     """One /api/board body, every optional part populated."""
     server.api = fake_api
+    server.ROSTER = FakeRoster()
     with open(os.path.join(os.environ["SHELLS_DIR"], "now.json"), "w") as f:
         json.dump({"at": NOW, "shells": {"local-a": ISO}}, f)
     with open(os.path.join(os.environ["USAGE_DIR"], "plan.json"), "w") as f:   # bin/usage's: /usage's rows
