@@ -204,7 +204,7 @@ and the next delta would put it back).
 **Settings.** Anything a person may change about the room (its look, a door, what is open) is a room setting,
 and lives on your server: the client page posts it to a route of yours (with the session), your server keeps it
 and tells the server page the way it tells it everything else (its poll, its feed), and the server page rebuilds.
-The Sweatshop's environment dropdown works like that (`POST /api/room {env}`; `room.env` in its board's
+The environment dropdown in default_office works like that (`POST /api/room {env}`; `room.env` in its board's
 snapshot). A setting kept in `localStorage` or in the address (`?env=`) changes one browser's idea of a room that
 is drawn elsewhere: the engine's page never sees it.
 
@@ -462,7 +462,7 @@ engine`): [../visit/INTEGRATING.md](../visit/INTEGRATING.md), "Upgrading a 1.x r
 
 ### A room that hosts today: what the first one taught
 
-The Sweatshop made the split in a day, then spent a day at the desk finding what the split breaks. Every item
+It took default_office a day to make the split, then a day at the desk to find what the split breaks. Every item
 below cost an hour of looking at a wrong room. Read them before you start; go down them after. The lobby did not
 change: a room on an older Visit visits you and is visited as before, so nobody else has to move when you do.
 

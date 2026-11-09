@@ -229,7 +229,7 @@ Nothing changes a protocol's name: offices on 4.2 and 4.3 meet and visit each ot
 
 - **The sky costs nothing now.** A world painted its sky by drawing the room's whole scene with nothing of it in view:
   three.js still walked and worked out every object in it each frame (1.2 ms a frame in a room of 6,600 objects,
-  measured on Sweatshop's). It is drawn from a scene of its own now, holding the background alone.
+  measured on default_office's). It is drawn from a scene of its own now, holding the background alone.
 - **⏱ counts draw calls**: "draw calls a frame: 612 + 1,200 for shadows", and `draws` ({ colour, shadow }) in each row
   of the report. three.js's own count (`renderer.info`) leaves the shadow passes out, and they are often the larger
   part: every mesh that casts a shadow is drawn again for each light that casts them. Counted only while ⏱ is on.
@@ -865,7 +865,7 @@ page with no scene of its own, `world.point(target)`, `world.atHome`, `world.roo
 stage's first-person home view. Fixed for everyone: an `EdgesGeometry` or `WireframeGeometry` travels as its lines
 (it arrived as a warning and a lost object); a user page's own room counted among the plots round it.
 
-**What an integration does about it**, in this order; the Sweatshop did it in a day and then spent a day at the
+**What an integration does about it**, in this order; default_office did it in a day and then spent a day at the
 desk on what the split breaks, and every one of those is written down so you need not:
 
 1. **Read [engine/INTEGRATING.md](engine/INTEGRATING.md) whole**, then its "Upgrading: a room that hosts today"
@@ -877,7 +877,7 @@ desk on what the split breaks, and every one of those is written down so you nee
    bare `docker compose up -d engine`: it recreates visit-client without your launcher's environment.
 3. **Your server.** Serve `/visit/visit.js` from visit-client; relay `/visit/ws` to it with the preface and the user
    token (one a session, 1 MiB buffered then 4408); say what runs at `/visit/mode`; serve the room's page to the
-   engine's key only; retire `/api/visit`. Add a settings route (the Sweatshop's `/api/room`) your pages post to and
+   engine's key only; retire `/api/visit`. Add a settings route (default_office's `/api/room`) your pages post to and
    your snapshot carries: the environment, the person's theme, the owner's look.
 4. **Split the page by role** (one file, `?role=host` for the engine, nothing for the person). The engine's page:
    `window.visit = await Visit.connect({ ...window.VISIT_ENGINE, role: "host" })`, your scene and hooks, nothing of the
@@ -901,7 +901,7 @@ desk on what the split breaks, and every one of those is written down so you nee
    gives `/debug/eval` on the compose network, for the proving alone); the person's console; the ⏱ report before and
    after. Reload the person's page after every deploy before judging anything. Then from another device.
 
-Each thing that went wrong at the Sweatshop's desk is a row in INTEGRATING.md's troubleshooting table, symptom to
+Each thing that went wrong at default_office's desk is a row in INTEGRATING.md's troubleshooting table, symptom to
 cause, and an item in its checklist.
 
 ## v0.22.0 — 2026-10-28
@@ -1184,7 +1184,7 @@ itself. Now:
 **Mounts are your room's, not Visit's.** Visit is the plumbing: it carries what your room makes and puts it under its
 rider wherever they go. What there is to ride is your room's call. So Visit's own horse and flying carpet are gone
 (`visit:horse`, `visit:carpet`). `v.mounts` lists only what your room gives with `v.possessions`, and the panel's
-"your mount" row and M appear only then. The Sweatshop's horse and carpet are now its own.
+"your mount" row and M appear only then. In default_office, the horse and carpet are now its own.
 
 **Worlds: rooms drawn farthest first.** At a plot's edge, something see-through in a nearer room (a name over a
 head, a window) could disappear under the farther room's ground, drawn after it. Now the sky is drawn first, then

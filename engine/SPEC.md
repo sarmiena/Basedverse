@@ -511,7 +511,7 @@ In order, each before the next; the branch merges to `main` after step 4, and no
    (visit/client/tests/room.html split: its scene and hooks headless, its panel and stage in a client page); the
    browser test with the owner's tab as the user, on the GPU as today, in about the same time; a reload of the
    engine's page mid-visit.
-3. **The Sweatshop at the desk**, split (8), through the board's relay (6.3): nothing felt. Measured before and
+3. **default_office at the desk**, split (8), through the board's relay (6.3): nothing felt. Measured before and
    after by the ⏱ report (visit/SPEC.md 9): key to correction on the owner's moves, scan time, frame time; and
    the engine's memory and CPU over an hour, busy and idle.
 4. **From a laptop** through the board's HTTPS proxy on the LAN, then from outside it (Tailscale, or a café):
