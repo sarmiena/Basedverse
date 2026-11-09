@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# The board alone, started again (after a change to its server code: forge/board/*.py), on this machine. visit,
+# the agents' helpers and the remote proxy stay as they are. bin/start does it all.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV="${REPO_ENV:-$ROOT/.env}"; [ -f "$ENV" ] || ENV=/dev/null
+. "$ROOT/bin/lib/env.sh"     # envval
+. "$ROOT/bin/lib/board.sh"   # board_up
+board_up && echo "the board is up again: http://localhost:3001"

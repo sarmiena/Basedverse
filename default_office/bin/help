@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# What everything in bin/ is for, the settings, and where to read more.
+#
+#   bin/help           all of it
+#   bin/help NAME      one command's own help (the same as bin/NAME --help)
+set -euo pipefail
+
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+case "${1:-}" in
+  "") ;;
+  -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+  */*|.*) echo "help: a command's name, as bin/ has it (bin/help lists them)" >&2; exit 2 ;;
+  *) [ -x "$BIN/$1" ] && [ -f "$BIN/$1" ] || { echo "help: no bin/$1 (bin/help lists the commands)" >&2; exit 2; }
+     exec "$BIN/$1" --help ;;
+esac
+
+cat <<'EOF'
+default_office: a board for your agents (a kanban of GitHub issues, a 3D Agent Room, their messages),
+and your office's way into the lobby, where other offices link and walk around each other's rooms.
+Every command takes --help; bin/help NAME shows one.
+
+THE BOARD                 http://localhost:3001 (the kanban) and http://localhost:3001/room (the Agent Room)
+  bin/start               start the board, or restart it: code and .env changes apply. Run from a terminal,
+                          it asks which lobby to join, and starts this office's visit-client for it.
+  sign in                 the board asks for your account first (basedverse's auth-client): bin/start asks for
+                          its name the first time, from a terminal; the agents use their key (REPO_BOARD_KEY)
+  bin/auth                your account, sessions and keys: bin/auth user add <name>, passwd <name>, sessions,
+                          revoke <session>, key add|list|revoke <label>
+  bin/down                stop the board, and visit-client, bin/shells, bin/consoles and bin/usage with it.
+                          Messages and the roster are kept.
+  bin/shells              which agents have a command running, for the kanban and the room's Matrix
+                          screens (bin/start runs it in the background); --once prints what it sees
+  bin/consoles            an agent's herdr pane in the room: click its name card to read and answer it, here or
+                          from another device (bin/start runs it in the background; it takes the room's calls
+                          from the board, and listens on nothing; needs herdr)
+  other devices           REMOTE=lan in .env (bin/start asks once): the board over HTTPS on your network, at the
+                          address bin/start prints; trust .remote/board-ca.crt on each device once. Or Tailscale:
+                          tailscale serve --bg http://127.0.0.1:3002
+  bin/usage               the usage limits as /usage shows them, for the kanban and the room (bin/start
+                          runs it in the background; needs claude); --once prints them
+
+AGENTS                    the directories agents work in (AGENTS in .env)
+  bin/init-agent          add one (cloned if it is missing; skills and hooks installed), or --list them
+
+THE LOBBY                 other offices: linking, and walking around their rooms (Visit)
+  in the room             the Visit panel, top right: the offices online, links, your visitors, and
+                          Go offline / Go online (it stays offline through restarts until you come back)
+  bin/deploy-lobby        the lobby server itself, for everyone: deploy or update it, --status, --logs,
+                          --down. Needs the server's ssh key. It is basedverse's (BASEDVERSE, below).
+
+EVERYDAY
+  start the day           bin/start
+  stop the day            bin/down
+  go offline              Go offline, in the room's Visit panel   (back: Go online)
+  update the lobby        git pull in basedverse, then bin/deploy-lobby
+  add an agent            bin/init-agent
+  who are my agents       bin/init-agent --list
+  share a copy            bin/archive: the code as one .tar.gz (or .zip), no history, nothing of yours in it
+
+SETTINGS                  .env, beside bin/ (.env.example explains every one; never commit .env)
+  REPO_OWNER, REPO_NAMES  which GitHub repos the board shows
+  REPO_HOME, REPO_RANK    the repo holding the Up next and roster issues; the labels that order each column
+  REPO_TOKEN              the GitHub token: bin/start fills a blank one from `gh auth token`
+  AGENTS                  the agents' directories (bin/init-agent keeps it)
+  LOBBY_URL, LOBBY_NAME   the lobby, and this office's name there (bin/start asks; blank LOBBY_URL: none)
+  VISIT_PORT, VISIT_MAX_VISITORS   visit-client's port on 127.0.0.1, and visitors at once (0-8)
+  CONSOLES_PORT           bin/consoles' port on 127.0.0.1 (blank: 7402)
+  BASEDVERSE              where basedverse is (the lobby and Visit, its own repository); blank: ../basedverse
+  LLM_KEY                 the board's model (the tarot reader): a Claude API key; or LLM_URL and LLM_MODEL,
+                          a model of your own (with neither, she says she needs an LLM key)
+
+MORE
+  forge/README.md         the board, the Agent Room, the lobby and Visit in it
+  seat/README.md          how an agent's seat works (its skills, hooks and forge.py)
+  basedverse's README.md  the lobby and Visit, shared with other workrooms (github.com/sarmiena/Basedverse)
+EOF
+
+# Anything in bin/ that this page does not know yet.
+known=" start down shells consoles usage init-agent deploy-lobby archive help "
+extra=""
+for f in "$BIN"/*; do
+  n="$(basename "$f")"
+  [ -f "$f" ] && [ -x "$f" ] && [ "${known#* $n }" = "$known" ] && extra="$extra $n"
+done
+[ -z "$extra" ] || printf '\nALSO IN bin/ (see each one'"'"'s --help):%s\n' "$extra"

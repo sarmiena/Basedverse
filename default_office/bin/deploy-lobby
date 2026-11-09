@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Deploy the lobby: basedverse's bin/deploy-lobby (basedverse is ../basedverse, or BASEDVERSE in .env),
+# with the same arguments. It remembers the server in basedverse's own .env; `--help` says the rest.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV="${REPO_ENV:-$ROOT/.env}"   # REPO_ENV: another .env, as forge.py reads it
+case "${1:-}" in -h|--help) help=1 ;; *) help= ;; esac
+[ -f "$ENV" ] || { [ -n "$help" ] && ENV=/dev/null; } || { echo "deploy-lobby: no $ENV (copy .env.example)" >&2; exit 1; }
+. "$ROOT/bin/lib/env.sh"   # envval, basedverse
+
+bv="$(basedverse)"
+if [ -n "$help" ]; then
+  sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; echo
+  [ -x "$bv/bin/deploy-lobby" ] && exec "$bv/bin/deploy-lobby" --help
+  echo "(basedverse is not at $bv, so its own help is not here: clone it there, or set BASEDVERSE in .env)"; exit 0
+fi
+[ -x "$bv/bin/deploy-lobby" ] || { echo "deploy-lobby: no basedverse at $bv (clone it there, or set BASEDVERSE in .env)" >&2; exit 1; }
+exec "$bv/bin/deploy-lobby" "$@"

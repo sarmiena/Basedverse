@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+# Start the board (kanban, Agent Room, messages) for the project the .env names, or restart it.
+#
+#   bin/start          start the board; if it is already running, restart it (code and .env changes apply)
+#   bin/start --debug  the same, with the room's engine's debug hook on (ENGINE_DEBUG: 127.0.0.1:7405/debug/eval
+#                      runs code in the room's page, no password, for any program on this machine). For looking
+#                      inside the room while it runs; the next bin/start without it turns it off.
+#
+# 1. REPO_TOKEN: a token already in .env is kept. A blank one is filled from the GitHub CLI's login
+#    (`gh auth token`) and .env is made readable only by you. See forge/README.md, "The token".
+# 2. The lobby (basedverse's lobby/README.md): asks whether there is one to connect to, and saves its address as
+#    LOBBY_URL (and your office's name there as LOBBY_NAME, if .env has none). Enter keeps what .env says;
+#    `none` turns the lobby off. Asked only when run from a terminal: a script's start never waits.
+# 3. The board, on this machine (python3 forge/board/server.py, no Docker; bin/lib/board.sh): started again every
+#    time, so server code changes and .env edits both apply. Messages (.board/) and the roster (on GitHub) are
+#    kept, and agents' `inbox --wait` waiters reconnect by themselves. (bin/board-restart: the board alone.)
+# 3a. visit (basedverse 2.0's one program, on this machine: VISIT_PATH in .env, else the release VISIT_VERSION
+#    names, downloaded once into .visit/bin/): the board's sign-in, the room's engine (the room's
+#    server page, in the headless Chrome inside visit) and, when the .env names a lobby and an office (LOBBY_URL,
+#    LOBBY_NAME), the room's way into it: knocking, walking around other offices' rooms with WASD, and going
+#    offline or online from the room's Visit panel (which it remembers, restarts included). Its database is inside
+#    it too (VISIT_DATA_DIR in .env, written once). New tokens each start, in .visit/ and .auth/. Every page and
+#    route of the board asks its sign-in first: signed out, you get the sign-in page.
+# 3b. Your account (asked for, from a terminal, if there is none: else bin/auth user add <name>), and the agents'
+#    and bin/consoles' API keys (REPO_BOARD_KEY, CONSOLES_KEY in .env).
+# 3c. bin/shells, in the background on this machine: which agents have a command running, for the kanban and
+#    the room (the Matrix on an agent's screen). Linux only; without it, no one is shown running anything.
+# 3d. bin/consoles, in the background on this machine: click an agent's name card in the room and its herdr
+#    pane opens, to read and answer, here or from another device. It connects out to the board (its key:
+#    CONSOLES_KEY) and listens on nothing. Needs herdr; without it, the cards open nothing.
+# 3e. bin/usage, in the background on this machine: the account's usage limits as /usage shows them (the
+#    session, the week, and each model's week), for the kanban and the room. Needs `claude`, signed in to a Pro
+#    or Max account; without it, they come from the agents' status lines, the session and the week only.
+# 3f. Other devices (REMOTE in .env: `lan`, `tailscale`, or both, `lan,tailscale`; asked once, from a terminal), over
+#    HTTPS only. lan: on this machine's network (Caddy), at https://<its LAN address>:3443 and
+#    https://<its name>.local:3443, to private addresses only, with a certificate from Caddy's own authority:
+#    .remote/board-ca.crt, to trust on each device once. tailscale: on your tailnet, at https://<its name>.<tailnet>.ts.net:9443 (REMOTE_TS_PORT)
+#    (`tailscale serve`, with Tailscale's certificate: nothing to trust), and with lan at https://<its tailnet
+#    address>:3443 too (Caddy's). Tailscale lets only root or its operator serve: the first time, bin/start offers to
+#    make you its operator (`sudo tailscale set --operator=<you>`, once). Sign in there as here; the console works
+#    there too; Visit stays on this machine.
+# 4. Waits until the board has read GitHub once, then prints where it is (every address it can be reached at, here
+#    and from other devices), what it shows, who is on the roster, and the agent directories (AGENTS) a Claude
+#    session can join from.
+set -euo pipefail
+debug=""
+case "${1:-}" in   # before anything else: --help must never start or stop anything
+  -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+  --debug) debug=debug ;;
+  "") ;;
+  *) echo "start: it takes only --debug (bin/start --help says what it does)" >&2; exit 2 ;;
+esac
+[ $# -le 1 ] || { echo "start: it takes only --debug (bin/start --help says what it does)" >&2; exit 2; }
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV="$ROOT/.env"
+URL="${BOARD_URL:-http://localhost:3001}"  # override only to test against another board
+WAIT_S=90
+
+die() { echo "start: $*" >&2; exit 1; }
+
+[ -f "$ENV" ] || die "no $ENV: it says which repos the board shows (see seat/README.md)"
+command -v python3 >/dev/null 2>&1 || die "python3 is not installed (the board is a Python program)"
+command -v python3 >/dev/null 2>&1 || die "python3 is not installed"
+
+# -- 1. the token --------------------------------------------------------------------------------
+token_in_env="$(sed -n 's/^[[:space:]]*REPO_TOKEN[[:space:]]*=[[:space:]]*//p' "$ENV" | tail -n 1 | tr -d '[:space:]"'"'")"
+if [ -z "$token_in_env" ]; then
+  command -v gh >/dev/null 2>&1 || die "REPO_TOKEN is blank in $ENV and gh is not installed: paste a token there"
+  token="$(gh auth token 2>/dev/null)" || die "REPO_TOKEN is blank in $ENV and gh is not logged in: run 'gh auth login', or paste a token there"
+  [ -n "$token" ] || die "gh printed no token: run 'gh auth login', or paste a token in $ENV"
+  case "$token" in *[!A-Za-z0-9_]*) die "gh printed something that is not a token; paste one in $ENV" ;; esac
+  if grep -q '^[[:space:]]*REPO_TOKEN[[:space:]]*=' "$ENV"; then
+    sed -i "s|^[[:space:]]*REPO_TOKEN[[:space:]]*=.*|REPO_TOKEN=$token|" "$ENV"
+  else
+    printf '\nREPO_TOKEN=%s\n' "$token" >> "$ENV"
+  fi
+  chmod 600 "$ENV"
+  echo "REPO_TOKEN was blank: saved your GitHub CLI login's token in .env (now readable only by you)"
+fi
+
+# -- 2. the lobby --------------------------------------------------------------------------------
+. "$ROOT/bin/lib/env.sh"   # envval, setenv, lobby_health
+# basedverse's lobby is wss://basedverse.app/ (Visit 3.0); its old address, the server's bare IP, moves there by itself.
+BASEDVERSE_LOBBY="wss://basedverse.app/"
+case "$(envval LOBBY_URL)" in
+  wss://77.113.56.20|wss://77.113.56.20/) setenv LOBBY_URL "$BASEDVERSE_LOBBY"; echo "Lobby: basedverse's, now at $BASEDVERSE_LOBBY" ;;
+esac
+if [ -t 0 ]; then
+  lobby="$(envval LOBBY_URL)"
+  if [ -n "$lobby" ]; then
+    printf '\nLobby: %s\n  Enter keeps it, or type another address, or "none": ' "$lobby"
+  else
+    printf '\nThe lobby to join: Enter for basedverse'"'"'s (%s), another address (wss://...), or "none": ' "$BASEDVERSE_LOBBY"
+  fi
+  read -r answer || answer=""
+  answer="$(printf '%s' "$answer" | tr -d '[:space:]')"
+  [ -z "$answer" ] && [ -z "$lobby" ] && answer="$BASEDVERSE_LOBBY"
+  case "$answer" in
+    "") ;;
+    none|NONE|no|n) lobby="" ;;
+    ws://*|wss://*) lobby="$answer" ;;
+    *) lobby="wss://${answer%/}/" ;;   # a bare IP or name: the encrypted lobby on it
+  esac
+  setenv LOBBY_URL "$lobby"
+  if [ -n "$lobby" ]; then
+    up="$(lobby_health "$lobby")"
+    if [ -n "$up" ]; then
+      echo "  the lobby answers: $up"
+    else
+      echo "  ⚠ $lobby did not answer (saved anyway: the room keeps trying)"
+    fi
+    if [ -z "$(envval LOBBY_NAME)" ]; then
+      while :; do
+        printf "  Your office's name there (1-24 letters, digits, space _ . -): "
+        read -r name || name=""
+        name="$(printf '%s' "$name" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+        [ -z "$name" ] && { echo "  no name, so no visit-client: it needs one (set LOBBY_NAME, or run bin/start again)"; break; }
+        if printf '%s' "$name" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9 _.-]{0,22}[A-Za-z0-9])?$'; then
+          setenv LOBBY_NAME "$name"; break
+        fi
+        echo "  not a lobby name: 1-24 letters, digits, spaces, _ . -, starting and ending with a letter or digit"
+      done
+    fi
+  fi
+  echo
+fi
+
+# -- 2b. other devices ---------------------------------------------------------------------------
+. "$ROOT/bin/lib/board.sh"   # board_up, board_running, caddy_up, caddy_down, ts_name, ts_up, ts_down
+if [ -t 0 ] && ! grep -q '^[[:space:]]*REMOTE[[:space:]]*=' "$ENV"; then   # asked once: the answer is kept
+  printf 'Reach the board from other devices on your network (HTTPS; sign in there as here)? [y/N] '
+  read -r answer || answer=""
+  case "$answer" in y|Y|yes) remote=lan ;; *) remote="" ;; esac
+  if [ -n "$(ts_name)" ]; then
+    printf 'And on your tailnet (Tailscale, from anywhere: https://%s:%s)? [y/N] ' "$(ts_name)" "$(ts_port)"
+    read -r answer || answer=""
+    case "$answer" in y|Y|yes) remote="${remote:+$remote,}tailscale" ;; esac
+  fi
+  setenv REMOTE "$remote"
+  echo
+fi
+
+# -- 3. the board ---------------------------------------------------------------------------------
+. "$ROOT/bin/lib/visit.sh"   # visit_up, visit_down, visit_running, visit_cmd
+. "$ROOT/bin/lib/auth.sh"    # auth_token, auth_up
+auth_token                   # before the board starts: it reads it
+if board_running; then
+  echo "restarting the board (messages and the roster are kept; agents reconnect by themselves)"
+fi
+board_up || die "the board did not start (above)"
+
+# -- 3a. visit: the board's sign-in, the room's engine, and the lobby when there is one ----------------
+if ! visit_up $debug; then
+  echo "⚠ visit is not running (above): the board refuses everyone until it is (bin/start again)"
+fi
+
+# -- 3b. your account, and the agents' and bin/consoles' keys ----------------------------------------
+auth_up
+
+# -- 3c. who is running a command (bin/shells) ------------------------------------------------------
+"$ROOT/bin/shells" --start || echo "⚠ bin/shells did not start: the board will not show who is running a command"
+
+# -- 3d. an agent's console in the room: its herdr pane (bin/consoles) -------------------------------
+"$ROOT/bin/consoles" --start || echo "⚠ bin/consoles did not start: the room's name cards will not open an agent's terminal"
+
+# -- 3e. the usage limits, as /usage shows them (bin/usage) ------------------------------------------
+"$ROOT/bin/usage" --start || echo "⚠ bin/usage did not start: the usage limits come from the agents' status lines (no per-model weeks)"
+
+# -- 3f. other devices (REMOTE: lan, tailscale, or both): the board over HTTPS, through Caddy and tailscale serve ------
+remote=",$(envval REMOTE | tr -d '[:space:]'),"; reach=""; ca=""   # reach: the addresses, for the end
+tsn=""; tsip=""
+if [ "${remote#*,tailscale,}" != "$remote" ]; then
+  tsn="$(ts_name)"
+  if [ -n "$tsn" ]; then tsip="$(ts_ip)"; else echo "⚠ Tailscale is not up on this machine: the board is not on your tailnet (tailscale up, then bin/start)"; fi
+fi
+if [ "${remote#*,lan,}" != "$remote" ]; then
+  addr="$(python3 -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("192.0.2.1", 9)); print(s.getsockname()[0])' 2>/dev/null || true)"
+  name="$(hostname -s 2>/dev/null || hostname)"; rport="$(envval REMOTE_PORT)"; rport="${rport:-3443}"
+  if [ -n "$addr" ] && caddy_up "$addr" "$name" "$rport" "$tsip"; then
+    # its authority's root, made at its first start: to trust on each device
+    cp "$REMOTE_DIR/data/caddy/pki/authorities/local/root.crt" "$REMOTE_DIR/board-ca.crt"
+    reach="$reach  your network   https://$addr:$rport   https://$name.local:$rport\n"
+    ca="  (the :$rport ones have Caddy's certificate: trust .remote/board-ca.crt on each device once)\n"
+  else
+    echo "⚠ the board is not served on your network (above)"; tsip=""
+  fi
+else
+  caddy_down; tsip=""
+fi
+if [ -n "$tsn" ]; then
+  rc=0; ts_up || rc=$?
+  if [ "$rc" = 2 ] && [ -t 0 ]; then
+    printf 'Tailscale lets only root or its operator serve the board: make %s its operator (once, with sudo)? [Y/n] ' "$(id -un)"
+    read -r answer || answer=""
+    case "$answer" in n|N|no) ;; *) if sudo tailscale set --operator="$(id -un)"; then rc=0; ts_up || rc=$?; fi ;; esac
+  fi
+  case "$rc" in
+    0) reach="$reach  your tailnet   https://$tsn:$(ts_port)${tsip:+   https://$tsip:$rport}\n" ;;
+    2) echo "⚠ the board is not at https://$tsn:$(ts_port): Tailscale lets only root or its operator serve (once: sudo tailscale set --operator=$(id -un), then bin/start)"
+       if [ -n "$tsip" ]; then reach="$reach  your tailnet   https://$tsip:$rport\n"; fi ;;
+    *) if [ -n "$tsip" ]; then reach="$reach  your tailnet   https://$tsip:$rport\n"; fi ;;
+  esac
+elif [ "${remote#*,tailscale,}" = "$remote" ]; then
+  ts_down   # not asked for (any more): ours, if it is there, taken off the tailnet
+fi
+
+# -- 4. wait for its first read of GitHub ---------------------------------------------------------
+printf 'waiting for the board to read GitHub'
+for _ in $(seq "$WAIT_S"); do
+  if summary="$(BOARD_KEY="$(envval REPO_BOARD_KEY)" python3 - "$URL" <<'EOF' 2>/dev/null
+import json, os, sys, urllib.request
+key = os.environ.get("BOARD_KEY")   # the board's sign-in: the agents' key (bin/lib/auth.sh made it)
+d = json.load(urllib.request.urlopen(urllib.request.Request(sys.argv[1] + "/api/board", headers={"Authorization": "Bearer " + key} if key else {}), timeout=3))
+if not d.get("at"):
+    sys.exit(1)
+rows, cols = d.get("rows") or [], []
+for c in d.get("columns") or []:
+    n = (len((d.get("plan") or {}).get("steps") or []) if c.get("plan") else
+         len(d.get("gone") or []) if c.get("closed") else sum(r.get("col") == c["key"] for r in rows))
+    cols.append("%s %d" % (c["name"], n))
+print("%s/%s · %d open · %s" % (d.get("owner"), ",".join(sorted({r["repo"] for r in rows})) or "-", len(rows),
+                                " · ".join(cols)))
+ags = d.get("agents") or []
+print("On the roster: %s" % (", ".join("%s%s" % (a.get("name"), " (%s)" % a["fresh"] if a.get("fresh") else "")
+                                       for a in ags) or "nobody yet"))
+for k in ("error", "columns_error", "agents_error", "prs_error", "mail_error"):
+    if d.get(k):
+        print("⚠ %s: %s" % (k, d[k]))
+EOF
+)"; then
+    printf '\n\nboard up: %s   (Agent Room: %s/room)\n%s\n' "$URL" "$URL" "$summary"
+    printf 'Reach it at (the room: /room on any of them):\n  this machine   %s\n%b%b' "$URL" "$reach" "${reach:+$ca}"
+    lobby="$(envval LOBBY_URL)"
+    lobby_name="$(envval LOBBY_NAME)"
+    if [ -n "$lobby" ] && visit_running; then
+      printf 'Lobby: %s as %s (go offline or online from the Visit panel in the room)\n\n' "$lobby" "$lobby_name"
+    elif [ -n "$lobby" ]; then printf 'Lobby: %s, but visit is not running (above)\n\n' "$lobby"
+    else printf "Lobby: none (bin/start asks; see basedverse's lobby/README.md)\n\n"; fi
+    python3 "$ROOT/bin/init-agent" --list || true
+    exit 0
+  fi
+  if ! board_running; then
+    printf '\n'
+    tail -n 20 "$BOARD_DIR/board.log" >&2
+    die "the board stopped (its log, .board/board.log, is above)"
+  fi
+  printf '.'
+  sleep 1
+done
+printf '\n'
+tail -n 20 "$BOARD_DIR/board.log" >&2
+die "the board did not answer at $URL within ${WAIT_S}s (its log, .board/board.log, is above)"

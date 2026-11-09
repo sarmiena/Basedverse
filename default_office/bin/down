@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Stop the board (kanban, Agent Room, messages), and this office's visit (its sign-in, engine, lobby and database),
+# the remote proxy (caddy) and the board's place on your tailnet (tailscale serve, when it is ours),
+# bin/shells, bin/consoles and bin/usage with it.
+# `bin/start` brings them back.
+#
+# Its data stays: messages in .board/, and the roster,
+# claims and the Up next plan live on GitHub. While it is down, agents' `inbox --wait` waiters keep
+# retrying and pick up again when it is back; `forge.py board`, `agents` and `tell` say the board did not
+# answer, and work on issues (show, comment, claim, close) goes straight to GitHub as usual.
+# To go offline but keep the board: Go offline, in the room's Visit panel.
+set -euo pipefail
+case "${1:-}" in   # before anything else: --help must never start or stop anything
+  -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+  "") ;;
+  *) echo "down: it takes no arguments (bin/down --help says what it does)" >&2; exit 2 ;;
+esac
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV="${REPO_ENV:-$ROOT/.env}"; [ -f "$ENV" ] || ENV=/dev/null
+die() { echo "down: $*" >&2; exit 1; }
+
+. "$ROOT/bin/lib/env.sh"     # envval, basedverse
+. "$ROOT/bin/lib/visit.sh"   # visit_down
+. "$ROOT/bin/lib/board.sh"   # board_down, caddy_down, ts_down
+
+"$ROOT/bin/shells" --stop >/dev/null || true     # first: they run on the host, whether or not the board does
+"$ROOT/bin/consoles" --stop >/dev/null || true
+"$ROOT/bin/usage" --stop >/dev/null || true
+visit_down   # SIGTERM: its engine and its Postgres stop with it
+caddy_down
+ts_down
+if ! board_running; then
+  echo "the board is not running (visit and the remote proxy stopped, if they ran)"
+  exit 0
+fi
+board_down
+echo "board stopped, and visit, the remote proxy, bin/shells, bin/consoles and bin/usage with it (messages and the roster are kept; bin/start brings them back)"

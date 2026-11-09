@@ -1,0 +1,19 @@
+# Local config: it holds the GitHub token (REPO_TOKEN). .env.example is the template.
+.env
+__pycache__/
+*.pyc
+# This office's visit: its tokens (new each bin/start), state.json (whether it is offline, and its secret key, its
+# lasting identity to its friends), its program (bin/visit, the release VISIT_VERSION names), its pid and log.
+.visit/
+# The board's sign-in (inside visit): its service token, new each bin/start.
+.auth/
+# The board from other devices (REMOTE=lan): Caddy (its release, its data and authority), and its root certificate,
+# copied out to trust on each device.
+.remote/
+# Which agents have a command running (bin/shells writes it every few seconds), and its pid and log.
+.shells/
+.consoles/
+# The account's usage limits: bin/usage's (plan.json, its pid and log), and the agents' status lines' notes.
+.usage/
+# The board's data on this machine: the agents' messages and the room's state (board.db, room.json), its pid and log.
+.board/

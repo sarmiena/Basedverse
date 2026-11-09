@@ -1,0 +1,468 @@
+#!/usr/bin/env python3
+"""init-agent — add agents: the directories agents work in (checkouts of a repo), AGENTS in .env.
+
+    bin/init-agent                 a prompt: lists the agents, asks for a directory to add, sets it up
+    bin/init-agent DIR [DIR ...]   the same for these directories, no prompt (for scripts)
+    bin/init-agent --all           set up every directory already in AGENTS, no prompt
+    bin/init-agent --list          list them and whether each is set up (bin/start prints this)
+    bin/init-agent --plan DIR      what adding DIR would do, as JSON, changing nothing (the Agent Room asks it first)
+    --dry-run                      say what it would do, change nothing
+    --repo NAME                    the repo to clone (default: the one in REPO_NAMES)
+
+Adding a directory:
+1. If it does not exist, the repo is cloned into it (`gh repo clone`, so your gh git protocol is used).
+2. It is set up by seat/install.py: the /go and /stop skills linked into <dir>/.claude/skills, the
+   board's hooks merged into <dir>/.claude/settings.local.json (backed up first; everything of yours is
+   kept; re-running changes nothing), and ~/.claude/tools/forge.py linked, once per machine.
+3. It is added to AGENTS in the .env.
+
+Its board is its git origin's repo. A checkout of a repo on the home board (REPO_OWNER's REPO_NAMES) works from the
+home board, as every one always has. A checkout of any other GitHub repo works from that repo's board: the repo goes in
+REPO_BOARDS in the .env (the board shows it at its next poll), its directory's settings.local.json gets REPO_BOARD (so
+forge.py there means that repo), and the home repo's flow is made there too: the labels workflow.json's columns set and
+REPO_RANK ranks by, in the home repo's colours, those it lacks. A directory that is no checkout of a GitHub repo gets
+REPO_BOARD=none: a desk in the Agent Room and a console, no board. Nothing of the roster or the plans is ever written
+to the other repo: they stay in the home repo.
+
+At the prompt: a path adds that directory (Tab completes paths; Enter takes the suggested next one), a
+number sets up that listed agent again, and `q` (or Ctrl-D) quits.
+"""
+import argparse
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+ENV = os.environ.get("REPO_ENV") or os.path.join(ROOT, ".env")
+
+_spec = importlib.util.spec_from_file_location("install", os.path.join(ROOT, "seat", "install.py"))
+install = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(install)
+
+
+def read_env(path):
+    out = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            k, sep, v = line.strip().partition("=")
+            if sep and k.strip() and not k.lstrip().startswith("#"):
+                v = v.strip()
+                out[k.strip()] = v[1:-1] if len(v) > 1 and v[0] == v[-1] and v[0] in "'\"" else v
+    return out
+
+
+def absdir(d):
+    """A directory as typed: `~` expanded, relative ones taken from this checkout (as AGENTS reads)."""
+    return os.path.abspath(os.path.join(ROOT, os.path.expanduser(d.strip())))
+
+
+def agents_in(env):
+    return [absdir(d) for d in (env.get("AGENTS") or "").split(",") if d.strip()]
+
+
+def shown(path):
+    home = os.path.expanduser("~")
+    return "~" + path[len(home):] if path == home or path.startswith(home + os.sep) else path
+
+
+def set_line(key, value, comment):
+    """Rewrite the `key` line of the .env (or add one, with `comment` above it), leaving every other line as it is."""
+    with open(ENV, encoding="utf-8") as f:
+        lines = f.read().splitlines(True)
+    line = "%s=%s\n" % (key, value)
+    hit = [i for i, l in enumerate(lines) if re.match(r"\s*%s\s*=" % key, l)]
+    if hit:
+        lines[hit[-1]] = line
+    else:
+        lines += ["\n" if lines and not lines[-1].endswith("\n") else "", "\n# %s\n" % comment, line]
+    with open(ENV, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+
+def set_agents(dirs):
+    set_line("AGENTS", ",".join(shown(d) for d in dirs), "The directories agents work in (bin/init-agent adds them), comma-separated.")
+
+
+NO_BOARD = "none"
+
+
+def origin_repo(d, public="https://github.com"):
+    """(owner, repo) of directory `d`'s git origin (else its first remote) when that is on GitHub (`public`'s host),
+    else None: not a checkout, no remote, or another host."""
+    host = re.escape(re.sub(r"^https?://", "", public).rstrip("/"))
+    def git(*args):
+        try:
+            r = subprocess.run(["git", "-C", d] + list(args), capture_output=True, text=True, timeout=10)
+            return r.stdout.strip() if r.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            return ""
+    url = git("remote", "get-url", "origin") or next((git("remote", "get-url", r) for r in git("remote").split()[:1]), "")
+    m = re.match(r"^(?:git@%s:|ssh://git@%s/|https://(?:[^@/]+@)?%s/)([A-Za-z0-9-]+)/([A-Za-z0-9._-]+?)(?:\.git)?/?$"
+                 % (host, host, host), url)
+    return (m.group(1), m.group(2)) if m else None
+
+
+def status(d):
+    """'ready', 'not set up' (or out of date), or 'missing' (not cloned yet): by install.py's own rules."""
+    if not os.path.isdir(d):
+        return "missing"
+    skills = all(install.same(os.path.join(d, ".claude", "skills", s), os.path.join(install.HERE, "skills", s))
+                 for s in install.SKILLS)
+    try:
+        with open(os.path.join(d, ".claude", "settings.local.json"), encoding="utf-8") as f:
+            cur = json.load(f)
+        hooks = cur == install.merged(cur, install.template())
+    except (OSError, ValueError):
+        hooks = False
+    return "ready" if skills and hooks else "not set up"
+
+
+def suggest(agents):
+    """The next directory in the pattern AGENTS already follows: ~/code/App-3 after ~/code/App-2, or
+    ~/code/App-2 after ~/code/App. None with no agents yet."""
+    if not agents:
+        return None
+    last = agents[-1]
+    m = re.match(r"^(.*?)(?:-(\d+))?$", os.path.basename(last))
+    base, n = m.group(1), int(m.group(2) or 1)
+    while True:
+        n += 1
+        cand = os.path.join(os.path.dirname(last), "%s-%d" % (base, n))
+        if cand not in agents and not os.path.exists(cand):
+            return cand
+
+
+class Session:
+    def __init__(self, a, env):
+        self.a, self.env = a, env
+        self.agents = agents_in(env)
+        self.private = None   # the last repo board_of asked GitHub about: private (True), public (False), unknown
+
+    # -- GitHub, for the other boards: the token forge.py uses (REPO_TOKEN, else gh's)
+    def gh(self, path, method="GET", body=None):
+        tok = (self.env.get("REPO_TOKEN") or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+        if not tok and shutil.which("gh"):
+            r = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=10)
+            tok = r.stdout.strip() if r.returncode == 0 else ""
+        base = (self.env.get("REPO_URL") or "https://api.github.com").rstrip("/")
+        req = Request(base + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                      headers=dict({"Accept": "application/vnd.github+json", "Content-Type": "application/json"},
+                                   **({"Authorization": "Bearer " + tok} if tok else {})))
+        with urlopen(req, timeout=20) as f:
+            raw = f.read()
+            return json.loads(raw.decode("utf-8", "replace")) if raw else None
+
+    def gh_all(self, path):
+        out = []
+        for page in range(1, 11):
+            got = self.gh("%s%sper_page=100&page=%d" % (path, "&" if "?" in path else "?", page)) or []
+            out += got
+            if len(got) < 100:
+                return out
+        return out
+
+    def home_repos(self):
+        return [r for r in re.split(r"[\s,]+", self.env.get("REPO_NAMES") or "") if r]
+
+    def boards(self):
+        return [k for k in re.split(r"[\s,]+", self.env.get("REPO_BOARDS") or "") if k]
+
+    def board_of(self, d):
+        """Directory `d`'s board: '' (the home board's repos), `owner/repo` (another GitHub repo, as GitHub spells
+        it), or NO_BOARD (no GitHub repo at all)."""
+        got = origin_repo(d, self.env.get("REPO_PUBLIC_URL") or "https://github.com")
+        if not got:
+            return NO_BOARD
+        owner, repo = got
+        try:   # GitHub's own spelling (a remote typed in another case, or a repo renamed since), and whether it is public
+            info = self.gh("/repos/%s/%s" % got) or {}
+            owner, repo = info.get("full_name", "%s/%s" % got).split("/")
+            self.private = info.get("private")
+        except (HTTPError, URLError, OSError, ValueError, AttributeError):
+            pass
+        names = [r.lower() for r in self.home_repos()]
+        if owner.lower() == (self.env.get("REPO_OWNER") or "").lower() and (not names or repo.lower() in names):
+            return ""
+        return "%s/%s" % (owner, repo)
+
+    def flow(self):
+        """The labels the home board's flow uses: those workflow.json's columns set (and its claim label), and REPO_RANK's."""
+        path = self.env.get("REPO_WORKFLOW") or os.path.join(ROOT, "workflow.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                wf = json.load(f)
+        except (OSError, ValueError):
+            wf = {}
+        names = [c["label"] for c in wf.get("columns") or [] if isinstance(c, dict) and c.get("label")] + [wf.get("claim_label")]
+        names += [r.strip() for r in (self.env.get("REPO_RANK") or "").split(",")]
+        return list(dict.fromkeys(n for n in names if n))
+
+    def missing_flow(self, key):
+        """(the home board's flow labels repo `key` lacks, the home repo's labels by name): OSError when unreadable."""
+        owner, repo = key.split("/")
+        home = (self.env.get("REPO_HOME") or "").strip() or (self.home_repos() or [""])[0]
+        try:
+            have = {l["name"] for l in self.gh_all("/repos/%s/%s/labels" % (owner, repo))}
+            like = {l["name"]: l for l in self.gh_all("/repos/%s/%s/labels" % (self.env.get("REPO_OWNER"), home))} if home else {}
+        except (HTTPError, URLError) as e:
+            raise OSError(str(e))
+        return [n for n in self.flow() if n not in have], like
+
+    def make_flow(self, key):
+        """The home board's flow in repo `key`: each of its labels the repo lacks, as the home repo has it (colour and
+        description). Best-effort: a label that cannot be made is said, and costs only claims' and drags' labels there."""
+        owner, repo = key.split("/")
+        try:
+            todo, like = self.missing_flow(key)
+        except OSError as e:
+            print("  could not read %s's labels (%s): its columns' labels are not made" % (key, e))
+            return
+        if not todo:
+            return print("  ok   %s has the home board's labels" % key)
+        print("  %s %s in %s" % ("would make" if self.a.dry_run else "make", ", ".join(todo), key), flush=True)
+        for n in todo if not self.a.dry_run else []:
+            src = like.get(n) or {}
+            try:
+                self.gh("/repos/%s/%s/labels" % (owner, repo), "POST",
+                        {"name": n, "color": src.get("color") or "888888", "description": src.get("description") or ""})
+            except (HTTPError, URLError, OSError) as e:
+                print("  could not make %r in %s: %s" % (n, key, e))
+
+    def repo(self):
+        repos = [r for r in re.split(r"[\s,]+", self.env.get("REPO_NAMES") or "") if r]
+        return self.a.repo or (repos[0] if len(repos) == 1 else None)
+
+    def clone(self, d):
+        owner, repo = self.env.get("REPO_OWNER"), self.repo()
+        if not owner or not repo:
+            print("  %s does not exist, and there is no one repo to clone into it: pass --repo NAME" % shown(d))
+            return False
+        cmd = (["gh", "repo", "clone", "%s/%s" % (owner, repo), d] if shutil.which("gh")
+               else ["git", "clone", "git@github.com:%s/%s.git" % (owner, repo), d])
+        print("  %s: %s" % ("would run" if self.a.dry_run else "run", " ".join(cmd)), flush=True)
+        if self.a.dry_run:
+            return True
+        if subprocess.run(cmd).returncode:
+            print("  the clone failed (above): nothing else was done")
+            return False
+        return True
+
+    def plan(self, d):
+        """What add(d) would do, changing nothing (the Agent Room's New agent shows it before you confirm): {dir, shown,
+        board ('' the home board's, owner/repo, NO_BOARD), private (the repo's, when GitHub said), agents (in AGENTS
+        already), refused (why it cannot be set up, else null), steps: [what it would do, a line each]}."""
+        out = {"dir": d, "shown": shown(d), "board": None, "private": None, "agents": d in self.agents, "refused": None, "steps": []}
+        if os.path.realpath(d) == os.path.realpath(ROOT):
+            out["refused"] = "it is the board's own checkout, not one agents work in"
+            return out
+        if not os.path.isdir(d):
+            out["refused"] = "there is no such directory"
+            return out
+        self.private = None
+        board = out["board"] = self.board_of(d)
+        out["private"] = self.private
+        if board and board != NO_BOARD:
+            clash = [r for r in self.home_repos() + [k.split("/")[1] for k in self.boards() if k.lower() != board.lower()]
+                     if r.lower() == board.split("/")[1].lower()]
+            if clash:
+                out["refused"] = "another board has a repo named %s already, and repo#N would mean either" % clash[0]
+                return out
+        steps = out["steps"]
+        if not all(install.same(os.path.join(d, ".claude", "skills", n), os.path.join(install.HERE, "skills", n)) for n in install.SKILLS):
+            steps.append("link the /go and /stop skills into its .claude/skills")
+        try:
+            with open(os.path.join(d, ".claude", "settings.local.json"), encoding="utf-8") as f:
+                cur = json.load(f)
+        except (OSError, ValueError):
+            cur = None
+        if not isinstance(cur, dict) or cur != install.merged(cur, install.template(), board or None):
+            steps.append("%s the board's hooks %s .claude/settings.local.json%s" % (
+                "write" if cur is None else "merge", "into" if cur is None else "into (backed up first)",
+                ", with REPO_BOARD=%s" % board if board else ""))
+        try:
+            todo, _ = install.unignored(d)
+            if todo:
+                steps.append("hide %s from git in .git/info/exclude (local, never committed)" % ", ".join(todo))
+        except OSError as e:
+            steps.append("(%s: hide the seat's files from git by hand)" % e)
+        if board and board != NO_BOARD:
+            try:
+                labels, _ = self.missing_flow(board)
+                if labels:
+                    steps.append("make %d label%s in %s%s: %s" % (len(labels), "" if len(labels) == 1 else "s", board,
+                                                                  " (a public repo)" if self.private is False else "", ", ".join(labels)))
+            except OSError as e:
+                steps.append("make the home board's labels in %s (could not read its labels: %s)" % (board, e))
+            if board.lower() not in [k.lower() for k in self.boards()]:
+                steps.append("add %s to REPO_BOARDS in the .env: a board of its own, beside the others" % board)
+        if d not in self.agents:
+            steps.append("add %s to AGENTS in the .env" % shown(d))
+        return out
+
+    def add(self, d):
+        """Clone `d` if it is missing, set it up on its board, and record it in AGENTS. True when all of it worked."""
+        if os.path.realpath(d) == os.path.realpath(ROOT):
+            print("  %s is this checkout (the board's tools), not one agents work in" % shown(d))
+            return False
+        if not os.path.exists(d) and not self.clone(d):
+            return False
+        if os.path.isdir(d) and not os.path.isdir(os.path.join(d, ".git")):
+            print("  note: %s is not a git checkout; setting it up anyway" % shown(d))
+        board = self.board_of(d) if os.path.isdir(d) else ""
+        if board and board != NO_BOARD:
+            clash = [r for r in self.home_repos() + [k.split("/")[1] for k in self.boards() if k.lower() != board.lower()]
+                     if r.lower() == board.split("/")[1].lower()]
+            if clash:
+                print("  %s is a checkout of %s, but another board has a repo named %s already, and repo#N would mean "
+                      "either: not set up" % (shown(d), board, clash[0]))
+                return False
+            print("  %s is a checkout of %s: a board of its own" % (shown(d), board))
+        elif board == NO_BOARD:
+            print("  %s is no checkout of a GitHub repo: a desk and a console in the Agent Room, no board" % shown(d))
+        run = install.Run(self.a.dry_run)
+        run.link_forge()
+        if os.path.isdir(d):
+            # The home board's own directories keep whatever they have (None): nothing changes for them.
+            run.project(d, board or None)
+        else:
+            print("  would set up %s once it is cloned" % shown(d))
+        for n in run.notes:
+            print("  note: " + n)
+        if run.errors:
+            print("  %s was not fully set up (above)" % shown(d))
+            return False
+        if board and board != NO_BOARD:
+            self.make_flow(board)
+            if board.lower() not in [k.lower() for k in self.boards()]:
+                if self.a.dry_run:
+                    print("  would add %s to REPO_BOARDS" % board)
+                else:
+                    self.env["REPO_BOARDS"] = ",".join(self.boards() + [board])
+                    set_line("REPO_BOARDS", self.env["REPO_BOARDS"],
+                             "The other boards: each GitHub repo an agent directory is a checkout of, beside the home board's (bin/init-agent adds them).")
+                    print("  added %s to REPO_BOARDS in %s: the board shows it at its next poll" % (board, shown(ENV)))
+        if d not in self.agents:
+            self.agents.append(d)
+            if self.a.dry_run:
+                print("  would add %s to AGENTS" % shown(d))
+            else:
+                set_agents(self.agents)
+                print("  added %s to AGENTS in %s" % (shown(d), shown(ENV)))
+        return True
+
+    def listing(self):
+        print("\nAgents (AGENTS in %s):" % shown(ENV))
+        if not self.agents:
+            print("  (none yet)")
+        for i, d in enumerate(self.agents, 1):
+            print("  %d. %-44s %s" % (i, shown(d), status(d)))
+
+    def prompt(self):
+        try:
+            import readline
+            readline.set_completer_delims(" \t\n,")
+            readline.set_completer(complete)
+            readline.parse_and_bind("tab: complete")
+        except ImportError:
+            pass
+        while True:
+            self.listing()
+            s = suggest(self.agents)
+            try:
+                got = input("\nAdd an agent — a directory, or a number to set one up again (%sq: quit): "
+                            % ("Enter: %s, " % shown(s) if s else "")).strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return
+            if got.lower() in ("q", "quit", "exit"):
+                return
+            if not got:
+                if not s:
+                    return
+                try:
+                    ok = input("  add %s? [Y/n] " % shown(s)).strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    return
+                if ok not in ("", "y", "yes"):
+                    continue
+                got = s
+            if got.isdigit():
+                n = int(got)
+                if not 1 <= n <= len(self.agents):
+                    print("  no agent %d" % n)
+                    continue
+                self.add(self.agents[n - 1])
+            else:
+                self.add(absdir(got))
+
+
+def complete(text, state):
+    """Tab completion for directory paths at the prompt."""
+    import glob
+    hits = [p + ("/" if os.path.isdir(p) else "") for p in glob.glob(os.path.expanduser(text) + "*")]
+    if text.startswith("~"):
+        home = os.path.expanduser("~")
+        hits = ["~" + h[len(home):] if h.startswith(home) else h for h in hits]
+    return (sorted(hits) + [None])[state]
+
+
+def list_agents(sess):
+    """Where an agent can join from: each AGENTS directory, whether it is set up, and how to join."""
+    print("Agent directories (AGENTS in %s):" % shown(ENV))
+    if not sess.agents:
+        print("  (none yet: bin/init-agent adds one)")
+        return
+    width = max(len(shown(d)) for d in sess.agents)
+    states = [(d, status(d)) for d in sess.agents]
+    for d, st in states:
+        print("  %-*s  %s" % (width, shown(d), {"ready": "ready", "not set up": "not set up: bin/init-agent",
+                                                  "missing": "not cloned: bin/init-agent"}[st]))
+    ready = [d for d, st in states if st == "ready"]
+    if ready:
+        print("To join the board and the Agent Room: cd %s && claude, then /go" % shown(ready[0]))
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("dirs", nargs="*", metavar="DIR", help="directories to add, without the prompt")
+    p.add_argument("--all", action="store_true", help="set up every directory in AGENTS, without the prompt")
+    p.add_argument("--list", action="store_true", help="list the AGENTS directories and whether each is set up")
+    p.add_argument("--plan", action="store_true", help="what adding the one DIR would do, as JSON; changes nothing")
+    p.add_argument("--repo", help="the repo to clone into a missing directory (default: the one in REPO_NAMES)")
+    p.add_argument("--dry-run", action="store_true", help="say what it would do, change nothing")
+    a = p.parse_args()
+    if not os.path.isfile(ENV):
+        sys.exit("init-agent: no %s (it names the repos, and AGENTS)" % ENV)
+    env = dict(read_env(ENV), **{k: v for k, v in os.environ.items() if k in ("REPO_OWNER", "REPO_NAMES", "AGENTS", "REPO_BOARDS")})
+    sess = Session(a, env)
+    if a.list:
+        return list_agents(sess)
+    if a.plan:
+        if len(a.dirs) != 1:
+            sys.exit("init-agent: --plan takes one DIR")
+        return print(json.dumps(sess.plan(absdir(a.dirs[0]))))
+    if a.dirs or a.all:
+        todo = [absdir(d) for d in a.dirs] + (list(sess.agents) if a.all else [])
+        if not todo:
+            sys.exit("init-agent: AGENTS in %s is empty" % ENV)
+        bad = [d for d in todo if not sess.add(d)]
+        sess.listing()
+        sys.exit(1 if bad else 0)
+    sess.prompt()
+    ready = [d for d in sess.agents if status(d) == "ready"]
+    if ready and not a.dry_run:
+        print("\nNext: bin/start (the board), then `claude` in an agent directory and /go, e.g.\n"
+              "  cd %s && claude" % shown(ready[-1]))
+    if a.dry_run:
+        print("\n(dry run: nothing was changed)")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,958 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Board</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&display=swap">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect x='1' y='2' width='4' height='12' rx='1' fill='%231f883d'/><rect x='6' y='2' width='4' height='8' rx='1' fill='%23888'/><rect x='11' y='2' width='4' height='5' rx='1' fill='%23888'/></svg>">
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #eceef2; --card: #ffffff; --ink: #1c2128; --muted: #636c76;
+  --line: #d6dae0; --accent: #1f883d; --warn: #b7791f; --bad: #c62828; --chip: #eef1f4; --ring: #2563eb;
+  --drop: #dff3e4; --shadow: 0 1px 2px rgba(0,0,0,.08);
+  --d0: #cf222e; --d1: #9a6700; --d2: #1f883d; --d3: #0969da; --d4: #8c959f; --link: #0969da;
+  --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;   /* the party's cards, as the room has them (party.js) */
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1216; --panel: #161b22; --card: #1f252d; --ink: #e6edf3; --muted: #8b949e;
+    --line: #2d333b; --accent: #3fb950; --warn: #d29922; --bad: #f85149; --chip: #262d36; --ring: #3b82f6;
+    --drop: #1b3324; --shadow: 0 1px 2px rgba(0,0,0,.4);
+    --d0: #f85149; --d1: #d29922; --d2: #3fb950; --d3: #58a6ff; --d4: #6e7681; --link: #58a6ff;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1216; --panel: #161b22; --card: #1f252d; --ink: #e6edf3; --muted: #8b949e;
+  --line: #2d333b; --accent: #3fb950; --warn: #d29922; --bad: #f85149; --chip: #262d36; --ring: #3b82f6;
+  --drop: #1b3324; --shadow: 0 1px 2px rgba(0,0,0,.4);
+  --d0: #f85149; --d1: #d29922; --d2: #3fb950; --d3: #58a6ff; --d4: #6e7681; --link: #58a6ff;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { position: sticky; top: 0; z-index: 5; background: var(--bg);
+  border-bottom: 1px solid var(--line); padding: 10px 16px; display: flex; flex-wrap: wrap;
+  gap: 8px; align-items: center; }
+header h1 { font-size: 16px; margin: 0 8px 0 0; }
+/* The boards, one per GitHub repo the agents work in (the home board first): which one this page shows. */
+header .boards { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+header .boards[hidden] { display: none; }
+header .boards button { border: 0; border-radius: 0; font-size: 12px; padding: 2px 10px; background: none; color: var(--muted); }
+header .boards button + button { border-left: 1px solid var(--line); }
+header .boards button.on { background: var(--ink); color: var(--bg); }
+header .boards button.err { color: var(--bad); }
+header .boards button.on.err { background: var(--bad); color: #fff; }
+/* Each board's colour (common.js boardColor): a dot on its tab; on each agent's card, its left edge, and its board's name
+   in it (party.js). Only with more than one board. */
+header .boards button i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--board); vertical-align: 0; }
+/* An agent's terminal (console.js): from its row (its focused view), its face on a card it holds, "claimed by" in a quick view. */
+:root { --con-z: 16; }
+.who[data-con] { cursor: pointer; }
+#qv .qm .qcon { display: inline-flex; align-items: center; gap: 4px; font: inherit; padding: 1px 8px 1px 2px; border: 1px solid var(--line); border-radius: 999px; background: none; color: inherit; cursor: pointer; }
+#qv .qm .qcon:hover { border-color: var(--accent); }
+header a.room { font-size: 12px; color: var(--muted); text-decoration: none; border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; }
+header a.room:hover { color: var(--ink); border-color: var(--muted); }
+header form.signout { display: inline; margin: 0; }
+header form.signout button { font: inherit; font-size: 12px; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; cursor: pointer; }
+header form.signout button:hover { color: var(--ink); border-color: var(--muted); }
+header input, header select, button {
+  font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line);
+  border-radius: 6px; padding: 5px 8px; }
+header input[type=search] { min-width: 160px; flex: 1 1 160px; max-width: 280px; }
+button { cursor: pointer; }
+button:hover { border-color: var(--muted); }
+label.tog { display: inline-flex; gap: 4px; align-items: center; color: var(--muted); }
+#status { color: var(--muted); font-size: 12px; display: inline-flex; gap: 6px; align-items: center; }
+#status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+#status.stale { color: var(--bad); }
+#status.stale .dot { background: var(--bad); }
+/* ---- integrations: what the board is built from, one chip each, healthy by its own report. Each
+   chip is a glance (hover for the detail). */
+.bar { margin-left: auto; display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
+#integ { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+/* ---- the account's usage limits, as /usage shows them: the session's and the week's, a bar each. */
+#usage { display: inline-grid; grid-template-columns: auto 110px auto auto; gap: 1px 8px; align-items: center; font-size: 11px; line-height: 15px; color: var(--muted); }
+#usage:empty { display: none; }
+#usage .ub { height: 4px; border-radius: 2px; background: var(--chip); overflow: hidden; }
+#usage .ub i { display: block; height: 100%; background: #4a7fd6; border-radius: 2px; }
+#usage .ub i.high { background: var(--warn); }
+#usage .ub i.full { background: var(--bad); }
+#usage .up { color: var(--ink); text-align: right; }
+.ig { display: inline-flex; gap: 5px; align-items: center; font-size: 12px; line-height: 18px; color: var(--muted);
+  background: var(--chip); border: 1px solid transparent; border-radius: 10px; padding: 1px 8px; }
+.ig .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+.ig.warn .dot { background: var(--warn); }
+.ig.bad { color: var(--bad); } .ig.bad .dot { background: var(--bad); }
+/* Five tabs on a phone: each keeps its label on one line, and the row scrolls if they do not fit. */
+.tabs { display: none; gap: 4px; padding: 8px 16px 0; overflow-x: auto; }
+.tabs button { flex: 1 0 auto; padding: 5px 8px; white-space: nowrap; }
+.tabs button.on { border-color: var(--accent); color: var(--accent); }
+main { display: grid; grid-template-columns: repeat(var(--ncols, 5), minmax(0, 1fr)); gap: 12px;
+  padding: 12px 16px 40px; align-items: start; }
+.col { background: var(--panel); border-radius: 10px; padding: 8px; min-height: 120px;
+  border: 2px solid transparent; }
+.col.next { border-color: var(--line); }
+.col.can { border-style: dashed; border-color: var(--line); }  /* a valid drop target, while dragging */
+.col.over { border-style: solid; border-color: var(--accent); background: var(--drop); }
+.col h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; margin: 4px 4px 8px;
+  display: flex; justify-content: space-between; color: var(--muted); }
+.col h2 b { color: var(--ink); }
+.col h2 b.wip { color: var(--bad); }  /* over the column's WIP limit */
+.col .hint { font-size: 12px; color: var(--muted); margin: -4px 4px 8px; }
+.col .hint a { color: inherit; }
+/* A column agents pick from is grouped by rank: a tier header folds its cards, a long tier shows its first few. */
+.tier { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--ink); margin: 10px 2px 6px;
+  font-weight: 600; cursor: pointer; user-select: none; }
+.tier:first-child { margin-top: 2px; }
+.tier span { color: var(--muted); font-weight: 400; }
+.tier .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dc); flex: none; }
+/* min(): a column narrower than one track (many equal columns on a small desktop) gets one
+   full-width track, never cards spilling out of it. */
+.tierb { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(165px, 100%), 1fr)); gap: 6px; }
+.tierb .card { margin: 0; }
+button.more { margin: 6px 2px 0; padding: 1px 8px; font-size: 12px; color: var(--muted); background: transparent; }
+@media (min-width: 901px) { .col .list { max-height: calc(100vh - 140px); overflow: auto; } }
+.card { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--dc, var(--line)); border-radius: 8px;
+  padding: 6px 9px; margin-bottom: 6px; box-shadow: var(--shadow); cursor: pointer; position: relative; }
+.card:hover { border-color: var(--muted); }
+.card[draggable="true"] { cursor: grab; }
+.card.dragging { opacity: .4; }
+.card.gone { opacity: .55; }
+.card.gone .t { text-decoration: line-through; }
+.card.dim { opacity: .6; }  /* claimed by an agent, in a column agents pick from: not offerable right now */
+.card .top { display: flex; gap: 6px; align-items: baseline; font-size: 12px; color: var(--muted); }
+[data-d="0"] { --dc: var(--d0); } [data-d="1"] { --dc: var(--d1); } [data-d="2"] { --dc: var(--d2); }
+[data-d="3"] { --dc: var(--d3); } [data-d="4"] { --dc: var(--d4); }
+.card .top .m { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .top a { color: var(--muted); text-decoration: none; font-variant-numeric: tabular-nums; }
+.card .top a:hover { text-decoration: underline; }
+.card .n { font-weight: 700; color: var(--accent); min-width: 1.4em; }
+.card .t { margin: 2px 0 0; word-break: break-word; }
+.card .chips { margin-top: 4px; }
+.card .sub { font-size: 12px; color: var(--muted); margin: -2px 0 4px; word-break: break-word; }
+.card .acts { margin-left: auto; display: flex; gap: 2px; }
+.card .acts button { padding: 0 6px; font-size: 12px; line-height: 20px; background: transparent; border-color: transparent; color: var(--muted); }
+.card .acts button:hover { border-color: var(--line); color: var(--ink); }
+.card .acts button:disabled { visibility: hidden; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip { font-size: 11px; background: var(--chip); border-radius: 10px; padding: 1px 7px; color: var(--muted); }
+.chip.blk { color: var(--bad); }
+.chip a { color: inherit; text-decoration: none; }  /* a ref in a chip opens the quick view; it keeps the chip's colour */
+.chip.epic { color: var(--warn); }
+.chip.hand { color: var(--warn); }
+.slot { height: 0; border-top: 3px solid var(--accent); border-radius: 2px; margin: -1px 0 5px; }
+.empty { color: var(--muted); font-size: 12px; padding: 8px 4px; }
+/* Your agents, as a party (party.js, the Agent Room's list of them): a picture and a card each, in a STABLE order (join
+   order), every cell the same width, so nothing moves or resizes when an agent acts. A click on one: its focused view. */
+#agents .party { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr)); gap: 2px 8px; }
+#agents .party .ag-card { border: 1px solid var(--line); border-left: 7px solid var(--board, var(--line)); box-shadow: var(--shadow); }
+#agents .party .ag-x { font-size: 12px; color: #57606a; font-variant-numeric: tabular-nums; }
+#agents .party .ag-x button { margin-left: 6px; padding: 0 6px; font: 12px/18px system-ui, sans-serif; color: #57606a; background: transparent; border-color: transparent; }
+#agents .party .ag-x button:hover { border-color: #d0d7de; color: #1c2128; }
+#agents .party .ag-x button.armed { color: #fff; background: var(--bad); border-color: var(--bad); }
+#agents .party .ag-cl a { color: #0969da; text-decoration: none; font-weight: 700; }
+#agents .party .ag-cl a:hover { text-decoration: underline; }
+#agents .party .ag-cl i { font-style: normal; color: #57606a; }
+#agents .party .ag-row.focus { box-shadow: inset 0 0 0 2px var(--ring); }
+.badge.wt { background: #e8a33d; color: #1c2128; }
+#agents > .hd .lbl, #agents > .hd .badge { flex: none; white-space: nowrap; }
+/* A claimed card wears its holder's identicon, ringed in its colour (the left edge is the rank). */
+/* The identicon sits in a right-hand gutter, centred, so it never pushes the card's own rows. */
+.card.claimed { padding-right: 42px; }
+.who { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); line-height: 0; }
+.who svg { border-radius: 50%; box-shadow: 0 0 0 2px var(--who); }
+/* Open PRs: finished work waiting on review/merge, invisible to the issue columns. One chip each, in a STABLE order (repo#n). */
+.pr { display: flex; gap: 8px; align-items: center; min-width: 0; min-height: 36px; background: var(--card);
+  border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 8px; padding: 2px 8px 2px 10px;
+  font-size: 13px; color: var(--ink); text-decoration: none; box-shadow: var(--shadow); }
+.pr:hover { border-color: var(--muted); }
+.pr.draft { border-style: dashed; border-left-color: var(--muted); opacity: .75; }
+.pr svg { flex: none; border-radius: 50%; }
+.pr .n { color: var(--accent); font-weight: 600; flex: none; }
+.pr .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr .m { color: var(--muted); flex: none; font-size: 12px; }
+.pr.orphan { border-left-color: var(--warn); }
+.pr.orphan .m { color: var(--warn); font-weight: 600; }
+#toast { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 20;
+  background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px;
+  max-width: calc(100% - 32px); display: none; }
+#toast.bad { background: var(--bad); color: #fff; }
+/* ---- the quick view: an issue in a floating panel over the board */
+#qv { position: fixed; top: 60px; right: 16px; bottom: 16px; width: min(600px, calc(100% - 32px)); z-index: 15;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.28);
+  display: none; flex-direction: column; }
+#qv.open { display: flex; }
+#qv .qh { display: flex; gap: 8px; align-items: flex-start; padding: 12px 14px 8px; }
+#qv .qh .id { font-weight: 700; white-space: nowrap; color: var(--muted); }
+#qv .qh .tt { flex: 1; font-weight: 600; font-size: 15px; }
+#qv .qh .ic { flex: none; font: inherit; padding: 1px 9px; border: 1px solid var(--line); border-radius: 6px;
+  text-decoration: none; color: var(--ink); background: var(--card); line-height: 22px; }
+#qv .qm { padding: 0 14px 10px; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center;
+  border-bottom: 1px solid var(--line); font-size: 12px; }
+#qv .qm .chip.closed a { text-decoration: line-through; }
+#qv .qb a, #qv .qm a { color: var(--link); }
+#qv .qb { overflow: auto; padding: 4px 14px 14px; }
+#qv .md { overflow-wrap: anywhere; }
+#qv .md pre { overflow: auto; background: var(--panel); padding: 8px; border-radius: 6px; }
+#qv .md code { background: var(--panel); padding: 0 3px; border-radius: 3px; }
+#qv .md pre code { padding: 0; }
+#qv .md img { max-width: 100%; }
+#qv .md table { border-collapse: collapse; display: block; overflow: auto; }
+#qv .md td, #qv .md th { border: 1px solid var(--line); padding: 2px 6px; }
+#qv .md blockquote { margin: 6px 0; padding-left: 10px; border-left: 3px solid var(--line); color: var(--muted); }
+#qv .by { color: var(--muted); font-size: 12px; }
+#qv .cm { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 8px; }
+#qv .cmh { margin-top: 14px; color: var(--muted); font-size: 12px; font-weight: 600; }
+#qv .err { color: var(--bad); }
+@media (max-width: 640px) { #qv { top: 8px; right: 8px; bottom: 8px; width: calc(100% - 16px); } }
+/* ---- Closed lately: the Done column, rows that left the board lately */
+.card.done .t { color: var(--muted); }
+.card.done .why { font-size: 12px; color: var(--warn); }
+/* ---- the strips: messages, agents, PRs */
+.strip { padding: 10px 16px 0; }
+.strip > .hd { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.strip > .hd .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.strip > .hd .hint { font-size: 12px; color: var(--muted); }
+.strip > .hd button { margin-left: auto; padding: 2px 8px; font-size: 12px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(440px, 100%), 1fr)); gap: 6px; }
+.mailp button { padding: 3px 9px; font-size: 12px; }
+button.go { border-color: var(--accent); color: var(--accent); }
+.mailp select, .mailp textarea, .mailp input { font: inherit; color: var(--ink); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; min-width: 0; width: 100%; }
+#mail > .hd { background: var(--card); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow);
+  min-height: 36px; padding: 2px 8px 2px 10px; margin: 0; cursor: pointer; }
+#mail > .hd .prev { flex: 1 1 auto; min-width: 0; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#mail > .hd .prev b { color: var(--ink); font-weight: 500; }
+#mail > .hd button { margin-left: 0; flex: none; }
+#mail.shut .mailp { display: none; }
+#mail:not(.shut) > .hd { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.mailp { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; box-shadow: var(--shadow); }
+.mailp .compose { display: grid; grid-template-columns: minmax(120px, 220px) 1fr auto; gap: 6px; align-items: start; }
+.mailp .compose textarea { min-height: 34px; resize: vertical; }
+.mlist { margin-top: 8px; max-height: 260px; overflow: auto; }
+.msg { font-size: 12px; padding: 5px 6px; border-radius: 6px; border-top: 1px solid var(--line); word-break: break-word; }
+.msg.unread { background: var(--drop); }
+.msg .mh { color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; }
+.msg .mh b { color: var(--ink); font-weight: 600; }
+.msg .mb { white-space: pre-wrap; margin-top: 2px; }
+.badge { background: var(--bad); color: #fff; border-radius: 10px; padding: 0 7px; font-size: 11px; font-weight: 700; }
+@media (max-width: 700px) { .mailp .compose { grid-template-columns: 1fr; } }
+@media (max-width: 900px) {
+  .tabs { display: flex; }
+  main { grid-template-columns: minmax(0, 1fr); }
+  .col { display: none; }
+  .col.show { display: block; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Board</h1>
+  <span class="boards" id="boards" hidden aria-label="Boards"></span>
+  <input type="search" id="q" placeholder="filter: text, repo#n, label">
+  <select id="rank"><option value="">any rank</option></select>
+  <label class="tog"><input type="checkbox" id="epics"> epics</label>
+  <span class="bar"><span id="usage" aria-label="Usage limits"></span><a class="room" href="/room" title="The Agent Room: the board as a 3D office, one desk per agent">Agent Room ↗</a><form class="signout" method="post" action="/logout"><button title="Sign out of the board">sign out</button></form><span id="integ" aria-label="Integrations"></span>
+  <span id="status"><span class="dot"></span><span id="stxt">connecting…</span></span></span>
+</header>
+<!-- The messages sit ABOVE the agents: the strip grows and shrinks as agents come and go, and
+     nothing the owner clicks may move under the cursor when it does. -->
+<section id="mail" class="strip"></section>
+<section id="agents" class="strip"></section>
+<section id="prs" class="strip"></section>
+<div class="tabs" id="tabs"></div>
+<main id="board"></main>
+<div id="toast"></div>
+<aside id="qv" role="dialog" aria-label="Issue quick view"></aside>
+
+<script src="console.js"></script>
+<script src="vendor/three.min.js"></script>
+<script src="common.js" onerror="document.body.insertAdjacentHTML('afterbegin', '&lt;div style=&quot;padding:10px;background:var(--bad);color:#fff;font-weight:600&quot;&gt;common.js did not load, so the board cannot draw. Reload the page; if it stays, restart the board (bin/board-restart).&lt;/div&gt;')"></script>
+<script src="party.js"></script>
+<script>
+// The columns are the workflow's (workflow.json, served as `columns`): the plan column IS the RESUME
+// plan /go starts from (the RESUME issue in the home repo), the closed column shows the rows that left,
+// and every other column is a rule column the server sorts each row into. A card dropped on a column
+// with `drop` is MOVED there (its labels change on GitHub); nothing else on the board writes.
+// FALLBACK: an older server that serves no columns gets the board it always had.
+const FALLBACK = [
+  { key: "next",    name: "Up next", plan: true },
+  { key: "ready",   name: "Ready",   pick: true, hint: "Highest rank first, then oldest. Tap a rank to fold it. Drag one into Up next, or press +. Dimmed: another agent claims it." },
+  { key: "blocked", name: "Blocked", hint: "Waiting on an open blocked-by edge." },
+  { key: "parked",  name: "Parked",  hint: "Carries the parked label." },
+  { key: "gone",    name: "Closed lately", closed: true },
+];
+let COLS = FALLBACK;
+const MAXLINE = 110; // server + forge.py refuse longer plan lines
+let DATA = { rows: [], plan: null }, byId = {}, ver = null, dragging = null, pending = false, tab = "next", lastAt = 0;
+
+const $ = s => document.querySelector(s);
+function store(k, v) { try { if (v === undefined) return localStorage.getItem("gb." + k); localStorage.setItem("gb." + k, v); } catch (e) { return null; } }
+
+function toast(msg, bad) {
+  const t = $("#toast"); t.textContent = msg; t.className = bad ? "bad" : ""; t.style.display = "block";
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = "none", bad ? 6000 : 2500);
+}
+
+function status() {
+  const s = $("#status"), age = lastAt ? Math.max(0, Math.round(Date.now() / 1000 - lastAt)) : null;
+  const bad = DATA.error || age === null || age > 30;
+  s.className = bad ? "stale" : "";
+  $("#stxt").textContent = DATA.error ? "forge: " + DATA.error
+    : age === null ? "connecting…"
+    : (age > 30 ? "stale · " : "live · ") + DATA.rows.length + " open · read " + age + "s ago" + (DATA.truncated ? " · ⚠ TRUNCATED" : "") + (DATA.columns_error ? " · ⚠ " + DATA.columns_error : "");
+  tickAges();
+}
+setInterval(status, 1000);
+
+// ---- the agent roster: who is working, on what (the AGENTS issue, written by forge.py agent)
+// Freshness is the whole point of the strip: a session that crashed just stops acting, and turns red.
+// The server judges it (each agent's served `fresh`, board/roster.py) and redraws the page when a
+// class changes; the ticker here only keeps the "Xm ago" text moving between redraws.
+function tickAges() {
+  document.querySelectorAll("#party .ag-row[data-seen]").forEach(el => {
+    const t = el.querySelector(".age"); if (t) t.textContent = fmtAge(ageSecs(el.dataset.seen)) + " ago";
+  });
+}
+// A link to an issue that opens the quick view; a modified click (new tab) still goes to the forge.
+// `title` is for a ref the board does not hold (closed, off-board) when the caller knows it.
+function refLink(ref, cls, inner, title) {
+  const t = byId[ref] ? byId[ref].title : title;
+  return `<a${cls ? ` class="${cls}"` : ""} data-qv="${esc(ref)}" href="${esc(refUrl(ref))}" target="_blank" rel="noopener" title="${esc(ref + (t ? " · " + t : ""))}">${inner}</a>`;
+}
+function refUrl(ref) { const r = byId[ref]; return r ? r.url : `${DATA.forge}/${refOwner(DATA, ref)}/${ref.replace("#", "/issues/")}`; }
+function who(ref) {
+  const a = claimedBy[ref]; if (!a) return "";
+  return `<span class="who" data-con="${esc(a.name)}" title="claimed by ${esc(a.name)} (${esc(a.seat)}, ${fmtAge(ageSecs(a.seen))} ago) — another agent's live work · click: its terminal">${avatar(a.session, 26)}</span>`;
+}
+// The card's own class + colour when an agent holds it; "" when nobody does.
+function claimAttrs(ref) {
+  const a = claimedBy[ref]; if (!a) return "";
+  return ` claimed" style="--who:hsl(${hash32(a.session) % 360} 55% 45%)`;
+}
+// The armed × lives HERE, not in the DOM: the strip re-renders whenever any agent acts, and an
+// armed state kept on the button was wiped between the two taps.
+let claimedBy = {}, armedRm = null, armedT = null;
+// ---- open PRs (server.py prs_view), each with the agent that owns it as the server judged it
+function renderPrs() {
+  const ps = (DATA.prs || []).slice().sort((a, b) => a.id.split("#")[0].localeCompare(b.id.split("#")[0]) || +a.id.split("#")[1] - +b.id.split("#")[1]);
+  $("#prs").innerHTML = `<div class="hd"><span class="lbl">PRs ${ps.length}</span>${DATA.prs_error ? `<span class="badge" title="${esc(DATA.prs_error)}">stale</span>` : ""}
+      <span class="hint">open on the forge · finished work waiting on review or merge</span></div>
+    <div class="grid">` + (ps.length ? ps.map(p => {
+    // The owning agent is the server's call (the claim on the issue the PR is for, else its session
+    // link); the page only shows it.
+    const o = p.owner || { state: "unattributed" };
+    const a = o.state === "owned" ? o : null, orphan = o.state === "orphaned";
+    const by = a ? a.name : p.author;
+    // The row shows a short session; the full one, and the forge author, are in the tooltip.
+    const full = String(o.was || ""), was = full.length > 14 ? full.slice(0, 14) + "…" : full;
+    const who = a ? "held by " + esc(by) + " (" + esc(a.via) + ")"
+      : orphan ? "orphaned: " + esc(o.was) + " left (its session is not on the roster) · opened by " + esc(p.author)
+      : o.state === "unknown" ? "owner unknown: the board could not read the roster · by " + esc(by)
+      : "by " + esc(by) + " (no agent to attribute it to)";
+    return `<a class="pr${p.draft ? " draft" : ""}${orphan ? " orphan" : ""}" href="${esc(p.url)}" target="_blank" rel="noopener" title="${esc(p.id)} · ${esc(p.title)} · ${who}${p.draft ? " · draft" : ""}">
+      ${a ? avatar(a.session, 20) : ""}<span class="n">${esc(p.id)}</span><span class="t">${esc(p.title)}</span>
+      <span class="m">${a ? "" : orphan ? "orphaned: " + esc(was) + " left" : o.state === "unknown" ? "owner unknown · " + esc(by) : esc(by)}${p.comments ? " 💬 " + p.comments : ""}</span></a>`;
+  }).join("") : '<span class="empty">none open</span>') + "</div>";
+}
+// ---- your agents, as a party (party.js: the Agent Room's list of them, the same making; the user, 2026-11-02: "retrofit
+// this into the kanban board view"): a row each, in the roster's order (join order: nothing moves under the pointer when
+// one acts), its head as the room makes it (its face, its halo of context, slumped when idle, grey when dead, dressed for
+// the room's environment), what it is up to drawn on it (a command running, between turns as the room's page plays it
+// out: room.acts, working, its subagents, a "!" when it waits on you), and its card: its name, seat and board, what it
+// waits on you for, what it is doing, what it holds (each a quick view), how fresh, its × (off the roster, two taps).
+// Over a row, the legend of its picture (party.js). A click on a row is its focused view, as a click on it in the room:
+// its ticket (the one it holds, or its last) in the quick view, and its terminal beside it.
+const roomOf = d => (d && d.room) || {};
+// Malaria, as the room keeps it in this browser (its page and this one share an origin): its victims drawn green here too.
+const roomSick = s => { try { return (JSON.parse(localStorage.getItem("room.sick") || "{}")[s] || 0) > Date.now(); } catch (e) { return false; } };
+let party = null;
+function partyMake(el) {
+  if (!window.Party || !window.THREE) return null;
+  return Party.make({ el, figures: Figures({ env: () => Party.LOOKS[roomOf(DATA).env] || {}, sick: roomSick }),
+    actOf: (a, d) => (roomOf(d).acts || {})[a.session] || "", sick: roomSick, envKey: () => roomOf(DATA).env || "office",
+    boards: d => d.boards || [], order: "join", hint: () => "Click: its ticket and its terminal",
+    cardTop: a => `<span class="age">${fmtAge(ageSecs(a.seen))} ago</span><button type="button" class="${armedRm === a.id ? "armed" : ""}" data-rm="${a.id}" aria-label="take ${esc(a.name)} off the roster">${armedRm === a.id ? "remove? frees its claims" : "×"}</button>`,
+    cardMore: a => `<div class="ag-l ag-cl">${holds(a)}${/^https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]+$/.test(a.link || "") ? ` · <a href="${esc(a.link)}" target="_blank" rel="noopener">its session ↗</a>` : ""}</div>`,
+    sig: a => [a.claims, a.last, a.link, armedRm === a.id, a.claims.map(c => byId[c] ? byId[c].title : "")] });
+}
+// What it holds, each a quick view (no browser tooltip: the party's legend is the row's), or the one it held last.
+function holds(a) {
+  const ref = c => `<a data-qv="${esc(c)}" href="${esc(refUrl(c))}" target="_blank" rel="noopener">${esc(c)}</a>`;
+  return a.claims.length ? "holds " + a.claims.map(c => ref(c) + (byId[c] ? ` <i>${esc(byId[c].title)}</i>` : "")).join(" · ")
+    : "holds nothing" + (a.last ? " · last " + ref(a.last) : "");
+}
+function renderAgents() {
+  const ag = DATA.agents || [];
+  claimedBy = {};
+  for (const a of ag) for (const c of a.claims) claimedBy[c] = a;
+  const el = $("#agents");
+  if (!el.querySelector("#party")) {   // built once: the rows keep their pictures from one snapshot to the next
+    el.innerHTML = '<div class="hd"></div><div id="party"></div>';
+    party = partyMake($("#party"));
+  }
+  const waiting = ag.filter(a => a.blocked).length;
+  const hd = `<span class="lbl">Agents ${ag.length}</span>${waiting ? `<span class="badge wt">⏳ ${waiting} waiting on you</span>` : ""}${DATA.agents_error ? `<span class="badge" title="${esc(DATA.agents_error)}">stale</span>` : ""}
+      <span class="hint">${ag.length ? "over one: what its picture says · click one: its ticket and its terminal" : "nobody on the roster — /go enters an agent"}</span>`;
+  if (el.firstChild.innerHTML !== hd) el.firstChild.innerHTML = hd;
+  if (party) { party.render(DATA); focusMark(); }
+  else $("#party").innerHTML = '<span class="empty">party.js did not load, so your agents cannot be drawn: reload the page, or restart the board (bin/board-restart)</span>';
+}
+setInterval(() => { if (party && DATA.agents) party.render(DATA); }, 2000);   // (the legend's times current, as the room's list)
+// The one in focus, its terminal up (CON.who): its row ringed.
+function focusMark() {
+  const on = CON && CON.who;
+  document.querySelectorAll("#party .ag-row").forEach(r => r.classList.toggle("focus", !!on && r.dataset.ag === on));
+}
+function focusAgent(name) {
+  const a = (DATA.agents || []).find(x => x.name === name), ref = a && (a.claims[0] || a.last);
+  if (ref && ref !== qvRef) quickView(ref);
+  openTerminal(name);
+}
+$("#agents").addEventListener("click", async e => {
+  const b = e.target.closest("[data-rm]");
+  if (!b) {
+    const row = e.target.closest(".ag-row");
+    if (row && !e.target.closest("a, button") && !selecting(row)) focusAgent(row.dataset.ag);
+    return;
+  }
+  // Two taps: the first arms it, so a stray click cannot drop a live agent's claims.
+  const id = +b.dataset.rm;
+  clearTimeout(armedT);
+  if (armedRm !== id) {
+    armedRm = id; renderAgents();
+    armedT = setTimeout(() => { armedRm = null; renderAgents(); }, 6000);
+    return;
+  }
+  armedRm = null;
+  b.disabled = true;
+  try {
+    const r = await fetch("/api/agent/remove", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+    toast("removed from the roster");
+  } catch (err) { b.disabled = false; toast(err.message, true); }
+});
+
+// ---- messages between the agents and the owner (board/mail.py). Every write says owner:true --
+// this page is the owner's (the board's plan writes have the same trust).
+let mailTo = "all", mailBody = "", mailDirty = false, pressing = false;
+// A redraw replaces the buttons, so one landing between a press and its click would eat the click.
+// While a pointer is down nothing redraws; the deferred redraw runs after the click.
+document.addEventListener("pointerdown", () => { pressing = true; }, true);
+document.addEventListener("pointerup", () => setTimeout(() => {
+  pressing = false;
+  if (mailDirty) renderMail();
+}, 0), true);
+async function post(path, body, msg) {
+  try {
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ actor: "owner", owner: true, session: "owner", ...body }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+    if (msg) toast(msg);
+    return j;
+  } catch (e) { toast(e.message, true); return null; }
+}
+// A tap that ends a selection with either end INSIDE el is a selection, not a toggle; one wholly
+// elsewhere on the page is not.
+function selecting(el) { const s = getSelection(); return !!String(s) && (el.contains(s.anchorNode) || el.contains(s.focusNode)); }
+function ago(at) { return fmtAge(Math.max(0, Math.round(Date.now() / 1000 - at))) + " ago"; }
+// A phone keyboard composing a word must not have its field moved under it: wait for the word.
+let composing = false;
+document.addEventListener("compositionstart", () => { composing = true; }, true);
+document.addEventListener("compositionend", () => { composing = false; if (mailDirty) renderMail(); }, true);
+
+function renderMail(force) {
+  if (!force && (pressing || composing)) { mailDirty = true; return; }
+  mailDirty = false;
+  const mail = (DATA.mail || []).slice().reverse(), unread = new Set(DATA.owner_unread || []);
+  const opts = [["all", "everyone (all)"], ...[...new Set((DATA.agents || []).map(a => a.name))].map(n => [n, n])];
+  if (!opts.some(o => o[0] === mailTo) && document.activeElement !== $("#mail select[data-m=to]")) mailTo = "all";
+  // The compose box is built ONCE: what the owner is writing is never in a redraw's path. The
+  // header, the recipients and the list are redrawn around it.
+  if (!$("#mail .compose")) {
+    $("#mail").innerHTML = `<div class="hd" data-m="fold"></div><div class="mailp"><div class="compose">
+      <select data-m="to"></select>
+      <textarea data-m="body" placeholder="message — agents see it on their next action"></textarea>
+      <button class="go" data-m="send">send</button></div><div class="mlist"></div></div>`;
+  }
+  // Shut, the bar says the last word; open, the compose box and the list appear under it.
+  const open = store("mail") === "1", last = mail.find(m => unread.has(m.id)) || mail[0];
+  $("#mail").classList.toggle("shut", !open);
+  $("#mail .hd").innerHTML = `<span class="lbl">Messages</span>${unread.size ? `<span class="badge">${unread.size} for you</span>` : ""}
+      <span class="prev">${open ? "between the agents and you" : last ? `<b>${esc(last.sender)} → ${esc(last.rcpt_name || last.rcpt)}</b> ${esc(String(last.body || "").replace(/\s+/g, " "))} · ${esc(ago(last.at))}` : "no messages yet"}</span>
+      ${unread.size ? '<button data-m="read">mark read</button>' : ""}<button data-m="fold">${open ? "close" : "open"}</button>`;
+  const sel = $("#mail select[data-m=to]");
+  if (document.activeElement !== sel) {
+    sel.innerHTML = opts.map(([v, l]) => `<option value="${esc(v)}"${v === mailTo ? " selected" : ""}>${esc(l)}</option>`).join("");
+  }
+  const ta = $("#mail textarea[data-m=body]");
+  if (ta.value !== mailBody && document.activeElement !== ta) ta.value = mailBody;
+  const ml = $("#mail .mlist"), top = ml.scrollTop;
+  ml.innerHTML = mail.length ? mail.map(m => `<div class="msg${unread.has(m.id) ? " unread" : ""}">
+        <div class="mh"><b>${esc(m.sender)}</b> → ${esc(m.rcpt_name || m.rcpt)}<span>· ${esc(ago(m.at))}</span></div>
+        <div class="mb">${esc(m.body)}</div></div>`).join("") : '<div class="empty">no messages yet</div>';
+  ml.scrollTop = top;
+}
+$("#mail").addEventListener("input", e => {
+  if (e.target.dataset.m === "to") mailTo = e.target.value;
+  if (e.target.dataset.m === "body") mailBody = e.target.value;
+});
+$("#mail").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-m], .hd[data-m]"); if (!b) return;
+  if (b.dataset.m === "fold") { if (selecting(b)) return; store("mail", store("mail") === "1" ? "" : "1"); return renderMail(true); }
+  if (b.dataset.m === "read") {
+    const top = Math.max(...(DATA.owner_unread || [0]));
+    return post("/api/mail/read", { last: top }, "marked read");
+  }
+  if (!mailBody.trim()) return toast("write something first", true);
+  const to = mailTo;
+  // An agent recipient must still be on the roster.
+  if (to !== "all" && !(DATA.agents || []).some(a => a.name === to)) {
+    mailTo = "all"; renderMail(true);
+    return toast(to + " is no longer on the roster: pick a recipient again", true);
+  }
+  // Addressed by the agent's local id when it has one: the id every one of its processes reads mail under.
+  const to_sessions = to === "all" ? [] : (DATA.agents || []).filter(a => a.name === to).map(a => [a.local || a.session, a.name]);
+  b.disabled = true;
+  const r = await post("/api/mail", { to, to_sessions, body: mailBody }, "sent to " + to);
+  b.disabled = false;
+  if (r) { mailBody = ""; $("#mail textarea[data-m=body]").value = ""; renderMail(true); }
+});
+
+function apply(d) {
+  // Another board with no plan yet has an empty one: the first card added to Up next makes its RESUME issue (the server).
+  if (!d.plan && d.boards && d.boards.length && d.board !== d.boards[0].key) d.plan = { steps: [], hash: null, num: null, url: null };
+  if (sameButActs(DATA, d)) { DATA = d; ver = d.ver; if (party) party.render(d); return; }   // only the room's agents' acts: their pictures say them, nothing else here to draw again
+  DATA = d; ver = d.ver; lastAt = d.at; byId = Object.fromEntries(d.rows.map(x => [x.id, x]));
+  COLS = DATA.columns && DATA.columns.length ? DATA.columns : FALLBACK;
+  const bs = DATA.boards || [], on = bs.find(b => b.key === DATA.board);
+  $("#title").textContent = bs.length > 1 && on ? on.name + " board" : DATA.owner ? DATA.owner + " board" : "Board";
+  renderBoards(); fillFilters(); status(); renderInteg(); renderUsage();
+  if (dragging) pending = true; else render();
+}
+
+// ---- the boards: one per GitHub repo the agents work in (the home board first: the .env's; then each repo set up from
+// the room, REPO_BOARDS), each a tab here once there is more than one. The page shows one, kept in its address
+// (?board=) and this browser; its agents are the ones set up for its repo (a tag on every other one in the strip).
+let BOARD = new URLSearchParams(location.search).get("board") || store("board") || "", liveAbort = null;
+function boardName(key) { const b = (DATA.boards || []).find(x => x.key === key); return b ? b.name : key === "none" ? "no board" : key; }
+function renderBoards() {
+  const bs = DATA.boards || [], el = $("#boards");
+  el.hidden = bs.length < 2;
+  const n = key => (DATA.agents || []).filter(a => a.board === key).length;
+  const want = bs.length < 2 ? "" : bs.map(b => `<button type="button" data-board="${esc(b.key)}" style="--board:${esc(boardColor(bs, b.key))}" class="${b.key === DATA.board ? "on" : ""}${b.error ? " err" : ""}" title="${esc(b.key + (b.error ? " · could not be read: " + b.error + " (showing its last good read)" : "") + " · " + n(b.key) + " agent" + (n(b.key) === 1 ? "" : "s"))}"><i></i>${esc(b.name)}${b.error ? " ⚠" : ""}</button>`).join("");
+  if (el.innerHTML !== want) el.innerHTML = want;
+}
+function showBoard(key) {
+  if (key === DATA.board) return;
+  BOARD = key === ((DATA.boards || [])[0] || {}).key ? "" : key;
+  store("board", BOARD);
+  const u = new URL(location.href);
+  if (BOARD) u.searchParams.set("board", BOARD); else u.searchParams.delete("board");
+  history.replaceState(null, "", u);
+  ver = null;
+  if (liveAbort) liveAbort.abort();   // the long-poll held for the last board: asked again at once, for this one
+}
+$("#boards").addEventListener("click", e => { const b = e.target.closest("[data-board]"); if (b) showBoard(b.dataset.board); });
+
+// ---- integrations: one chip per thing the board is built from, each healthy by its own report:
+// the forge (issues, the plan, the roster, PRs) and the board's own message store.
+function ig(cls, name, title) { return `<span class="ig ${cls}" title="${esc(title)}"><span class="dot"></span>${esc(name)}</span>`; }
+function renderInteg() {
+  const parts = [["roster", DATA.agents_error], ["PRs", DATA.prs_error], ["boards", DATA.boards_error]].filter(([, e]) => e);
+  let h = DATA.error ? ig("bad", "forge", "The forge does not answer: " + DATA.error)
+    : parts.length ? ig("warn", "forge", "The forge answers, but these reads failed and show their last good copy: " + parts.map(([n, e]) => `${n} (${e})`).join("; "))
+    : ig("", "forge", "Issues, the Up next plan, the agent roster and PRs all read");
+  h += DATA.mail_error ? ig("bad", "messages", "The board's message store does not answer, so messages are missing: " + DATA.mail_error)
+    : ig("", "messages", "Messages between the agents and you read");
+  $("#integ").innerHTML = h;
+}
+
+// ---- the account's usage limits, a bar each as /usage draws them (bin/usage asks Claude Code every couple of
+// minutes; without it, the agents' status lines say the session's and the week's): how much of each is used,
+// and when it resets; hover for how the week is going, and how fresh the numbers are. Nothing heard yet,
+// nothing shows.
+function renderUsage() {
+  const u = DATA.usage || {}, rows = u.limits || [];
+  $("#usage").innerHTML = rows.map(w => {
+    const cls = w.severity === "critical" ? "full" : w.severity === "warning" ? "high" : "";
+    return `<span>${esc(usageName(w, false))}</span><span class="ub"><i class="${cls}" style="width:${Math.min(100, w.used)}%"></i></span><span class="up">${Math.round(w.used)}% used</span>` +
+      `<span>${w.resets_at ? (w.passed ? "reset " : "resets ") + esc(fmtReset(w.resets_at, w.group === "weekly")) : ""}</span>`;
+  }).join("");
+  const from = u.from === "usage" ? "from /usage (bin/usage)" : "from the agents' status lines (bin/usage is not running: no per-model weeks)";
+  $("#usage").title = rows.length ? [usagePaceText(usageWeek(u), Date.now()), `As of ${fmtAge(ageSecs(u.at))} ago, ${from}.`].filter(Boolean).join("\n") : "";
+}
+
+async function live() {
+  for (;;) {
+    try {
+      liveAbort = new AbortController();
+      const q = [BOARD ? "board=" + encodeURIComponent(BOARD) : "", ver === null ? "" : "v=" + ver].filter(Boolean).join("&");
+      const r = await fetch("/api/board" + (q ? "?" + q : ""), { cache: "no-store", signal: liveAbort.signal });
+      if (r.status === 404 && BOARD) { BOARD = ""; store("board", ""); ver = null; continue; }   // a board no longer there: the home board
+      if (r.status === 200) apply(await r.json());
+      else if (r.status !== 204) throw new Error("HTTP " + r.status);
+    } catch (e) {
+      if (e.name === "AbortError") continue;   // another board picked
+      $("#status").className = "stale"; $("#stxt").textContent = "board server unreachable — retrying";
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+}
+
+// The rank filter lists the ranks the open rows carry, highest first.
+function fillFilters() {
+  const el = $("#rank"), cur = el.value || store("rank") || "", tiers = new Map();
+  for (const r of DATA.rows) if (!tiers.has(r.rank)) tiers.set(r.rank, r.tier);
+  const vals = [...tiers].sort((a, b) => a[1] - b[1]).map(([v]) => v);
+  const want = '<option value="">' + el.options[0].text + "</option>" + vals.map(v => `<option${v === cur ? " selected" : ""}>${esc(v)}</option>`).join("");
+  if (el.innerHTML !== want) el.innerHTML = want;
+}
+
+function visible(r) {
+  const q = $("#q").value.trim().toLowerCase();
+  if (r.epic && !$("#epics").checked) return false;
+  const rank = $("#rank").value; if (rank && r.rank !== rank) return false;
+  if (q && !(r.id + " " + r.title + " " + r.labels.join(" ")).toLowerCase().includes(q)) return false;
+  return true;
+}
+
+// One muted line: the comment count. The rank is the card's left edge (and its tier in Ready).
+function meta(r) {
+  return r.comments ? "💬 " + r.comments : "";
+}
+// A claimed card stays in its column, dimmed; it needs no chip: it wears its holder's identicon.
+function chips(r) {
+  const c = [];
+  if (r.epic) c.push('<span class="chip epic">epic</span>');
+  for (const b of r.blocked) c.push(`<span class="chip blk">⛔ ${refLink(b, "", esc(b))}</span>`);
+  return c.length ? `<div class="chips">${c.join("")}</div>` : "";
+}
+// The left-edge colour of a rank tier: 0..3 their own, 4 and unranked (99) grey.
+function tierD(t) { return String(Math.min(t ?? 4, 4)); }
+
+// The column definition a row is in, the plan column, and whether a row may join the plan: only from a
+// column agents pick from (Up next is what /go picks first).
+function colDef(k) { return COLS.find(c => c.key === k) || null; }
+function planCol() { return COLS.find(c => c.plan) || null; }
+function addable(r) { const c = colDef(r.col); return !!(c && c.pick && planCol() && DATA.plan); }
+// A card in a rule column can be moved when some column takes drops.
+function movable(r) { return !!colDef(r.col) && COLS.some(c => c.drop); }
+
+function card(r) {
+  const c = colDef(r.col), canAdd = addable(r), drag = canAdd || movable(r);
+  // Dimmed only where agents pick: in a column every card is claimed (In progress), dimming says nothing.
+  const dim = r.busy && c && c.pick;
+  return `<div class="card${dim ? " dim" : ""}${claimAttrs(r.id)}" data-d="${tierD(r.tier)}" data-id="${esc(r.id)}" ${drag ? 'draggable="true"' : ""}>
+    <div class="top"><a href="${esc(r.url)}" data-qv="${esc(r.id)}" target="_blank" rel="noopener" title="${esc(r.rank)}">${esc(r.id)}</a>
+      <span class="m" title="${meta(r)}">${meta(r)}</span>
+      ${canAdd ? '<span class="acts"><button data-add title="Add to the end of Up next">+</button></span>' : ""}</div>
+    <div class="t">${esc(r.title)}</div>${chips(r)}${who(r.id)}</div>`;
+}
+
+function stepCard(s, i, n) {
+  const r = byId[s.ref];
+  const url = r ? r.url : `${DATA.forge}/${refOwner(DATA, s.ref)}/${s.ref.replace("#", "/issues/")}`;
+  return `<div class="card${r ? "" : " gone"}${claimAttrs(s.ref)}" draggable="true" data-step="${i}" data-id="${esc(s.ref)}"${r ? ` data-d="${tierD(r.tier)}"` : ""}>
+    <div class="top"><span class="n">${i + 1}</span><a href="${esc(url)}" data-qv="${esc(s.ref)}" target="_blank" rel="noopener"${r ? ` title="${esc(r.rank)}"` : ""}>${esc(s.ref)}</a>
+      ${s.owner ? '<span class="chip hand" title="the owner must be present">✋ you</span>' : ""}
+      ${r ? `<span class="m" title="${meta(r)}">${meta(r)}</span>` : ""}
+      <span class="acts"><button data-up ${i === 0 ? "disabled" : ""} title="Move up">↑</button><button data-down ${i === n - 1 ? "disabled" : ""} title="Move down">↓</button><button data-del title="Take off Up next (the issue is untouched)">✕</button></span></div>
+    <div class="t">${esc(r ? r.title : (s.text || s.ref))}</div>
+    ${r && s.text && s.text !== r.title ? `<div class="sub">${esc(s.text)}</div>` : ""}
+    ${r ? chips(r) : '<div class="sub">not an open board issue (closed or off-board) — remove it</div>'}${who(s.ref)}</div>`;
+}
+
+const TIER_CAP = 8;
+let tierAll = {};
+function tierFold() { try { return JSON.parse(store("tiers") || "{}"); } catch (e) { return {}; } }
+function filtering() { return ["q", "rank"].some(id => $("#" + id).value.trim()); }
+
+function colName(k) { return (COLS.find(c => c.key === k) || {}).name || k; }
+
+// Closed lately: the rows that left the board in the last 30 minutes
+// (served as `gone`, kept that long by gone.WINDOW), as the board's last column, where a kanban keeps
+// Done. Each opens in the quick view; the filters apply as they do to the rows.
+const GONE_WHY = { "off-board": "taken off the board", moved: "moved", deleted: "deleted" };
+function goneCard(g) {
+  return `<div class="card done" data-d="${tierD(g.tier)}" data-id="${esc(g.id)}">
+    <div class="top"><a href="${esc(g.url)}" data-qv="${esc(g.id)}" target="_blank" rel="noopener" title="${esc(g.rank)} · was in ${esc(colName(g.col))}">${esc(g.id)}</a>
+      <span class="m">${esc(ago(g.at))}</span></div>
+    <div class="t">${esc(g.title)}</div>${GONE_WHY[g.why] ? `<div class="why">${esc(GONE_WHY[g.why])}</div>` : ""}</div>`;
+}
+
+// Highest rank first, then oldest first (pick.py _order: the same order /go's ready set prints).
+function sortKey(r) { return [String(r.tier).padStart(3, "0"), r.created || "", r.repo, String(r.num).padStart(6, "0")].join("|"); }
+
+function render() {
+  renderAgents();
+  renderPrs();
+  renderMail();
+  if (!COLS.some(c => c.key === tab)) tab = COLS[0].key;
+  // With no plan column the plan is not drawn apart: its rows stay in their own columns.
+  const steps = planCol() && DATA.plan ? DATA.plan.steps : [];
+  const inPlan = new Set(steps.map(s => s.ref));
+  const rows = DATA.rows.filter(r => !inPlan.has(r.id) && visible(r));
+  // A plan step that left the board stays where it is, struck through in Up next: one card per row.
+  const gone = (DATA.gone || []).filter(g => !inPlan.has(g.id) && visible(g));
+  const count = c => c.plan ? steps.length : c.closed ? gone.length : rows.filter(r => r.col === c.key).length;
+  $("#tabs").innerHTML = COLS.map(c => `<button data-tab="${c.key}" class="${tab === c.key ? "on" : ""}">${c.name} ${count(c)}</button>`).join("");
+  const scroll = Object.fromEntries([...document.querySelectorAll("#board .col")].map(c => [c.dataset.col, c.querySelector(".list").scrollTop]));
+  $("#board").style.setProperty("--ncols", COLS.length);
+  $("#board").innerHTML = COLS.map(c => {
+    let body = "", hint = c.hint || "";
+    if (c.plan) {
+      hint = hint || (DATA.plan && !DATA.plan.num ? "What a bare /go picks, top first. Nothing yet: add a card, and its RESUME issue is made in the home repo."
+        : DATA.plan
+        ? `What a bare /go picks, top first. Reorder with drag or ↑↓. Saved to <a href="${esc(DATA.plan.url)}" target="_blank" rel="noopener">the RESUME issue #${DATA.plan.num}</a>.`
+        : "No RESUME issue yet. A session creates it with forge.py resume -F.");
+      body = steps.map((s, i) => stepCard(s, i, steps.length)).join("");
+    } else if (c.closed) {
+      hint = hint || "Left the board in the last 30 min, newest first. Tap one to read it.";
+      body = gone.map(goneCard).join("");
+    } else {
+      const list = rows.filter(r => r.col === c.key).sort((a, b) => sortKey(a) < sortKey(b) ? -1 : 1);
+      if (!c.pick) body = list.map(card).join("");
+      else {
+        // A filter is a search: it shows every match, never the first few of a tier.
+        const all = filtering(), fold = tierFold();
+        // The list is in tier order, so its ranks come highest first.
+        for (const t of [...new Set(list.map(r => r.rank))]) {
+          const ts = list.filter(r => r.rank === t), shut = fold[t] && !all, cap = all || tierAll[t] ? ts.length : TIER_CAP;
+          body += `<div class="tier" data-tier="${esc(t)}" data-d="${tierD(ts[0].tier)}"><span class="dot"></span>${shut ? "▸" : "▾"} ${esc(t)} <span>${ts.length}${shut ? " · folded" : ""}</span></div>`;
+          if (shut) continue;
+          body += `<div class="tierb">${ts.slice(0, cap).map(card).join("")}</div>`;
+          if (ts.length > cap) body += `<button class="more" data-more="${esc(t)}">+ ${ts.length - cap} more in ${esc(t)}</button>`;
+        }
+      }
+    }
+    // "n" or "n / limit"; over the limit, the count turns red.
+    const n = count(c), over = c.limit != null && n > c.limit;
+    const tip = [c.drop ? (c.label ? "drop a card here to label it " + c.label : "drop a card here to take its column labels off") : "",
+                 over ? "over the WIP limit (" + c.limit + ")" : ""].filter(Boolean).join(" · ");
+    return `<section class="col${c.plan ? " next" : ""}${tab === c.key ? " show" : ""}" data-col="${esc(c.key)}">
+      <h2${tip ? ` title="${esc(tip)}"` : ""}>${esc(c.name)} <b class="${over ? "wip" : ""}">${n}${c.limit != null ? " / " + c.limit : ""}</b></h2><div class="hint">${hint}</div>
+      <div class="list">${body || `<div class="empty">${c.plan ? "empty — /go falls back to the board" : "nothing here"}</div>`}</div></section>`;
+  }).join("");
+  for (const c of document.querySelectorAll("#board .col")) if (scroll[c.dataset.col]) c.querySelector(".list").scrollTop = scroll[c.dataset.col];
+}
+
+function lineText(r, ref) {
+  // The plan line is "N) ref text" and must fit MAXLINE; cut the title at a word.
+  const room = MAXLINE - (String(DATA.plan.steps.length + 1).length + 2 + ref.length + 1);
+  let t = r.title;
+  if (t.length > room) { t = t.slice(0, room - 1); t = t.slice(0, t.lastIndexOf(" ") > 20 ? t.lastIndexOf(" ") : t.length) + "…"; }
+  return t;
+}
+
+async function savePlan(steps, msg) {
+  const prev = DATA.plan;
+  DATA.plan = { ...prev, steps }; render(); // optimistic
+  try {
+    const r = await fetch("/api/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ base: prev.hash, steps, board: DATA.board }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+    DATA.plan = j; render(); toast(msg);
+  } catch (e) { DATA.plan = prev; render(); toast(e.message, true); }
+}
+
+function moveStep(from, to) {
+  const s = DATA.plan.steps.slice(); if (to < 0 || to >= s.length || from === to) return;
+  const [x] = s.splice(from, 1); s.splice(to, 0, x);
+  savePlan(s, `${x.ref} → #${to + 1}`);
+}
+function addStep(id, at) {
+  const r = byId[id]; if (!r || !DATA.plan) return;
+  const s = DATA.plan.steps.slice(); at = at ?? s.length;
+  s.splice(at, 0, { ref: id, owner: false, text: lineText(r, id) });
+  savePlan(s, `${id} added at #${at + 1}`);
+}
+function delStep(i) {
+  const s = DATA.plan.steps.slice(); const [x] = s.splice(i, 1);
+  savePlan(s, `${x.ref} taken off Up next`);
+}
+
+// ---- the quick view: any issue -- a card, a claim, a blocker chip, a ref inside a quick
+// view -- opens here, over the board, and the board stays where it was. ↗ opens it on the forge.
+let qvRef = null, qvSeq = 0;
+// `repo#N` for an issue or PR URL on this forge and org (GitHub: /issues/N, /pull/N), else null.
+function issueRef(href) { return hrefRef(DATA, href); }
+function qvHead(ref, title, url) {
+  return `<div class="qh"><span class="id">${esc(ref)}</span><span class="tt">${esc(title)}</span>
+    <a class="ic" href="${esc(url)}" target="_blank" rel="noopener" title="Open on the forge in a new tab">↗</a>
+    <button class="ic" data-qv-close title="Close (Esc)">×</button></div>`;
+}
+function qvMeta(j) {
+  const r = byId[j.id], m = [];
+  if (j.state === "closed") m.push('<span class="chip">closed</span>');
+  else if (!r) m.push('<span class="chip">not on the board</span>');
+  else m.push(`<span class="chip">${esc(colName(r.col))}</span>`);
+  for (const l of j.labels) m.push(`<span class="chip">${esc(l)}</span>`);
+  const a = claimedBy[j.id];
+  if (a) m.push(`<button type="button" class="qcon" data-con="${esc(a.name)}" title="${esc(a.name)}'s terminal (its herdr pane)">${avatar(a.session, 18)}<span>claimed by <b>${esc(a.name)}</b> ⌨</span></button>`);
+  const edges = (lbl, es) => es.length ? [`<span>${lbl}</span>`].concat(es.map(e =>
+    `<span class="chip${e.state === "closed" ? " closed" : ""}">${refLink(e.id, "", esc(e.id), e.title)}</span>`)) : [];
+  m.push(...edges("blocked by", j.blocked_by), ...edges("blocks", j.blocks));
+  return `<div class="qm">${m.join("")}</div>`;
+}
+// Links in the forge's rendered HTML: an issue of this org opens in the quick view, and a bare
+// `repo#N` naming a repo the board knows becomes such a link (the forge links only owner/repo#N).
+// A bare `#N` is `repo`'s, the issue shown: GitHub links it so itself (the render's context); a
+// link without its repo (`<forge>/issues/N`) is re-pointed here.
+function linkRefs(el, repo) {
+  for (const a of el.querySelectorAll("a[href]")) {
+    a.target = "_blank"; a.rel = "noopener";
+    const pre = DATA.forge + "/issues/", n = a.href.startsWith(pre) ? a.href.slice(pre.length) : "";
+    if (/^\d+$/.test(n)) a.href = refUrl(repo + "#" + n);
+    const ref = issueRef(a.href); if (ref) a.dataset.qv = ref;
+  }
+  const repos = new Set(DATA.rows.map(r => r.repo));
+  const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), hits = [];
+  while (w.nextNode()) if (!w.currentNode.parentElement.closest("a, code, pre")) hits.push(w.currentNode);
+  for (const t of hits) {
+    const plain = esc(t.data);
+    const html = plain.replace(/\b([A-Za-z][\w.-]*)#(\d+)\b/g, (s, repo) => repos.has(repo) ? refLink(s, "", s) : s);
+    if (html !== plain) { const sp = document.createElement("span"); sp.innerHTML = html; t.replaceWith(...sp.childNodes); }
+  }
+}
+async function quickView(ref) {
+  // A row that left the board is not in byId, but `gone` still has its title to show while loading.
+  const p = $("#qv"), seq = ++qvSeq, r = byId[ref] || (DATA.gone || []).find(g => g.id === ref);
+  qvRef = ref;
+  p.classList.add("open");
+  p.innerHTML = qvHead(ref, r ? r.title : "", refUrl(ref)) + '<div class="qb"><p class="by">loading…</p></div>';
+  let j;
+  try {
+    const res = await fetch("/api/issue?id=" + encodeURIComponent(ref));
+    j = await res.json();
+    if (!res.ok) throw new Error(j.error || "HTTP " + res.status);
+  } catch (e) {
+    if (seq === qvSeq) p.querySelector(".qb").innerHTML = `<p class="err">${esc(ref)} could not be read: ${esc(e.message)}</p>`;
+    return;
+  }
+  if (seq !== qvSeq) return;  // another issue was opened, or the panel closed, meanwhile
+  // The bodies are the forge's own rendering, sanitized there, so they go in as HTML.
+  p.innerHTML = qvHead(j.id, j.title, j.url) + qvMeta(j) + `<div class="qb">
+    <p class="by">opened by <b>${esc(j.user)}</b> · ${esc(fmtAge(ageSecs(j.created)))} ago</p>
+    <div class="md">${j.body || '<p class="by">(no body)</p>'}</div>
+    ${j.comments.length ? `<div class="cmh">${j.comments.length} comment${j.comments.length > 1 ? "s" : ""}, oldest first</div>` : ""}
+    ${j.comments.map(c => `<div class="cm"><div class="by"><b>${esc(c.user)}</b> · ${esc(fmtAge(ageSecs(c.at)))} ago</div><div class="md">${c.body}</div></div>`).join("")}</div>`;
+  linkRefs(p.querySelector(".qb"), j.id.split("#")[0]);
+}
+function closeQv() { qvRef = null; qvSeq++; $("#qv").classList.remove("open"); }
+// ---- an agent's terminal: its herdr pane (console.js, as the Agent Room has it), beside the quick view, on its left: with
+// its ticket there, an agent's focused view (focusAgent: a click on its row). Only from a click of yours (the page's own;
+// the board relays it to bin/consoles, which checks it again).
+const CON = window.AgentConsole ? AgentConsole.make({ beside: () => $("#qv").classList.contains("open") ? $("#qv") : null, side: "before", onClose: () => focusMark(), rectKey: "kanban.console.rect" }) : null;
+function openTerminal(who) {
+  if (!who || !(navigator.userActivation && navigator.userActivation.isActive)) return;
+  if (!CON) return alert("console.js did not load: reload the page, or restart the board (bin/board-restart)");
+  CON.openPane(who); focusMark();
+}
+// One handler for every issue link on the page. The strips' and the board's own handlers skip
+// clicks on links, so a claim opens its issue alone rather than its agent's focused view.
+document.addEventListener("click", e => {
+  if (e.target.closest("[data-qv-close]")) return closeQv();
+  const con = e.target.closest("[data-con]");   // an agent's terminal: its row's ⌨, "claimed by" (a card's face: the board's own handler)
+  if (con && !con.closest(".card")) return openTerminal(con.dataset.con);
+  const a = e.target.closest("a[data-qv]");
+  if (!a || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button) return;
+  e.preventDefault();
+  quickView(a.dataset.qv);
+});
+// Esc closes it, unless the owner is typing somewhere (a message, an IME choice).
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && qvRef && !e.isComposing && !/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) closeQv();
+});
+
+const board = $("#board");
+board.addEventListener("click", e => {
+  const t = e.target.closest("[data-tier]");
+  if (t) { if (filtering()) return; const f = tierFold(); f[t.dataset.tier] = !f[t.dataset.tier]; store("tiers", JSON.stringify(f)); return render(); }
+  const m = e.target.closest("[data-more]");
+  if (m) { tierAll[m.dataset.more] = true; return render(); }
+  const c = e.target.closest(".card"); if (!c || e.target.closest("a")) return;
+  const i = c.dataset.step !== undefined ? +c.dataset.step : null;
+  if (e.target.closest("[data-up]")) return moveStep(i, i - 1);
+  if (e.target.closest("[data-down]")) return moveStep(i, i + 1);
+  if (e.target.closest("[data-del]")) return delStep(i);
+  if (e.target.closest("[data-add]")) return addStep(c.dataset.id);
+  if (e.target.closest("button")) return;
+  const w = e.target.closest("[data-con]");   // the agent holding it: its ticket, and its terminal beside it (as its name card in the room)
+  if (c.dataset.id) quickView(c.dataset.id);
+  if (w) openTerminal(w.dataset.con);
+});
+
+// Drag: a row from a pick column → Up next (insert), within Up next (reorder), and a row from any rule
+// column → a column with `drop` (MOVE: the server relabels it on GitHub). Nothing else drops anywhere.
+function slotIndex(list, y) {
+  const cards = [...list.querySelectorAll(".card[data-step]")].filter(c => !c.classList.contains("dragging"));
+  for (let k = 0; k < cards.length; k++) { const b = cards[k].getBoundingClientRect(); if (y < b.top + b.height / 2) return { k, before: cards[k] }; }
+  return { k: cards.length, before: null };
+}
+function clearSlot() { document.querySelectorAll(".slot").forEach(x => x.remove()); document.querySelectorAll(".col.over").forEach(x => x.classList.remove("over")); }
+// Where the card being dragged may go: "plan" (insert/reorder), "move", or null.
+function dropKind(col) {
+  const c = col && colDef(col.dataset.col); if (!c || !dragging) return null;
+  if (c.plan) return dragging.step !== null || (byId[dragging.id] && addable(byId[dragging.id])) ? "plan" : null;
+  return c.drop && dragging.step === null && dragging.col && dragging.col !== c.key ? "move" : null;
+}
+board.addEventListener("dragstart", e => {
+  const c = e.target.closest(".card[draggable]"); if (!c) return;
+  const step = c.dataset.step !== undefined ? +c.dataset.step : null, r = byId[c.dataset.id];
+  dragging = { id: c.dataset.id, step, col: step === null && r ? r.col : null };
+  c.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", c.dataset.id);
+  document.querySelectorAll("#board .col").forEach(col => { if (dropKind(col)) col.classList.add("can"); });
+});
+// A drop that changes nothing (outside Up next, or back where it was) re-renders nothing,
+// so the dragged card must be un-dimmed here, every time.
+board.addEventListener("dragend", () => {
+  dragging = null; clearSlot();
+  document.querySelectorAll(".col.can").forEach(x => x.classList.remove("can"));
+  document.querySelectorAll(".card.dragging").forEach(c => c.classList.remove("dragging"));
+  if (pending) { pending = false; render(); }
+});
+board.addEventListener("dragover", e => {
+  if (!dragging) return;
+  const col = e.target.closest(".col[data-col]"), kind = dropKind(col);
+  if (!kind) { clearSlot(); return; }
+  e.preventDefault();
+  if (!col.classList.contains("over")) { clearSlot(); col.classList.add("over"); }
+  if (kind === "move") return;
+  const list = col.querySelector(".list"), { before } = slotIndex(list, e.clientY);
+  let slot = list.querySelector(".slot"); if (!slot) { slot = document.createElement("div"); slot.className = "slot"; }
+  before ? list.insertBefore(slot, before) : list.appendChild(slot);
+});
+board.addEventListener("drop", e => {
+  const col = e.target.closest(".col[data-col]"), kind = dropKind(col); if (!kind) return;
+  e.preventDefault();
+  const d = dragging;
+  if (kind === "move") { dragging = null; clearSlot(); return moveCard(d.id, col.dataset.col); }
+  const { k } = slotIndex(col.querySelector(".list"), e.clientY);
+  dragging = null; clearSlot(); pending = false;
+  if (d.step !== null) moveStep(d.step, k); // k counts cards without the dragged one = its final index
+  else addStep(d.id, k);
+});
+// A MOVE: the server sets the target column's label on the issue and takes the other column labels off.
+// A rule may keep the row where it was (a claim keeps it In progress): say where it stayed, and why.
+async function moveCard(id, to) {
+  const r = byId[id], j = await post("/api/move", { id, to });
+  if (!j) return;
+  if (j.col === to) return toast(`moved ${id} → ${colName(to)}`);
+  toast(`${id} stayed in ${colName(j.col)}${r && r.busy ? " (" + r.busy + ")" : ""}: a rule keeps it there`, true);
+}
+
+$("#tabs").addEventListener("click", e => { const t = e.target.closest("[data-tab]"); if (t) { tab = t.dataset.tab; store("tab", tab); render(); } });
+for (const id of ["q", "rank", "epics"]) {
+  const el = $("#" + id);
+  el.addEventListener("input", () => { store(id, el.type === "checkbox" ? (el.checked ? "1" : "") : el.value); render(); });
+  const v = store(id); if (v) el.type === "checkbox" ? (el.checked = true) : (el.value = v);
+}
+tab = store("tab") || "next";
+live();
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+# Names bin/archive never flags, though this project's .env has them: public on purpose, and the code needs them.
+# One per line, any case.
+
+# basedverse (the lobby and Visit): its repository's owner and name. Visit's releases download from
+# github.com/sarmiena/Basedverse (bin/lib/visit.sh), and REPO_BOARDS, AGENTS and VISIT_DATA_DIR name it.
+sarmiena
+basedverse
