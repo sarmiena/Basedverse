@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# A copy of this project to give someone (to seed their own): the files of the last commit, as one archive,
+# and nothing else. No history (no .git: no commits, authors or messages, not even the commit's id), and
+# nothing git does not track (.env and its tokens, .auth/, .visit/, .board/'s messages, .remote/, .claude/).
+#
+#   bin/archive                  ../default_office-<date>.tar.gz, beside this repository
+#   bin/archive OUT              there instead; .zip, .tar, .tar.gz or .tgz, by its name
+#   bin/archive --no-check ...   without the check below (when it flags something you mean to give)
+#
+# Before it writes, it checks every text file in the archive for what would say who you are, taken from this
+# machine as it runs (none of it written here, so this file gives nothing away either): your .env's values
+# (the GitHub owner and repos, the agents' directories, the lobby name, the model's address, and every token
+# and key), your git name and email, your home directory and user name, this machine's addresses and its
+# tailnet's names, and tokens in any of the usual shapes. A hit stops it, and it says where.
+#
+# Commit first: what is not committed is not in it (it says so). To leave a tracked file out of every archive,
+# add `<path> export-ignore` to .gitattributes. Your friend unpacks it and runs `git init`: their history
+# starts at their first commit.
+set -euo pipefail
+case "${1:-}" in   # before anything else: --help must never write anything
+  -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+esac
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV="${REPO_ENV:-$ROOT/.env}"; [ -f "$ENV" ] || ENV=/dev/null
+die() { echo "archive: $*" >&2; exit 1; }
+
+check=1
+if [ "${1:-}" = "--no-check" ]; then check=0; shift; fi
+[ $# -le 1 ] || die "one place to write it, at most (bin/archive --help)"
+case "${1:-}" in -*) die "no option $1 (bin/archive --help)" ;; esac
+OUT="${1:-$(dirname "$ROOT")/$(basename "$ROOT" | tr 'A-Z' 'a-z')-$(date +%Y-%m-%d).tar.gz}"
+case "$OUT" in
+  *.zip|*.tar|*.tar.gz|*.tgz) ;;
+  *) die "$OUT: a .zip, .tar, .tar.gz or .tgz, by its name" ;;
+esac
+case "$OUT" in /*) ;; *) OUT="$PWD/$OUT" ;; esac
+case "$OUT/" in "$ROOT"/*) die "$OUT is inside this repository: put it somewhere else" ;; esac
+[ -d "$(dirname "$OUT")" ] || die "no directory $(dirname "$OUT")"
+
+git -C "$ROOT" rev-parse --verify -q HEAD >/dev/null || die "no commit yet: nothing to archive"
+dirty="$(git -C "$ROOT" status --porcelain --untracked-files=no)"
+if [ -n "$dirty" ]; then
+  echo "archive: not committed, so not in it (it has these files as of the last commit):"
+  printf '%s\n' "$dirty" | sed 's/^/  /'
+fi
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+name="$(basename "$OUT")"
+# The tree, not the commit: an archive of a commit carries its id (in a tar's header, a zip's comment).
+git -C "$ROOT" archive -o "$TMP/$name" 'HEAD^{tree}'
+mkdir "$TMP/x"
+case "$name" in
+  *.zip) python3 -I -m zipfile -e "$TMP/$name" "$TMP/x" ;;
+  *) tar -xf "$TMP/$name" -C "$TMP/x" ;;
+esac
+[ ! -e "$TMP/x/.git" ] || die "the archive has a .git in it: not writing it"
+
+if [ "$check" = 1 ]; then
+  # What would say who you are: one per line, `label<TAB>value`. Values are read here and never printed.
+  {
+    python3 -I - "$ENV" <<'PY'
+import os, re, sys
+from urllib.parse import urlparse
+ident = ("REPO_OWNER", "REPO_NAMES", "REPO_HOME", "REPO_BOARDS", "AGENTS", "LOBBY_NAME", "VISIT_DATA_DIR", "BASEDVERSE")
+home = os.path.expanduser("~")
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    k, sep, v = line.strip().partition("=")
+    k, v = k.strip(), v.strip().strip("'\"")
+    if not sep or not v or k.startswith("#"):
+        continue
+    if re.search(r"TOKEN|KEY|SECRET|PASS", k):
+        print("secret\t.env %s\t%s" % (k, v))
+    elif k in ident:
+        for part in re.split(r"[,\s]+", v):
+            if not part:
+                continue
+            for x in {part, part.replace("~", home, 1), os.path.basename(part.rstrip("/"))} | set(part.split("/") if k == "REPO_BOARDS" else ()):
+                print("name\t.env %s\t%s" % (k, x))
+            if k == "LOBBY_NAME":
+                print("name\t.env LOBBY_NAME\t%s" % re.sub(r"[^a-z0-9]+", "-", v.lower()).strip("-"))
+    elif k == "LLM_URL":
+        host = urlparse(v).hostname or ""
+        if host and host not in ("localhost", "127.0.0.1"):
+            print("name\t.env LLM_URL's host\t%s" % host)
+PY
+    for k in user.name user.email; do
+      v="$(git -C "$ROOT" config "$k" || true)"
+      [ -z "$v" ] || printf 'name\tyour git %s\t%s\n' "$k" "$v"
+    done
+    email="$(git -C "$ROOT" config user.email || true)"
+    if [ -n "$email" ]; then
+      printf 'name\tyour git email (its name)\t%s\n' "${email%%@*}"
+      d="${email#*@}"; printf 'name\tyour git email (its domain)\t%s\n' "${d%%.*}"
+    fi
+    for w in $(git -C "$ROOT" config user.name || true); do printf 'name\tyour git name\t%s\n' "$w"; done
+    printf 'name\tyour home directory\t%s\n' "$HOME"
+    printf 'name\tyour user name\t%s\n' "${USER:-$(id -un)}"
+    for ip in $(hostname -I 2>/dev/null || true); do
+      case "$ip" in 127.*|*:*) ;; *) printf 'name\tthis machine'"'"'s address\t%s\n' "$ip" ;; esac
+    done
+    if command -v tailscale >/dev/null; then
+      tailscale status --json 2>/dev/null | python3 -I -c '
+import json, sys
+try:
+    j = json.load(sys.stdin)
+except ValueError:
+    sys.exit()
+me = j.get("Self") or {}
+for v in [(me.get("DNSName") or "").rstrip("."), j.get("MagicDNSSuffix") or ""] + list(me.get("TailscaleIPs") or []):
+    if v and ":" not in v:
+        print("name\tyour tailnet\t%s" % v)' || true
+    fi
+  } > "$TMP/needles"
+  python3 -I - "$TMP/needles" "$TMP/x" "$ROOT/.archive-allow" <<'PY' || { echo "archive: nothing written (bin/archive --no-check writes it anyway)" >&2; exit 1; }
+import os, re, sys
+needles, root, allow_file = sys.argv[1:]
+try:   # names public on purpose: never flagged
+    allow = {l.strip().lower() for l in open(allow_file, encoding="utf-8") if l.strip() and not l.lstrip().startswith("#")}
+except OSError:
+    allow = set()
+pats, seen = [], set()
+for line in open(needles, encoding="utf-8"):
+    kind, label, value = line.rstrip("\n").split("\t", 2)
+    words = {w.lower() for w in re.findall(r"[A-Za-z0-9]+", value)}
+    if len(value) < 4 or value.isdigit() or (words and words <= allow) or (kind, value.lower()) in seen:
+        continue   # (too short to tell from ordinary text, public on purpose: all its words are, or already looked for)
+    seen.add((kind, value.lower()))
+    pats.append((kind, label, re.compile(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(value), re.I)))
+shapes = [("a GitHub token", r"\bgh[pousr]_[A-Za-z0-9]{30,}|\bgithub_pat_[A-Za-z0-9_]{30,}"),
+          ("an Anthropic key", r"\bsk-ant-[A-Za-z0-9_-]{20,}"), ("an OpenAI key", r"\bsk-(?:proj-)?[A-Za-z0-9_-]{40,}"),
+          ("an AWS key", r"\bAKIA[0-9A-Z]{16}\b"), ("a Slack token", r"\bxox[abprs]-[A-Za-z0-9-]{10,}"),
+          ("a Google key", r"\bAIza[0-9A-Za-z_-]{35}"), ("a private key", r"-----BEGIN [A-Z ]*PRIVATE KEY-----")]
+pats += [("secret", label, re.compile(rx)) for label, rx in shapes]
+hits = 0
+for d, _, files in os.walk(root):
+    for f in sorted(files):
+        p = os.path.join(d, f)
+        with open(p, "rb") as fh:
+            data = fh.read()
+        if b"\0" in data[:8192]:
+            continue   # (a picture, not text)
+        for n, line in enumerate(data.decode("utf-8", "replace").splitlines(), 1):
+            found = [(kind, label, m) for kind, label, rx in pats for m in [rx.search(line)] if m]
+            if not found:
+                continue
+            hits += 1
+            labels = ", ".join(dict.fromkeys(label for _, label, _ in found))
+            where = "%s:%d" % (os.path.relpath(p, root), n)
+            if any(kind == "secret" for kind, _, _ in found):   # its words never shown
+                print("  %s: %s" % (where, labels))
+            else:
+                m = found[0][2]
+                a, b = max(0, m.start() - 40), m.end() + 40
+                print("  %s: %s: …%s…" % (where, labels, line[a:b].strip()))
+sys.stdout.flush()
+if hits:
+    print("archive: %d place%s in it would say who you are (above)" % (hits, "" if hits == 1 else "s"), file=sys.stderr)
+    sys.exit(1)
+PY
+fi
+
+[ ! -e "$OUT" ] || echo "archive: replacing $OUT"
+mv "$TMP/$name" "$OUT"
+n="$(find "$TMP/x" -type f | wc -l | tr -d ' ')"
+echo "$OUT: $n files, $(du -h "$OUT" | cut -f1), no history, no commit id$([ "$check" = 1 ] && echo ", nothing of yours found in it" || echo " (not checked)")"

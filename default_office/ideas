@@ -1,0 +1,69 @@
+when idle they should:
+  * go drink from a water cooler. water is kind of green
+  * eat from the pile of bananas
+  * doze off with ZzzzZZZ at their desk
+  * go start talking to another coworker at their desk
+  * scroll on their mobile phone
+
+boards:
+  * I don't like how they are covering my view. put them on the left wall instead. If there's no wall to hang it on, jimmy rig it with a couple of 2x4s
+  * It should be "Death by Exhaustion" not just "Exhaustion"
+
+fighting snake and rat:
+  * They haven't done it even once in the last hour. Maybe their aggression can max out at rand(6..13mins). When in close proximity and max aggression, they invoke a fight
+  * If they're in close proximity, and i click one of them, it invokes a fight
+  * If the snake wins, and it eats the rat, it's belly should be big for a bit of time (this is already implemented). If his belly is empty, his aggression increases faster. If it's full, his aggression doesn't increase at all.
+  * Aggression level should be some sort of subtle change in their demeanor, behavior, or appearance. Creating anticipation for the viewer. 
+  * spawns of new rats and snakes should have variable colors and sizes
+
+
+mosquito:
+  * if someone gets malaria, they should look sick for 3-5 minutes
+  * mosquitos should be able to bite people that are walking around
+  * Sometimes the mosquito should land on the wall and chill for a little bit
+  * mosquito should sometimes land on the rat & suck it's blood. then the rat should fight it off and hop away from the fight scene
+
+monkey:
+  * wild monkey can come in and out of the office randomly. sometimes it eats a banana from the pile and throws the peel at a random person and runs away. it should come from different areas, not the same spot. sometimes it swings in
+
+
+me:
+  * remove that purple "owner" dot on the ground. 
+  * make me my own avatar. on start of the room it should interactively ask me what my name is. just make a random looking dude for me
+  * allow WoW style move controls and camera view (the way they did zoom, pan, down to first person view, etc)
+  
+
+
+world:
+  * we should designate certain things as "immobile" or "static" and that's basically the landscape. we shouldn't have to re-send those every time. animations, mobs, etc are the only things that probably dictate a changeset, so we shouldn't have to send all that info over the wire over and over again
+    * This means we'll probably have to have a version that we keep checking for each JSON payload being sent, i suppose, right?
+  * When someone leaves/disconnects for a plot that we have already placed, we should still keep their last known landscape there. ideally we should still be able to traverse through it since we already have the mapping.
+
+
+FLIGHT: keyvan implemented the ability to fly with PR #7 (as far as i understand it). like superman. The purpose of this change would be to allow for mount flight and also land mounts (like a car or a horse)
+  * the default for link view should be "visitors look like their own models"
+  * we need to add a concept of a "possession" or something in the rust engine
+    * That way it can be added as an object to the visitor into another world (an array? i dunno you choose).
+    * it should accept the following attributes for now "is mount"
+    * it should accept the following attributes for now "can fly"
+      * if it cannot fly, then it should ... not fly
+    * sim world should know how to treat mounts with regards to interaction (mount/unmount)
+  * how to reconcile animation? i have no idea. obv the animation is up to the other sim, but i wonder if you can get create here as well
+    * maybe part of the instruction for the implementation guide is to always provide animation details for user models/companions when linking? maybe you did this already
+
+
+chat features and persistence:
+  * The visit client should have an adjacent postgres database for persistence.
+  * A migration manager script should exist that ships when installing/upgrading the system. the LLM should know how to invoke this script
+  * we should store message history, ban lists, shared media (shared screenshots, etc), shared links (think how imessage and whatsapp does this) in postgres
+    * This leads into another requirement, which is the ability to past images from copy/paste buffer
+
+ teleport:
+   * visit client should allow teleporting to linked rooms. it would be up to the sim world to implement the teleport UI, but this way people don't have to walk across areas to get somewhere
+   * implementation markdown file should suggest implementation obv. so the basedverse skill can add it to the hud or wherever it thinks it should add it.
+
+basedverse implementation skill:
+  * Should this have screenshots for vanilla suggestion?
+
+
+two guys waiting on scripts to finish should be fencing (XKCD)

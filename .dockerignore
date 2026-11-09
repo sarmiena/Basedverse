@@ -4,3 +4,5 @@
 **/target
 **/bin
 deps/.work
+# default_office is a workroom of its own, not anything a Dockerfile COPYs.
+default_office

@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""shells — which agents are running a command, for the board (Linux: it reads /proc).
+
+    bin/shells           run in the foreground, writing every few seconds (Ctrl-C stops it)
+    bin/shells --start   run in the background, in place of any already running (bin/start does this)
+    bin/shells --stop    stop the one in the background (bin/down does this)
+    bin/shells --once    print what it sees now, and exit
+
+Every SHELLS_S seconds it looks at every Claude Code process on this machine (`claude`) and the commands
+its shell tool has running: its children that are `bash -c source ~/.claude/shell-snapshots/snapshot-...`,
+a command the agent waits on or one it ran in the background, but not its message waiter (`forge.py
+inbox --wait`, which /go keeps running in the background all day: waiting for mail is not running a
+command). Each carries its session's id in its environment (CLAUDE_CODE_SESSION_ID). For each session,
+when the oldest of its commands began, if that one has run MIN_S seconds or more (a quick command never
+shows). It writes them to .shells/now.json beside bin/, replaced whole so the board never reads half a file:
+
+    {"at": <when it looked, epoch seconds>, "shells": {"<session id>": "<began, ISO UTC>", ...}}
+
+The board reads it (the project is mounted in its container: SHELLS_DIR) and serves each agent's `shell`;
+the kanban says "running a command", and the Agent Room puts the Matrix on that agent's screen. A file
+older than the board's SHELLS_STALE says nothing: a stopped bin/shells shows no one running anything.
+"""
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+DIR = os.path.join(ROOT, ".shells")
+NOW_FILE, PID_FILE, LOG_FILE = (os.path.join(DIR, f) for f in ("now.json", "pid", "log"))
+SHELLS_S = 5   # how often it looks
+MIN_S = 5      # how long a command must have run to count
+TOOL = "/.claude/shell-snapshots/snapshot-"   # in the command line of every command Claude Code's shell tool runs
+WAITER = "forge.py inbox"   # the seat's message waiter: every agent has one running, so it never counts
+
+
+def read(path, mode="r"):
+    try:
+        with open(path, mode) as f:
+            return f.read()
+    except OSError:
+        return None   # gone meanwhile, or not ours to read
+
+
+def stat(proc, pid):
+    """(name, parent pid, start in clock ticks since boot) of a process, or None. Its name is in
+    parentheses and may hold spaces and parentheses itself, so the fields are counted from the last `)`."""
+    s = read(os.path.join(proc, pid, "stat"))
+    if not s or ")" not in s:
+        return None
+    name, rest = s[s.index("(") + 1:s.rindex(")")], s[s.rindex(")") + 2:].split()
+    return name, rest[1], int(rest[19])   # fields 3 (state) on: ppid is the 4th, starttime the 22nd
+
+
+def scan(proc="/proc", now=None):
+    """session id -> when its oldest running shell-tool command began (epoch seconds, whole), for those
+    that have run MIN_S or more. The start comes from the kernel's own record, so it is the same at every
+    look, and the board's snapshot changes only when a command starts counting or ends."""
+    now = time.time() if now is None else now
+    boot = next(int(l.split()[1]) for l in read(os.path.join(proc, "stat")).splitlines() if l.startswith("btime "))
+    tick = os.sysconf("SC_CLK_TCK")
+    procs = {}
+    for pid in os.listdir(proc):
+        if pid.isdigit():
+            st = stat(proc, pid)
+            if st:
+                procs[pid] = st
+    claude = {pid for pid, (name, _, _) in procs.items() if name == "claude"}
+    out = {}
+    for pid, (_, ppid, start) in procs.items():
+        if ppid not in claude:
+            continue
+        cmd = read(os.path.join(proc, pid, "cmdline"), "rb")
+        env = read(os.path.join(proc, pid, "environ"), "rb")
+        if not cmd or TOOL.encode() not in cmd or WAITER.encode() in cmd or not env:
+            continue
+        sid = next((v.split(b"=", 1)[1].decode(errors="replace") for v in env.split(b"\0")
+                    if v.startswith(b"CLAUDE_CODE_SESSION_ID=")), "")
+        began = int(boot + start / tick)
+        if sid and now - began >= MIN_S:
+            out[sid] = min(out.get(sid, began), began)
+    return out
+
+
+def iso(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+
+
+def write(shells, now):
+    os.makedirs(DIR, exist_ok=True)
+    tmp = NOW_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"at": now, "shells": {s: iso(t) for s, t in sorted(shells.items())}}, f)
+    os.replace(tmp, NOW_FILE)
+
+
+def running():
+    """The pid of the bin/shells in the background, or None."""
+    pid = (read(PID_FILE) or "").strip()
+    cmd = pid.isdigit() and read("/proc/%s/cmdline" % pid, "rb")
+    return int(pid) if cmd and b"shells" in cmd else None
+
+
+def stop():
+    pid = running()
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    for f in (PID_FILE, NOW_FILE):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+    return pid
+
+
+def loop():
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    try:
+        while True:
+            now = time.time()
+            try:
+                write(scan(now=now), now)
+            except Exception as e:   # a look that fails costs one look, never the loop
+                print("shells: %s: %s" % (type(e).__name__, e), file=sys.stderr, flush=True)
+            time.sleep(SHELLS_S)
+    finally:
+        try:
+            os.remove(NOW_FILE)
+        except OSError:
+            pass
+
+
+def main(argv):
+    arg = argv[1] if len(argv) > 1 else ""
+    if arg in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    if arg not in ("", "--start", "--stop", "--once"):
+        print("shells: %s? (bin/shells --help says what it takes)" % arg, file=sys.stderr)
+        return 2
+    if arg == "--stop":
+        pid = stop()
+        print("bin/shells stopped" if pid else "bin/shells was not running")
+        return 0
+    if not os.path.isfile("/proc/stat"):
+        print("bin/shells: no /proc here (it is Linux only), so the board will not know who is running a command")
+        return 0
+    if arg == "--once":
+        now = time.time()
+        found = scan(now=now)
+        for sid, t in sorted(found.items(), key=lambda kv: kv[1]):
+            print("%s  running a command since %s (%ds)" % (sid, iso(t), now - t))
+        if not found:
+            print("no agent has had a command running for %ds or more" % MIN_S)
+        return 0
+    if arg == "--start":
+        stop()
+        os.makedirs(DIR, exist_ok=True)
+        with open(LOG_FILE, "a") as log:
+            p = subprocess.Popen([sys.executable, os.path.realpath(__file__)], stdin=subprocess.DEVNULL,
+                                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        with open(PID_FILE, "w") as f:
+            f.write(str(p.pid))
+        print("bin/shells running in the background (pid %d): the board sees who is running a command" % p.pid)
+        return 0
+    loop()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -1,0 +1,37 @@
+{
+  "_doc": [
+    "The board's columns, left to right. Edit freely: the board reloads this file on its next poll.",
+    "A row sits in the RIGHTMOST rule column whose `when` it meets, else in the `default` column.",
+    "when: label (name or list), claimed, pr, blocked, epic (true/false), any: [...], not: {...}.",
+    "label: dragging a card here sets this label and removes the other columns' labels.",
+    "pick: agents pick work from this column. limit: a WIP limit, shown on the column header.",
+    "plan: THE Up next column (the RESUME issue's order). closed: THE closed-lately column.",
+    "claim_label: the label an agent's claim puts on the issue (its release takes it off), so GitHub shows it too.",
+    "MIGRATION (decided 2026-10-23: keep the repo's old `In Progress` label until its sessions switch): the doing column also",
+    "matches `In Progress`. To finish: move each such card (`forge.py move <ref> doing`, which swaps the label), then",
+    "`gh label delete 'In Progress' -R <owner>/<repo>`, and drop `In Progress` from the doing column's `when`.",
+    "Full reference: forge/board/workflow.py."
+  ],
+  "claim_label": "status: in progress",
+  "columns": [
+    {"key": "later", "name": "Later", "label": "status: later",
+     "hint": "Deliberately not now."},
+    {"key": "next", "name": "Up next", "plan": true,
+     "hint": "What a bare /go picks, top first."},
+    {"key": "ready", "name": "Ready", "default": true, "pick": true,
+     "hint": "Open, unclaimed, unblocked, no status. Highest severity first, then oldest."},
+    {"key": "doing", "name": "In progress", "label": "status: in progress",
+     "when": {"any": [{"label": ["status: in progress", "In Progress"]}, {"claimed": true}]},
+     "hint": "An agent claims it, or someone is on it. (Also the older `In Progress` label, until it is renamed.)"},
+    {"key": "review", "name": "In review", "label": "status: in review",
+     "when": {"any": [{"label": "status: in review"}, {"pr": true}]},
+     "hint": "Labelled in review, or an open PR names it."},
+    {"key": "input", "name": "Needs input", "label": "status: needs input",
+     "hint": "Waiting on a person's answer."},
+    {"key": "blocked", "name": "Blocked", "label": "status: blocked",
+     "when": {"any": [{"label": "status: blocked"}, {"blocked": true}]},
+     "hint": "Waiting on a blocked-by edge, or on something outside GitHub."},
+    {"key": "done", "name": "Closed", "closed": true,
+     "hint": "Closed in the last 30 minutes."}
+  ]
+}

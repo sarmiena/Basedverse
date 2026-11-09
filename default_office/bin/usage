@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""usage — the account's usage limits, a bar each as /usage shows them, for the board.
+
+    bin/usage           run in the foreground, asking every couple of minutes (Ctrl-C stops it)
+    bin/usage --start   run in the background, in place of any already running (bin/start does this)
+    bin/usage --stop    stop the one in the background (bin/down does this)
+    bin/usage --once    print what /usage would show now, and exit
+
+Every USAGE_S seconds it asks Claude Code (`claude`, signed in on this machine to a Pro or Max account) for
+what /usage shows: a headless `claude -p` sent one control request, get_usage, and nothing else, so no model
+is asked and nothing is used up. It keeps no session and runs no hook. The answer holds the server's own
+rows, one per bar /usage draws: the current session, the week for all models, and the week for each model or
+surface with a limit of its own (Fable, say). It writes them to .usage/plan.json beside bin/, replaced whole:
+
+    {"at": <epoch seconds>, "rows": [{"kind": "session" | "weekly_all" | "weekly_scoped" | ...,
+      "group": "session" | "weekly", "name": <what a scoped row is for, or null>, "percent": 0-100,
+      "resets_at": <epoch seconds, or null>, "severity": "normal" | "warning" | "critical"}, ...]}
+
+The board reads it (server.usage; the project is mounted in its container: USAGE_DIR) and the kanban and the
+Agent Room draw the rows. A file older than the board's USAGE_STALE says nothing: with bin/usage stopped, or a
+Claude Code whose get_usage no longer answers (it is marked experimental), the board shows what the agents'
+status lines were last handed (seat/hooks/usage_line.py), the session and the week, without the per-model
+rows. Why a look failed is in .usage/log.
+"""
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+DIR = os.path.join(ROOT, ".usage")   # beside the agents' status lines' notes, which the board falls back to
+PLAN_FILE, PID_FILE, LOG_FILE = (os.path.join(DIR, f) for f in ("plan.json", "pid", "log"))
+USAGE_S = 120     # how often it asks
+ASK_S = 45        # how long one ask may take
+ASK = {"type": "control_request", "request_id": "usage", "request": {"subtype": "get_usage", "skip_behaviors": True}}
+# What a running Claude Code hands the commands it runs: bin/start run by an agent must not make every ask a
+# child of that agent's session.
+INHERITED = ("CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
+             "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_SESSION_ATTENDED",
+             "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN")
+
+
+def read(path, mode="r"):
+    try:
+        with open(path, mode) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def epoch(iso):
+    """An ISO 8601 time (Claude Code's: fractions of a second, +00:00) as whole epoch seconds, or None."""
+    try:
+        return int(datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
+
+
+def rows(rl):
+    """The bars /usage draws, from get_usage's rate_limits: the server's rows (`limits`) as sent, or from a
+    server that predates them, the session's, the week's and each model's week."""
+    if isinstance(rl.get("limits"), list):
+        out = []
+        for r in rl["limits"]:
+            scope = r.get("scope") or {}
+            name = next((s["display_name"] for s in (scope.get("model"), scope.get("surface")) if isinstance(s, dict) and s.get("display_name")), None)
+            out.append({"kind": str(r["kind"]), "group": r.get("group"), "name": name, "percent": float(r["percent"]),
+                        "resets_at": epoch(r["resets_at"]) if r.get("resets_at") else None, "severity": r.get("severity")})
+        return out
+    old = [("session", "session", None, rl.get("five_hour")), ("weekly_all", "weekly", None, rl.get("seven_day"))]
+    old += [("weekly_scoped", "weekly", m.get("display_name"), m) for m in rl.get("model_scoped") or []]
+    return [{"kind": k, "group": g, "name": n, "percent": float(w["utilization"]), "resets_at": epoch(w["resets_at"]) if w.get("resets_at") else None,
+             "severity": None} for k, g, n, w in old if isinstance(w, dict) and w.get("utilization") is not None]
+
+
+def ask():
+    """What /usage shows now, as rows; raises with why not."""
+    claude = shutil.which("claude")
+    if not claude:
+        raise RuntimeError("no `claude` on the PATH")
+    env = {k: v for k, v in os.environ.items() if k not in INHERITED}
+    # From a directory of its own (never /tmp itself, where anyone may leave a .claude/ or a .mcp.json for it to load),
+    # with only the user's settings and no MCP servers but none.
+    with tempfile.TemporaryDirectory(prefix="usage-") as here:
+        p = subprocess.run([claude, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+                            "--no-session-persistence", "--setting-sources", "user", "--strict-mcp-config",
+                            "--settings", json.dumps({"disableAllHooks": True})],
+                           input=json.dumps(ASK) + "\n", capture_output=True, text=True, timeout=ASK_S,
+                           cwd=here, env=env)
+    for line in p.stdout.splitlines():
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        r = d.get("response") if d.get("type") == "control_response" else None
+        if not isinstance(r, dict) or r.get("request_id") != ASK["request_id"]:
+            continue
+        if r.get("subtype") != "success":
+            raise RuntimeError("get_usage: %s" % (r.get("error") or r.get("subtype")))
+        rl = (r.get("response") or {}).get("rate_limits")
+        if not isinstance(rl, dict):
+            raise RuntimeError("no plan limits: Claude Code is not signed in to a Pro or Max account here")
+        got = rows(rl)
+        if not got:
+            raise RuntimeError("get_usage answered with no limits")
+        return got
+    raise RuntimeError("claude exited %s without answering get_usage: %s" % (p.returncode, (p.stderr or p.stdout).strip()[-300:]))
+
+
+def write(got, now):
+    os.makedirs(DIR, exist_ok=True)
+    tmp = PLAN_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"at": int(now), "rows": got}, f)
+    os.replace(tmp, PLAN_FILE)
+
+
+def running():
+    """The pid of the bin/usage in the background, or None."""
+    pid = (read(PID_FILE) or "").strip()
+    cmd = pid.isdigit() and read("/proc/%s/cmdline" % pid, "rb")
+    if cmd is None and pid.isdigit():   # no /proc (a Mac): whether it is alive at all
+        try:
+            os.kill(int(pid), 0)
+            return int(pid)
+        except OSError:
+            return None
+    return int(pid) if cmd and b"usage" in cmd else None
+
+
+def stop():
+    pid = running()
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    for f in (PID_FILE, PLAN_FILE):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+    return pid
+
+
+def loop():
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    said = None   # the last failure logged: one that keeps happening is logged once
+    try:
+        while True:
+            now = time.time()
+            try:
+                write(ask(), now)
+                said = None
+            except Exception as e:   # a look that fails costs one look, never the loop
+                why = "%s: %s" % (type(e).__name__, e)
+                if why != said:
+                    print("usage: %s %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), why), file=sys.stderr, flush=True)
+                    said = why
+            time.sleep(USAGE_S)
+    finally:
+        try:
+            os.remove(PLAN_FILE)
+        except OSError:
+            pass
+
+
+def main(argv):
+    arg = argv[1] if len(argv) > 1 else ""
+    if arg in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    if arg not in ("", "--start", "--stop", "--once"):
+        print("usage: %s? (bin/usage --help says what it takes)" % arg, file=sys.stderr)
+        return 2
+    if arg == "--stop":
+        pid = stop()
+        print("bin/usage stopped" if pid else "bin/usage was not running")
+        return 0
+    if arg == "--once":
+        try:
+            got = ask()
+        except Exception as e:
+            print("bin/usage: %s" % e, file=sys.stderr)
+            return 1
+        for r in got:
+            reset = time.strftime("%a %H:%M", time.localtime(r["resets_at"])) if r["resets_at"] else "-"
+            print("%-14s %-8s %-10s %5.1f%% used, resets %s" % (r["kind"], r["group"] or "", r["name"] or "", r["percent"], reset))
+        return 0
+    if arg == "--start":
+        stop()
+        if not shutil.which("claude"):
+            print("bin/usage: no `claude` on the PATH, so the board shows only what the agents' status lines say")
+            return 1
+        os.makedirs(DIR, exist_ok=True)
+        with open(LOG_FILE, "a") as log:
+            p = subprocess.Popen([sys.executable, os.path.realpath(__file__)], stdin=subprocess.DEVNULL,
+                                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        with open(PID_FILE, "w") as f:
+            f.write(str(p.pid))
+        print("bin/usage running in the background (pid %d): the board shows /usage's bars" % p.pid)
+        return 0
+    loop()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

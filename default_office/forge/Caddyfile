@@ -1,0 +1,22 @@
+# The board from other devices on this machine's network (REMOTE=lan in ../.env): HTTPS for this machine's LAN
+# address and <its name>.local, and its tailnet address too when REMOTE has `tailscale` (bin/start finds them all:
+# REMOTE_SITES), with a certificate from Caddy's own authority, for private addresses only (and Tailscale's, with
+# it: REMOTE_FROM), all of it passed to the board's listener for a proxy. Nothing else: no
+# admin endpoint, no plain-HTTP redirect (port 80 untouched), no installing its root anywhere.
+{
+	admin off
+	auto_https disable_redirects
+	skip_install_trust
+	# Asked by its address, a browser names nothing (no SNI): the address's certificate, then.
+	default_sni {$REMOTE_ADDRESS}
+}
+
+{$REMOTE_SITES} {
+	tls internal
+	@outside not remote_ip {$REMOTE_FROM}
+	respond @outside "only from this network" 403
+	# Visit is this machine's (visit's port is its own 127.0.0.1): the board refuses it there too.
+	@visit path /api/visit
+	respond @visit "Visit runs on the board's own machine" 403
+	reverse_proxy 127.0.0.1:3002
+}

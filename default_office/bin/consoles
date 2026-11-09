@@ -1,0 +1,830 @@
+#!/usr/bin/env python3
+"""consoles — the Agent Room's console: an agent's herdr pane, read and answered from the room.
+
+    bin/consoles           run in the foreground (Ctrl-C stops it)
+    bin/consoles --start   run in the background, in place of any already running (bin/start does this)
+    bin/consoles --stop    stop the one in the background (bin/down does this)
+
+Click an agent's name card in the room and its herdr pane opens in a panel: its screen as herdr shows it,
+a box to reply in, and keys for Claude Code's menus. bin/consoles does what that panel asks, through herdr's
+socket (~/.config/herdr/herdr.sock, or HERDR_SOCKET_PATH). It listens on nothing: it connects out to the board
+(REPO_BOARD_URL in .env, else http://localhost:3001), signed in with its own API key (CONSOLES_KEY in .env,
+made by bin/start), and asks it for work. The board queues the room's calls for it, only from the signed-in
+owner's page, on this machine or another device (basedverse's auth/INTEGRATING.md, step 9), and hands back
+its answers:
+
+    screen {agent, since}    {"agent", "status", "screen", "total", "from", "lines", "watched"}: the pane's
+                             visible screen, with its colours, and its scrollback from line `since` on (a
+                             client with that many lines keeps those before `from`, then adds `lines`)
+    send   {agent, text}     the text and Enter, as herdr's `agent prompt` sends them; refused while the
+                             agent is at a question (answer it with the keys)
+    keys   {agent, keys}     key presses, from KEYS only
+    places {}                where a new agent may start: herdr's workspaces, and the agents' directories (AGENTS in
+                             .env, bin/init-agent's), each with its board and the handle of any agent already in it
+    plan   {dir}             what setting a directory up would do (bin/init-agent --plan: its board, its steps), for
+                             you to confirm first; nothing changed. Only a directory settable() takes
+    spawn  {dir, workspace, new_workspace, ref, setup}   a new agent: a new tab in that workspace (or, with
+                             `new_workspace`, a new workspace of that name, its first tab), in that directory (one of
+                             AGENTS, with no agent in it), Claude started in it, and `/go <ref>` given it once it is
+                             ready (a bare `/go` with no ref); answered as soon as it has a name ({agent, pane, ready,
+                             board}), so its console opens at once (a question at its start, a folder to trust, is
+                             answered there; its /go waits for it). With `setup` (once you have confirmed its plan), a
+                             directory not in AGENTS yet is set up first (bin/init-agent: the seat, on its repo's board,
+                             added to AGENTS). A ticket goes only to a directory on its board.
+    hand   {agent, ref}      a ticket for an agent already here: HAND, told it (claim it, read it, talk it through)
+    image  {agent, type, data}   a picture pasted into the console (PNG, JPEG, GIF or WebP, base64, IMAGE_MAX at
+                             most), kept on this machine (.consoles/pastes) for that agent: {"path"}. The console
+                             sends it with the reply, the path on a line of its own, and Claude Code takes a pasted
+                             line that is an image's path as the image itself, as it does a file dropped on it
+
+NAME is the agent's handle on the board, which herdr shows as its pane's display_agent; a pane with none is
+never reached. Each job is checked here too (the name, the text's length, the keys; a directory only from AGENTS or one
+settable() takes, set up by bin/init-agent and nothing else, a workspace only of herdr's (or a new one, by a plain name), a ticket only as repo#N and
+only on the directory's board, what a new agent is told only /go and HAND), so a fault in the board cannot make it type
+anything else, or start anything anywhere else.
+
+The scrollback is its own: herdr gives an agent's history only while it is idle, slowly, by scrolling the
+agent's screen, so instead every WATCH_S it reads each agent's visible screen (under a millisecond) and,
+when the text has moved up, keeps the lines that left the top (HISTORY of them, colours kept). It goes back
+to when it began watching (`watched`), and a redraw it cannot follow (a dialog, a resize) is marked GAP. A restart
+keeps it: each agent's is saved in .consoles/hist (every SAVE_S, and on the way out) and taken up again, the screen
+it had last told against the one there now, as though it had watched all along (GAP when it cannot tell what went by).
+"""
+import base64
+import json
+import os
+import re
+import secrets
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+from collections import deque
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+DIR = os.path.join(ROOT, ".consoles")
+PID_FILE, LOG_FILE, HIST_DIR = (os.path.join(DIR, f) for f in ("pid", "log", "hist"))
+BOARD = "http://localhost:3001"   # the board, as compose.yml publishes it on this machine (REPO_BOARD_URL overrides)
+WORKERS = 2       # jobs asked for at once: one is answered while the other waits for the next
+HOLD_S = 40       # longer than the board holds an empty ask (25 s)
+KEYS = {"esc", "enter", "up", "down", "left", "right", "tab", "shift+tab", "backspace"} | set("123456789")
+NAME = re.compile(r"[a-z][a-z0-9_-]{0,39}")
+TEXT_MAX = 4000   # characters in one reply
+REF = re.compile(r"[A-Za-z0-9_.-]{1,100}#[1-9][0-9]{0,8}")   # a ticket, as the board spells it: repo#N
+SPAWN_S = 60      # how long a new agent's Claude has to start (herdr's agent start)
+SHELL_S = 20      # how long a new tab's shell has to come up, settled at its prompt, before Claude is started in it
+SETTLE_S = 1.0    # ...settled: its shell alone in its foreground this long (its rc files read, its prompt drawn)
+TRIES = 4         # Claude started this many times, a moment apart, while herdr says its pane is not ready for it
+NAMED_S = 15      # then, how long the seat's SessionStart hook has to name it by its board handle
+GO_WAIT_S = 900   # how long a new agent at a question at its start (a folder to trust) is waited on for its /go
+HAND = ("The owner handed you {ref} from the Agent Room. Claim it (python3 ~/.claude/tools/forge.py agent claim {ref} "
+        "-d \"on {ref}: reading it\"), read all of it (forge.py show {ref}: the body and every comment), then talk it "
+        "through with them here before you start on it.")
+ALIASES = {}      # the name a new agent was started by -> its pane: its console, opened by that name, follows it once renamed
+WATCH_S = 0.25    # how often every agent's screen is read, for its scrollback
+LIST_S = 2        # how often herdr's agents are listed again (a new pane, a renamed one)
+HISTORY = 5000    # lines of scrollback kept per agent
+SAVE_S = 10       # how often a changed scrollback is saved (HIST_DIR), so a restart keeps it
+KEEP_S = 86400    # a saved scrollback whose agent herdr no longer has, untouched this long, is deleted
+MATCH = 12        # lines of a new screen's top looked for in the last one, to see how far it scrolled
+GAP = "\x1b[2m  ⋯\x1b[0m"   # in the scrollback, where a redraw lost track of what went by
+IMAGE_MAX = 10 << 20   # bytes in one pasted picture
+IMAGE_TYPES = {"image/png": ("png", b"\x89PNG\r\n\x1a\n"), "image/jpeg": ("jpg", b"\xff\xd8\xff"), "image/gif": ("gif", b"GIF8"), "image/webp": ("webp", b"RIFF")}
+PASTE_DIR = os.path.join(DIR, "pastes")
+PASTE_KEEP_S = 7 * 86400   # a pasted picture is kept this long (Claude Code reads it as it is sent; this is to spare)
+ESC = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[@-_]?")
+INIT = os.path.join(ROOT, "bin", "init-agent")   # sets up a directory not in AGENTS yet (spawn's setup)
+SETUP_S = 120     # how long bin/init-agent has to set one up (its GitHub calls: the repo, its labels)
+WS_LABEL = re.compile(r"[^\x00-\x1f\x7f]{1,40}")   # a new herdr workspace's name
+NO_BOARD = "none"
+
+
+def env(key, default=""):
+    """KEY from the process environment, else the project .env (its last line for it), else default."""
+    if os.environ.get(key, "").strip():
+        return os.environ[key].strip()
+    try:
+        with open(os.environ.get("REPO_ENV") or os.path.join(ROOT, ".env")) as f:
+            vals = [l.split("=", 1)[1].strip().strip("'\"") for l in f if re.match(r"\s*%s\s*=" % key, l)]
+    except OSError:
+        vals = []
+    return vals[-1] if vals and vals[-1] else default
+
+
+def sock_path():
+    return os.environ.get("HERDR_SOCKET_PATH") or os.path.expanduser("~/.config/herdr/herdr.sock")
+
+
+class HerdrError(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+def herdr(method, params, path=None):
+    """One call on herdr's socket API: a JSON line out, a JSON line back. Its `result`, or HerdrError."""
+    try:
+        with socket.socket(socket.AF_UNIX) as s:
+            s.settimeout(SPAWN_S + 5 if method == "agent.start" else 5)
+            s.connect(path or sock_path())
+            s.sendall((json.dumps({"id": "consoles", "method": method, "params": params}) + "\n").encode())
+            buf = b""
+            while not buf.endswith(b"\n"):
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+        r = json.loads(buf)
+    except (OSError, ValueError) as e:
+        raise HerdrError("no_herdr", "herdr did not answer (is it running?): %s" % e)
+    if "error" in r:
+        raise HerdrError(r["error"].get("code", "error"), r["error"].get("message", "herdr refused"))
+    return r.get("result") or {}
+
+
+def named(agents):
+    """herdr's agents by board handle: handle -> (pane, status). The handle is the name the seat's SessionStart hook
+    gave the pane (display_agent), else the pane's title, which Claude Code keeps as the session's title, the same
+    handle unless the owner renamed it: the hook's name is lost when it reaches herdr before herdr has seen Claude
+    start in the pane, and the title is not."""
+    out = {a["terminal_title_stripped"]: (a["pane_id"], a.get("agent_status") or "")
+           for a in agents if a.get("terminal_title_stripped")}
+    out.update({a["display_agent"]: (a["pane_id"], a.get("agent_status") or "") for a in agents if a.get("display_agent")})
+    by_pane = {a["pane_id"]: a.get("agent_status") or "" for a in agents if a.get("pane_id")}
+    for name, pane in list(ALIASES.items()):   # a new agent's first name, while its pane has an agent
+        if pane in by_pane:
+            out.setdefault(name, (pane, by_pane[pane]))
+    return out
+
+
+def pane_of(name, call=herdr):
+    """A board handle -> (its pane, its status), from herdr's agents; HerdrError when no pane has it."""
+    got = named(call("agent.list", {}).get("agents") or []).get(name)
+    if not got:
+        raise HerdrError("agent_not_found", "%s is not in a herdr pane on this machine" % name)
+    return got
+
+
+def run_from(lines, top):
+    """The least k at which `top` runs on through `lines` from line k for 6 lines or more (3 not blank), or None."""
+    for k in range(len(lines)):
+        c = 0
+        while c < len(top) and k + c < len(lines) and lines[k + c] == top[c]:
+            c += 1
+        if c >= min(6, len(top)) and sum(1 for l in top[:c] if l) >= 3:
+            return k
+    return None
+
+
+def scrolled(old, new):
+    """How many lines the screen `old` moved up to become `new` (lines without colours): k > 0 up (k lines left
+    the top), -k down (the live part at the bottom shrank: k lines that had left come back), 0 when its top stayed
+    put or says too little to tell (mostly blank), None when no shift fits (a redraw). Told by where one screen's
+    top runs on through the other: the top is what has settled; the bottom streams, with the input box under it."""
+    top = new[:MATCH]
+    if sum(1 for l in top if l) < 3:
+        return 0
+    k = run_from(old, top)
+    if k is not None:
+        return k
+    otop = old[:MATCH]
+    d = run_from(new, otop) if sum(1 for l in otop if l) >= 3 else None
+    return -d if d else None
+
+
+class Pane:
+    """One agent's screen as last read, and the lines above it: those that have scrolled off its top since it was
+    first watched, each at its place in the agent's output (counted from then), so a line that comes back onto the
+    screen (it scrolled down) is handed back, and goes on again in the same place when it leaves again."""
+    def __init__(self, now):
+        self.lines, self.plain, self.hist, self.base, self.watched, self.dirty = None, None, [], 0, now, False
+
+    def saved(self):
+        """What a restart takes up again (revive): the scrollback, where it starts, since when, and the screen."""
+        return {"watched": self.watched, "base": self.base, "hist": self.hist, "lines": self.lines}
+
+    @classmethod
+    def revive(cls, d):
+        """A Pane as saved(); ValueError when `d` is not one. Its screen is the last one seen, so the next one read is
+        told against it as any other: the lines that went by meanwhile, or GAP."""
+        if not (isinstance(d, dict) and isinstance(d.get("watched"), (int, float)) and isinstance(d.get("base"), int)
+                and isinstance(d.get("hist"), list) and all(isinstance(l, str) for l in d["hist"])
+                and (d.get("lines") is None or isinstance(d["lines"], list) and all(isinstance(l, str) for l in d["lines"]))):
+            raise ValueError("not a saved scrollback")
+        p = cls(d["watched"])
+        p.base, p.hist, p.lines = max(0, d["base"]), d["hist"], d["lines"]
+        p.plain = [ESC.sub("", l).rstrip() for l in p.lines] if p.lines is not None else None
+        return p
+
+    @property
+    def total(self):
+        return self.base + len(self.hist)   # where the screen's top line is, in the agent's output
+
+    def see(self, text):
+        lines = text.replace("\r", "").rstrip("\n").split("\n")
+        plain = [ESC.sub("", l).rstrip() for l in lines]
+        if self.plain is not None and plain != self.plain:
+            k = scrolled(self.plain, plain)
+            if k is None:
+                if not self.hist or self.hist[-1] != GAP:
+                    self.hist.append(GAP)
+            elif k > 0:
+                self.hist.extend(self.lines[:k])
+            elif k < 0:
+                del self.hist[max(0, len(self.hist) + k):]
+            if len(self.hist) > HISTORY + 500:   # trimmed a chunk at a time
+                del self.hist[:500]
+                self.base += 500
+        self.dirty = self.dirty or plain != self.plain
+        self.lines, self.plain = lines, plain
+
+    def since(self, n):
+        """The lines above the screen from line n on: (from, lines). A client with n lines keeps those before `from`
+        and puts these after them: fewer than it had when some came back onto the screen, and from the first kept
+        when it is behind that. A client from another run (`watched` differs) asks again from 0."""
+        start = min(max(n, self.base), self.total)
+        return start, self.hist[start - self.base:]
+
+
+class Watcher:
+    """Every agent's screen, read every WATCH_S, so its scrollback is kept whether or not its console is open; in
+    `keep` (a directory), each one's saved, so another run takes it up again (none: kept only while this one runs)."""
+    def __init__(self, call=herdr, keep=None):
+        self.call, self.lock, self.panes, self.agents, self.listed = call, threading.Lock(), {}, {}, 0.0
+        self.keep, self.saved_at, self.pruned = keep, time.time(), False
+
+    def list(self):
+        """herdr's agents that have a board handle: handle -> (pane, status)."""
+        self.agents = named(self.call("agent.list", {}).get("agents") or [])
+        self.listed = time.time()
+
+    def pane(self, name):
+        """The agent's Pane, under self.lock: the one this run has, else as saved by another, else new."""
+        if name not in self.panes:
+            p = None
+            if self.keep and NAME.fullmatch(name):
+                try:
+                    with open(os.path.join(self.keep, name + ".json")) as f:
+                        p = Pane.revive(json.load(f))
+                except FileNotFoundError:
+                    pass
+                except (OSError, ValueError) as e:
+                    print("consoles: %s's saved scrollback is unreadable, so it starts again (%s)" % (name, e), file=sys.stderr, flush=True)
+            self.panes[name] = p or Pane(time.time())
+        return self.panes[name]
+
+    def save(self):
+        """Each scrollback changed since the last save, to `keep` (a board handle's only: no other name is a file's)."""
+        self.saved_at = time.time()
+        if not self.keep:
+            return
+        with self.lock:
+            out = [(n, json.dumps(p.saved())) for n, p in self.panes.items() if p.dirty and NAME.fullmatch(n)]
+            for n, _ in out:
+                self.panes[n].dirty = False
+        try:
+            os.makedirs(self.keep, mode=0o700, exist_ok=True)
+            for n, s in out:
+                path = os.path.join(self.keep, n + ".json")
+                with os.fdopen(os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+                    f.write(s)
+                os.replace(path + ".tmp", path)
+        except OSError as e:
+            print("consoles: the scrollback was not saved (%s)" % e, file=sys.stderr, flush=True)
+
+    def prune(self):
+        """The saved scrollbacks of agents herdr no longer has, untouched for KEEP_S: their sessions are over."""
+        self.pruned = True
+        try:
+            for f in os.listdir(self.keep):
+                path = os.path.join(self.keep, f)
+                if f.endswith(".json") and f[:-5] not in self.agents and time.time() - os.path.getmtime(path) > KEEP_S:
+                    os.remove(path)
+        except OSError:
+            pass
+
+    def read(self, name):
+        if time.time() - self.listed > LIST_S:
+            self.list()
+        if name not in self.agents:
+            raise HerdrError("agent_not_found", "%s is not in a herdr pane on this machine" % name)
+        pane, status = self.agents[name]
+        r = self.call("agent.read", {"target": pane, "source": "visible", "format": "ansi", "strip_ansi": False})
+        text = (r.get("read") or {}).get("text") or ""
+        with self.lock:
+            self.pane(name).see(text)
+        return status, text
+
+    def screen(self, name, since=0):
+        try:
+            status, text = self.read(name)
+        except HerdrError as e:
+            if e.code != "agent_not_found":
+                raise
+            self.listed = 0.0   # a pane new since the last list: list again, once
+            status, text = self.read(name)
+        with self.lock:
+            p = self.panes[name]
+            start, lines = p.since(since)
+            return {"agent": name, "status": status, "screen": text, "total": p.total, "from": start,
+                    "lines": lines, "watched": p.watched}
+
+    def step(self):
+        try:
+            if time.time() - self.listed > LIST_S:
+                self.list()
+        except HerdrError:
+            return
+        if self.keep and not self.pruned:
+            self.prune()
+        for name in list(self.agents):
+            try:
+                self.read(name)
+            except HerdrError:
+                pass
+        if time.time() - self.saved_at >= SAVE_S:
+            self.save()
+
+    def run(self):
+        while True:
+            self.step()
+            time.sleep(WATCH_S)
+
+
+def clean(text):
+    """A reply as typed: C0 controls but newline and tab dropped (an ESC could end herdr's bracketed paste)."""
+    return re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text.replace("\r\n", "\n"))
+
+
+def send(name, text, call=herdr):
+    text = clean(text if isinstance(text, str) else "")
+    if not text.strip() or len(text) > TEXT_MAX:
+        raise HerdrError("bad_text", "a reply is 1 to %d characters" % TEXT_MAX)
+    pane, _ = pane_of(name, call)
+    call("agent.prompt", {"target": pane, "text": text})
+    return {"ok": True}
+
+
+def keys(name, ks, call=herdr):
+    if not isinstance(ks, list) or not 1 <= len(ks) <= 10 or any(k not in KEYS for k in ks):
+        raise HerdrError("bad_keys", "keys are 1 to 10 of: %s" % " ".join(sorted(KEYS)))
+    pane, _ = pane_of(name, call)
+    call("agent.send_keys", {"target": pane, "keys": ks})
+    return {"ok": True}
+
+
+def image(name, kind, data, call=herdr, into=None):
+    """A picture pasted into the room's console for agent `name`: checked to be one (its type, and its bytes the
+    type's), kept where Claude on this machine can read it (PASTE_DIR, a name of this run's making), and its path
+    back. Those older than PASTE_KEEP_S go."""
+    if kind not in IMAGE_TYPES:
+        raise HerdrError("bad_image", "a picture is one of: %s" % ", ".join(sorted(IMAGE_TYPES)))
+    try:
+        raw = base64.b64decode(data if isinstance(data, str) else "", validate=True)
+    except ValueError:
+        raise HerdrError("bad_image", "a picture's data is base64")
+    if not raw or len(raw) > IMAGE_MAX:
+        raise HerdrError("bad_image", "a picture is 1 byte to %d MB" % (IMAGE_MAX >> 20))
+    ext, magic = IMAGE_TYPES[kind]
+    if not raw.startswith(magic) or (ext == "webp" and raw[8:12] != b"WEBP"):
+        raise HerdrError("bad_image", "that is not a %s" % kind)
+    pane_of(name, call)   # an agent here, or no picture for it
+    into = into or PASTE_DIR
+    os.makedirs(into, exist_ok=True)
+    for f in os.listdir(into):
+        try:
+            if time.time() - os.path.getmtime(os.path.join(into, f)) > PASTE_KEEP_S:
+                os.remove(os.path.join(into, f))
+        except OSError:
+            pass
+    path = os.path.join(into, "%s-%s-%s.%s" % (name, time.strftime("%Y%m%d-%H%M%S"), secrets.token_hex(3), ext))
+    with open(path, "wb") as f:
+        f.write(raw)
+    return {"path": path}
+
+
+def dirs():
+    """The agents' directories (AGENTS in .env, bin/init-agent's), as real paths, in its order."""
+    return [os.path.realpath(os.path.expanduser(d.strip())) for d in env("AGENTS").split(",") if d.strip()]
+
+
+def home_board():
+    """The home board's key, as the board serves it: REPO_OWNER/REPO_HOME (else the one repo in REPO_NAMES)."""
+    names = [r for r in re.split(r"[\s,]+", env("REPO_NAMES")) if r]
+    return "%s/%s" % (env("REPO_OWNER"), env("REPO_HOME") or (names[0] if len(names) == 1 else ""))
+
+
+def board_of(d):
+    """Directory `d`'s board, as its seat says (env.REPO_BOARD in its .claude/settings.local.json, bin/init-agent's):
+    another board's owner/repo, NO_BOARD, or, naming none, the home board's key."""
+    try:
+        with open(os.path.join(d, ".claude", "settings.local.json"), encoding="utf-8") as f:
+            b = ((json.load(f).get("env") or {}).get("REPO_BOARD") or "").strip()
+    except (OSError, ValueError, AttributeError):
+        b = ""
+    return b or home_board()
+
+
+def board_of_ref(ref):
+    """The board a ticket (repo#N) is on: another board whose repo it is (REPO_BOARDS), else the home board."""
+    repo = ref.split("#")[0].lower()
+    return next((k for k in re.split(r"[\s,]+", env("REPO_BOARDS")) if "/" in k and k.split("/")[1].lower() == repo),
+                home_board())
+
+
+
+
+def settable(d):
+    """The real path of a directory a new agent may be set up in from the room (spawn's setup), or HerdrError: an
+    existing directory in your home, given as an absolute or ~ path, not the home itself, nothing hidden on the way to
+    it (no ~/.ssh), not this checkout nor anything in it."""
+    if not isinstance(d, str) or not d.strip() or len(d) > 1024 or "\0" in d or not d.strip().startswith(("/", "~")):
+        raise HerdrError("bad_dir", "a directory is a path: /… or ~/…")
+    if any(c in d for c in "\r\n,"):   # it goes into .env's AGENTS (comma-separated, a line): never a line or an entry of its own
+        raise HerdrError("bad_dir", "a directory for an agent has no comma or line break in its path")
+    home = os.path.realpath(os.path.expanduser("~"))
+    p = os.path.realpath(os.path.expanduser(d.strip()))
+    if any(c in p for c in "\r\n,"):   # (nor where it really is: a link to one)
+        raise HerdrError("bad_dir", "a directory for an agent has no comma or line break in its path")
+    if not p.startswith(home + os.sep):
+        raise HerdrError("bad_dir", "%s is not in your home directory" % p)
+    if any(part.startswith(".") for part in os.path.relpath(p, home).split(os.sep)):
+        raise HerdrError("bad_dir", "%s is in a hidden directory" % p)
+    if p == ROOT or p.startswith(ROOT + os.sep):
+        raise HerdrError("bad_dir", "%s is the board's own checkout" % p)
+    if not os.path.isdir(p):
+        raise HerdrError("bad_dir", "no such directory: %s" % p)
+    return p
+
+
+def setup(d, run=subprocess.run):
+    """bin/init-agent on `d`: the seat installed on its repo's board, and `d` added to AGENTS. HerdrError, with the
+    last of what it said, when it did not."""
+    try:
+        r = run([sys.executable, INIT, d], capture_output=True, text=True, timeout=SETUP_S, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        raise HerdrError("setup_failed", "bin/init-agent took over %ds to set %s up" % (SETUP_S, d))
+    said = ((r.stdout or "") + (r.stderr or "")).strip()
+    print("consoles: bin/init-agent %s (exit %d):\n%s" % (d, r.returncode, said), file=sys.stderr, flush=True)
+    if r.returncode or d not in dirs():
+        tail = [l.strip() for l in said.splitlines() if l.strip() and not re.match(r"\s*(\d+\.\s|Agents \()", l)][-2:]   # not its listing
+        raise HerdrError("setup_failed", "bin/init-agent could not set %s up: %s" % (d, " / ".join(tail) or "exit %d" % r.returncode))
+
+
+def places(call=herdr):
+    """Where a new agent may start: herdr's workspaces ({id, label}), and the agents' directories ({path, name, agent:
+    the handle of an agent already in it, else null; board}). Any other directory is yours to name (plan, then spawn's
+    setup): none is guessed."""
+    ws = call("workspace.list", {}).get("workspaces") or []
+    return {"workspaces": [{"id": w["workspace_id"], "label": w.get("label") or w["workspace_id"]} for w in ws if w.get("workspace_id")],
+            "dirs": [{"path": d, "name": os.path.basename(d), "agent": busy_in(d, call, short=True), "board": board_of(d)} for d in dirs()]}
+
+
+def plan(job, run=subprocess.run, call=herdr):
+    """What setting directory job["dir"] up would do (bin/init-agent --plan), for you to confirm: {dir, shown, board,
+    private, agents, refused, steps, busy: who works there already (herdr's), else null}. Nothing is changed."""
+    d = settable(job.get("dir"))
+    try:
+        r = run([sys.executable, INIT, "--plan", d], capture_output=True, text=True, timeout=SETUP_S, stdin=subprocess.DEVNULL)
+        got = json.loads(r.stdout) if r.returncode == 0 else None
+    except subprocess.TimeoutExpired:
+        raise HerdrError("setup_failed", "bin/init-agent took over %ds to say what it would do" % SETUP_S)
+    except ValueError:
+        got = None
+    if not isinstance(got, dict):
+        raise HerdrError("setup_failed", "bin/init-agent could not say what it would do: %s" % ((r.stderr or r.stdout or "").strip()[-300:] or "exit %d" % r.returncode))
+    got["busy"] = busy_in(d, call)   # someone working there already: spawn would refuse it, so you are told before you confirm
+    return got
+
+
+def busy_in(d, call=herdr, agents=None, short=False):
+    """Who herdr has working in directory `d` (or under it): an agent's board handle, else its pane's title, quoted (a
+    session of yours, not on the board), with its pane (`short`: the title alone); None for nobody."""
+    for a in agents if agents is not None else call("agent.list", {}).get("agents") or []:
+        title = a.get("terminal_title_stripped")
+        who = a.get("display_agent") or (('"%s"' % title[:40] if short else '"%s" (a %s session in herdr pane %s)' % (title, a.get("agent") or "Claude", a.get("pane_id") or "?"))
+                                         if title else "an agent in herdr pane %s" % (a.get("pane_id") or "?"))
+        for k in ("cwd", "foreground_cwd"):
+            p = os.path.realpath(a[k]) if a.get(k) else None
+            if p and (p == d or p.startswith(d + os.sep)):
+                return who
+    return None
+
+
+def spawn(job, call=herdr, later=None, run=subprocess.run):
+    """A new agent (see the module's doc): {agent, pane, ready, board}. `later` runs its /go when it waits at a
+    question first (a thread, by default); `run` runs bin/init-agent for a directory to set up."""
+    d, ws, ref = job.get("dir"), job.get("workspace"), job.get("ref")
+    if ref is not None and (not isinstance(ref, str) or not REF.fullmatch(ref)):
+        raise HerdrError("bad_ref", "a ticket is repo#N")
+    new = not isinstance(d, str) or d not in dirs()
+    if new and not job.get("setup"):
+        raise HerdrError("bad_dir", "not one of the agents' directories (AGENTS in .env)")
+    if new:
+        d = settable(d)
+        new = d not in dirs()   # one already set up, by another spelling
+    label = job.get("new_workspace")
+    if label is not None:
+        if not isinstance(label, str) or not WS_LABEL.fullmatch(label.strip()):
+            raise HerdrError("bad_workspace", "a new workspace's name is 1 to 40 plain characters")
+        label = label.strip()
+    else:
+        wss = (call("workspace.list", {}).get("workspaces") or [])
+        if not isinstance(ws, str) or ws not in [w.get("workspace_id") for w in wss]:
+            raise HerdrError("bad_workspace", "not one of herdr's workspaces")
+    held = busy_in(d, call)
+    if held:
+        raise HerdrError("dir_busy", "%s already works in %s: one agent to a checkout" % (held, d))
+    if new:
+        setup(d, run)
+    board = board_of(d)
+    if ref and board_of_ref(ref).lower() != board.lower():
+        raise HerdrError("wrong_board", "%s is on the %s board, and %s works from %s" % (
+            ref, board_of_ref(ref), os.path.basename(d), "no board" if board == NO_BOARD else "the %s board" % board))
+    made_ws = None
+    if label is not None:   # a new workspace, its first tab in that directory: that is where it starts
+        made = call("workspace.create", {"label": label, "cwd": d, "focus": False}) or {}
+        pane, tab = (made.get("root_pane") or {}).get("pane_id"), None
+        made_ws = (made.get("workspace") or {}).get("workspace_id")
+    else:
+        pane, tab = idle_shell(ws, d, call), None   # a shell left at its prompt there, in that workspace (a start that failed), else a new tab
+    if not pane and label is None:
+        made = call("tab.create", {"workspace_id": ws, "cwd": d, "label": os.path.basename(d), "focus": False}) or {}
+        pane, tab = (made.get("root_pane") or {}).get("pane_id"), (made.get("tab") or {}).get("tab_id")
+    if not pane:
+        raise HerdrError("no_pane", "herdr made no pane for the new agent")
+    first = "new-" + os.urandom(3).hex()
+    ALIASES[first] = pane
+    ready = True
+    try:
+        start(pane, first, call)
+    except HerdrError as e:
+        if e.code == "agent_not_ready":
+            ready = False   # at a question (a folder to trust): answered in its console
+        else:
+            try:   # nothing started in the tab (or the workspace) it made: closed again
+                if made_ws:
+                    call("workspace.close", {"workspace_id": made_ws})
+                elif tab:
+                    call("tab.close", {"tab_id": tab})
+            except HerdrError:
+                pass
+            raise
+    name, end = first, time.time() + (NAMED_S if ready else 0)
+    while True:   # its board handle, once the seat's SessionStart hook has named it
+        a = next((a for a in call("agent.list", {}).get("agents") or [] if a.get("pane_id") == pane), {})
+        got = a.get("display_agent") or ""
+        if got and got != first and NAME.fullmatch(got):
+            name = got
+            break
+        if time.time() >= end:
+            break
+        time.sleep(0.5)
+    # Its /go, once herdr has it idle and ready for input (just started, herdr can refuse a prompt a moment: "not an
+    # active named agent"), from the side, so the answer (and its console) does not wait for it.
+    go = {"target": pane, "text": "/go " + ref if ref else "/go"}
+    (later or (lambda f: threading.Thread(target=f, daemon=True).start()))(lambda: go_when_ready(pane, go, call))
+    return {"agent": name, "pane": pane, "ready": ready, "board": board}
+
+
+def shell_up(pane, call=herdr, wait=SHELL_S):
+    """Whether the pane's shell is up at its prompt: alone in its foreground, SETTLE_S on end (within `wait`)."""
+    end, since = time.time() + wait, None
+    while time.time() < end:
+        try:
+            pi = (call("pane.process_info", {"pane_id": pane}) or {}).get("process_info") or {}
+        except HerdrError:
+            pi = {}
+        fg = pi.get("foreground_processes") or []
+        alone = bool(pi.get("shell_pid")) and len(fg) == 1 and fg[0].get("pid") == pi.get("shell_pid")
+        since = (since or time.time()) if alone else None
+        if since and time.time() - since >= SETTLE_S:
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def idle_shell(ws, d, call=herdr):
+    """A pane in workspace `ws` with its shell at its prompt in directory `d` and no agent in it (one a start left), or None."""
+    panes = (call("pane.list", {"workspace_id": ws}) or {}).get("panes") or []
+    for p in panes:
+        if p.get("agent") or p.get("display_agent") or os.path.realpath(p.get("cwd") or "/") != d:
+            continue
+        if p.get("workspace_id", ws) == ws and shell_up(p["pane_id"], call, wait=SETTLE_S + 0.5):
+            return p["pane_id"]
+    return None
+
+
+def start(pane, name, call=herdr):
+    """Claude started in the pane, once its shell is up; again a moment later (TRIES) while herdr says it is not ready
+    for one (a shell still starting). agent_not_ready (started, at a question) and anything else: raised."""
+    for k in range(TRIES):
+        shell_up(pane, call)
+        try:
+            return call("agent.start", {"name": name, "kind": "claude", "pane_id": pane, "timeout_ms": SPAWN_S * 1000})
+        except HerdrError as e:
+            print("consoles: Claude did not start in %s (%s: %s)%s" % (pane, e.code, e, ", trying again" if k + 1 < TRIES and e.code != "agent_not_ready" else ""),
+                  file=sys.stderr, flush=True)
+            if e.code == "agent_not_ready" or k + 1 == TRIES:
+                raise
+            time.sleep(1.5)
+
+
+def go_when_ready(pane, go, call=herdr, wait=GO_WAIT_S):
+    """A new agent's /go, once herdr has it idle and ready for input (past any question it started at), tried again
+    while herdr refuses it; given up after `wait`. Said in the log either way."""
+    end, why = time.time() + wait, "it never came up idle"
+    while time.time() < end:
+        try:
+            a = next((a for a in call("agent.list", {}).get("agents") or [] if a.get("pane_id") == pane), None)
+        except HerdrError as e:
+            a, why = None, str(e)
+        if a and a.get("agent_status") in ("idle", "done") and a.get("interactive_ready", True):
+            try:
+                call("agent.prompt", go)
+                print("consoles: %s given %r" % (pane, go["text"]), file=sys.stderr, flush=True)
+                return True
+            except HerdrError as e:
+                why = "%s: %s" % (e.code, e)
+        time.sleep(2)
+    print("consoles: %s never given %r (%s)" % (pane, go["text"], why), file=sys.stderr, flush=True)
+    return False
+
+
+def hand(name, ref, call=herdr):
+    if not isinstance(ref, str) or not REF.fullmatch(ref):
+        raise HerdrError("bad_ref", "a ticket is repo#N")
+    pane, _ = pane_of(name, call)
+    call("agent.prompt", {"target": pane, "text": HAND.format(ref=ref)})
+    return {"ok": True}
+
+
+STATUS = {"agent_not_found": 404, "agent_blocked": 409, "bad_text": 400, "bad_keys": 400, "invalid_key": 400,
+          "bad_ref": 400, "bad_dir": 400, "bad_workspace": 400, "dir_busy": 409, "bad_image": 400, "setup_failed": 502,
+          "wrong_board": 409}
+
+
+def do(job, call=None, watch=None):
+    """One job the board passed on (a call from the room's console): (status, answer)."""
+    call, watch = call or herdr, watch or WATCH
+    if not isinstance(job, dict):
+        return 400, {"error": "a job is an object"}
+    try:   # those for no agent yet
+        if job.get("do") == "places":
+            return 200, places(call)
+        if job.get("do") == "spawn":
+            return 200, spawn(job, call)
+        if job.get("do") == "plan":
+            return 200, plan(job, call=call)
+    except HerdrError as e:
+        print("consoles: %s refused (%s: %s)" % (job.get("do"), e.code, e), file=sys.stderr, flush=True)
+        return STATUS.get(e.code, 502), {"error": str(e), "code": e.code}
+    name = job.get("agent")
+    if not isinstance(name, str) or not NAME.fullmatch(name):
+        return 400, {"error": "no agent named"}
+    try:
+        if job.get("do") == "screen":
+            since = str(job.get("since", "0"))
+            if not since.isdigit():
+                return 400, {"error": "since is a line number"}
+            return 200, watch.screen(name, int(since))
+        if job.get("do") == "send":
+            return 200, send(name, job.get("text"), call)
+        if job.get("do") == "keys":
+            return 200, keys(name, job.get("keys"), call)
+        if job.get("do") == "hand":
+            return 200, hand(name, job.get("ref"), call)
+        if job.get("do") == "image":
+            return 200, image(name, job.get("type"), job.get("data"), call)
+        return 400, {"error": "no such job: screen, send, keys, hand, image, places, plan or spawn"}
+    except HerdrError as e:
+        return STATUS.get(e.code, 502), {"error": str(e), "code": e.code}
+
+
+def board(board_url, key, path, body=None, timeout=10):
+    """A call to the board, as bin/consoles (its key): its JSON (None for 204), or HTTPError / URLError."""
+    req = Request(board_url + path, data=None if body is None else json.dumps(body).encode(), method="GET" if body is None else "POST",
+                  headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
+    with urlopen(req, timeout=timeout) as r:
+        raw = r.read()
+        return json.loads(raw) if r.status != 204 and raw else None
+
+
+def work(board_url, key, call=None, watch=None, stop=None):
+    """Ask the board for the room's console calls, do each, and answer it; again, until stop is set. The board
+    gone (a restart): asked again shortly. The key refused: said, and asked again slowly (bin/start makes another)."""
+    while not (stop and stop.is_set()):
+        try:
+            job = board(board_url, key, "/api/console/next", timeout=HOLD_S)
+        except HTTPError as e:
+            if e.code in (401, 403):
+                print("consoles: the board refused this key (%d): bin/start makes another" % e.code, file=sys.stderr, flush=True)
+                time.sleep(10)
+            else:   # the board, or its sign-in, not ready yet (a start, a restart)
+                time.sleep(2)
+            continue
+        except (URLError, OSError, ValueError):
+            time.sleep(1)
+            continue
+        if not job:
+            continue
+        status, answer = do(job, call, watch)
+        try:
+            board(board_url, key, "/api/console/answer", {"id": job.get("id"), "status": status, "body": answer})
+        except HTTPError as e:   # the board takes an answer its caller gave up on (200): a refusal is a fault, said
+            print("consoles: the board refused an answer (%d): %s" % (e.code, e.read()[:200].decode("utf-8", "replace")),
+                  file=sys.stderr, flush=True)
+        except (URLError, OSError):
+            pass   # it restarted: the room asks again
+
+
+WATCH = Watcher(keep=HIST_DIR)
+
+
+def read(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def running():
+    """The pid of the bin/consoles in the background, or None."""
+    pid = (read(PID_FILE) or b"").decode().strip()
+    cmd = pid.isdigit() and read("/proc/%s/cmdline" % pid)
+    return int(pid) if cmd and b"consoles" in cmd else None
+
+
+def stop():
+    pid = running()
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    try:
+        os.remove(PID_FILE)
+    except OSError:
+        pass
+    return pid
+
+
+def run(board_url, key):
+    threading.Thread(target=WATCH.run, daemon=True).start()
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    print("consoles: taking the room's console calls from the board at %s" % board_url, flush=True)
+    for _ in range(WORKERS - 1):
+        threading.Thread(target=work, args=(board_url, key), daemon=True).start()
+    try:
+        work(board_url, key)
+    finally:   # stopped (SIGTERM, Ctrl-C): the scrollback since the last save, kept for the next run
+        WATCH.save()
+
+
+def main(argv):
+    arg = argv[1] if len(argv) > 1 else ""
+    if arg in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    if arg not in ("", "--start", "--stop"):
+        print("consoles: %s? (bin/consoles --help says what it takes)" % arg, file=sys.stderr)
+        return 2
+    if arg == "--stop":
+        pid = stop()
+        print("bin/consoles stopped" if pid else "bin/consoles was not running")
+        return 0
+    if not os.path.exists(sock_path()):
+        print("bin/consoles: no herdr here (no %s), so the room's console is off" % sock_path())
+        return 0
+    board_url, key = env("REPO_BOARD_URL", BOARD).rstrip("/"), env("CONSOLES_KEY")
+    if not key:
+        print("bin/consoles: no CONSOLES_KEY in .env (bin/start makes it), so the room's console is off", file=sys.stderr)
+        return 1
+    if arg == "--start":
+        stop()
+        os.makedirs(DIR, exist_ok=True)
+        os.chmod(DIR, 0o700)
+        with open(LOG_FILE, "a") as log:
+            p = subprocess.Popen([sys.executable, os.path.realpath(__file__)], stdin=subprocess.DEVNULL,
+                                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        with open(PID_FILE, "w") as f:
+            f.write(str(p.pid))
+        time.sleep(0.5)
+        if p.poll() is not None:
+            stop()
+            print("bin/consoles did not start (%s says why)" % os.path.relpath(LOG_FILE, ROOT), file=sys.stderr)
+            return 1
+        print("bin/consoles running in the background (pid %d): it takes the room's console calls from the board, "
+              "for an agent's herdr pane" % p.pid)
+        return 0
+    run(board_url, key)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

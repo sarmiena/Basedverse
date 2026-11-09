@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# The board's sign-in, from a terminal: `visit auth` (basedverse 2.0: the sign-in is inside visit), on this
+# workroom's database (the running visit's, else one started for the command). There is no sign-up page: an
+# account is made here, by someone at this machine.
+#
+#   bin/auth user add <name>       your account: its password typed twice, never echoed (at least 12 characters)
+#   bin/auth passwd <name>         a new password, and every session of that account ended
+#   bin/auth user list             the accounts
+#   bin/auth sessions              who is signed in, since when and from where, and the last sign-ins tried
+#   bin/auth revoke <session>      ends one (as `sessions` shows it), or: bin/auth revoke --user <name>
+#   bin/auth key add <label>       an API key for a script (printed once); the agents' is `agents` (bin/start's)
+#   bin/auth key list | key revoke <label>
+#
+# Everything else it takes: bin/auth --help.
+set -euo pipefail
+case "${1:-}" in
+  "") sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+esac
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV="${REPO_ENV:-$ROOT/.env}"; [ -f "$ENV" ] || ENV=/dev/null
+die() { echo "auth: $*" >&2; exit 1; }
+. "$ROOT/bin/lib/env.sh"     # envval, setenv, basedverse
+. "$ROOT/bin/lib/visit.sh"   # visit_cmd
+. "$ROOT/bin/lib/auth.sh"    # auth_run
+[ -x "$(visit_bin)" ] || die "no visit at $(visit_bin): bin/start builds it"
+auth_run "$@"
