@@ -291,17 +291,17 @@ checkout), only in one of herdr's workspaces or one it makes, and tells it only 
 
 Every room has a side door in its left wall toward the back: the office's white one with an EXIT sign, the jungle's
 of old planks in a frame of beams where a column of its wall has gone, the pool club's teak STAFF door; in the
-terrorist sweatshop, a cage, a recruit waiting in it, a guard by it. A new agent (one the roster gains while the room
+terrorist camp, a cage, a recruit waiting in it, a guard by it. A new agent (one the roster gains while the room
 is open, however it was started) comes in by it (the door opens before it and shuts behind; the guard turns, opens
 the cage and lets it out, and a new recruit is put in), walks up the left aisle to the board to meet you, waves (a
 "hi! I'm …"), and sits down at its desk; a card it claimed as it came, it walks for after.
 
 An agent between turns (not in one, not waiting on you, no subagents working, no card to walk) gets up to
 something now and then, and sits idle a while between: it walks to the water cooler on the right of the
-room for a drink (the water is green in the sweatshop); in the office, to the coffee bar behind the
+room for a drink (the water is green in the jungle ruin); in the office, to the coffee bar behind the
 cooler, fills a mug at the espresso machine (it steams), sips, blows on it, sips again and carries the mug
 back to its desk; at the pool club, to the tiki bar there for a cocktail, sips it through its straw, sips
-again and carries it back; in the sweatshop, to the rotten bananas, eats one and tosses the peel back on the pile;
+again and carries it back; in the jungle ruin, to the rotten bananas, eats one and tosses the peel back on the pile;
 over to another agent at its desk for a chat, speech bubbles going back and forth while the other turns
 its head; or at its own desk it dozes off, Z's rising, or swivels round and scrolls on its phone. A stale
 agent mostly dozes. Click one that is dozing and it wakes with a start (HUH?!), stretches, and goes off to
@@ -320,10 +320,10 @@ down to first person. Any of those keys takes over from the overview, and **Rese
 view magnified 3× to 12× (the wheel; they open at 6×), two round lenses over it; a drag looks about, slower the more
 they magnify, and a click still lands where you look (a name card across the room, say). B, Esc or the button again
 lowers them. Yours alone: nobody in the room sees them.
-You are not kept in the room: walk out of its open sides (in the sweatshop, jump the left wall where it
+You are not kept in the room: walk out of its open sides (in the jungle ruin, jump the left wall where it
 has crumbled to a block) into the jungle round it, some 55 m each way, past trees and rocks, along a dirt
 path to a clearing with a campfire and a giant old tree, and to a stream with a fallen log across it; the
-office has a lawn, a plaza out front with benches and lamps, and trees. In the terrorist sweatshop the room
+office has a lawn, a plaza out front with benches and lamps, and trees. In the terrorist camp the room
 is a cave deep in a mountain, near its back; the mountain stands on a plateau, which you walk all round it. Out
 of the room's front a rounded tunnel lit by torches winds along the room's front and out through a spur of the
 mountain to the cave's mouth, a hood of rock coming out of the hillside, where two guards stand behind
@@ -348,10 +348,10 @@ In a world (Visit's, below), past the land's edge is the ground between plots, a
 cooler (left or right button) when you are close to it and you have a drink: a paper cup from the tube,
 filled at the tap, drunk off, head back. In the office, click the coffee bar (green cabinets, a tiled
 splashback with a shelf of mugs and a COFFEE sign, an espresso machine, a grinder, doughnuts) and you have
-a coffee: a mug filled at the machine, a sip, blown on, another sip (*ahh*). In the sweatshop, click the
+a coffee: a mug filled at the machine, a sip, blown on, another sip (*ahh*). In the jungle ruin, click the
 rotten bananas when you are close and you eat one and keep the peel; then a click throws it at whatever
 you clicked: it kills a mosquito it hits (SPLAT!), bonks anyone it hits on the head, startles the rat or
-the snake, or lands on the floor. A drink of the sweatshop's green water, or a banana, gives you a stomach
+the snake, or lands on the floor. A drink of the jungle ruin's green water, or a banana, gives you a stomach
 ache one time in five (OOF!), and for a while you clutch your stomach, walking slowly, now and then
 gurgling; the office's water is clean. At the pool club, click either bar (the tiki bar in the room, or the swim-up
 bar's counter in the grotto), or a waiter going by with a tray (they stop, turn to you and lower it), and you have a
@@ -360,7 +360,7 @@ yours to keep. You hold it wherever you go (walking, sat, lying back, on a float
 level going down, until after a few minutes it is empty; then it goes on the tray of a waiter within reach (one going
 by waits for your last sip), or else you toss it on the ground, where it lies five minutes. One drink at a time:
 "Finish your drink first." Click a log (in the jungle: one of the three round the campfire, or
-the one over the stream), a bench (on the office's plaza), or in the terrorist sweatshop a crate (round the
+the one over the stream), a bench (on the office's plaza), or in the terrorist camp a crate (round the
 guards' fire, or at the lookout), a rock (any boulder you could get up onto) or a picnic table or the
 blanket on top, or at the pool club a free lounger or daybed (you lie back on it), a cabana's sofa, a free stool at the
 swim-up bar or one of its two empty floats (the flamingo and the mint donut: you lie back in it, your legs up over its
@@ -377,10 +377,10 @@ fades out of the way, on a friend's plot in your world too; that is your view al
 each one's own page fades what is in its way). You go round the desks like everyone else, and the room treats you like anyone
 about: a mosquito may bite you, the monkey may bonk you.
 
-The environment dropdown (top of the page, or `?env=office` / `?env=sweatshop` / `?env=cave`) changes
+The environment dropdown (top of the page, or `?env=office` / `?env=jungle` / `?env=cave`) changes
 only how the room looks, and each browser remembers its choice.
 
-In the jungle sweatshop (not the office), a rat and a snake live on the floor. The rat scurries about
+In the jungle ruin (not the office), a rat and a snake live on the floor. The rat scurries about
 between the desks, sniffing and sitting up, and bolts from anyone walking by and from the snake; the
 snake slithers slowly, and freezes and rears its head at a passer-by. Each has a temper that rises over 6
 to 13 minutes; the snake's only while its belly is empty (no rat going down it), and then half as fast
@@ -444,7 +444,7 @@ rat's wins against the snake's. They are kept in the browser (localStorage), so 
 counting. All of it is scenery, not the board: nothing in a snapshot says where they are, so each
 viewer's room has its own.
 
-In the terrorist sweatshop the workers are armed, each its own way (seeded by its session, so the same at
+In the terrorist camp the workers are armed, each its own way (seeded by its session, so the same at
 every redraw): a balaclava or a bandana over the face, or nothing; a helmet, a boonie hat, a beret or a
 beanie; a bandolier or a chest rig; a rifle, a carbine, a shotgun or a rocket launcher slung across the
 back; grenades hanging from the belt. A subagent (a recruit) keeps its cap in its agent's colour and carries
@@ -571,7 +571,7 @@ In the room's front right corner (across the room's right side from the office's
 Madame Vesna keeps a booth: a rug, a round table under a velvet cloth with a crystal ball and two candles flickering,
 her high-backed chair, and behind her a folding screen of stars with her sign. The booth is set at an angle, facing into
 the room and toward its front, where you stand and the overview looks from; you, the agents and the pets walk round it.
-In the terrorist sweatshop she is not in the room: her booth is in a shallow cave up the mountain's trail (on its last
+In the terrorist camp she is not in the room: her booth is in a shallow cave up the mountain's trail (on its last
 leg before the lookout), cut into the mountain's face, just deep enough for her: her screen against its back wall, the
 front of her table at its mouth, her cards up over her table under its arch; a level landing on the trail in front of
 it, a torch either side of its mouth (`caveShell`'s `VESNA`; `g.userData.tarot` tells `tarotBooth` where).

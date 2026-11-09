@@ -13,8 +13,8 @@
 (function () {
 "use strict";
 // What each of the room's environments dresses its agents in (room.html's ENVS says the same of each: test_party.mjs).
-const LOOKS = { office: {}, sweatshop: { ragged: true }, cave: { ragged: true, militant: true }, pool: { pool: true } };
-// Down with malaria (a mosquito's bite, in the sweatshop): the room keeps who, in this browser (room.html's `sick`).
+const LOOKS = { office: {}, jungle: { ragged: true }, cave: { ragged: true, militant: true }, pool: { pool: true } };
+// Down with malaria (a mosquito's bite, in the jungle ruin): the room keeps who, in this browser (room.html's `sick`).
 const SICK_SKIN = "#93b743", SICK_FACE = 0xb4d47a;
 // The Matrix's glyphs, on a desk's screen in the room and behind an agent's picture while a command of its runs.
 const GLYPHS = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789Z:.=*+<>|";
@@ -69,7 +69,7 @@ function Figures(o) {
     const grey = a.fresh === "dead", dim = a.fresh === "stale", rag = !!env().ragged;
     // Ragged: the same hue, faded and grimy, so an agent is still known by its colour.
     const shirt = grey ? "#6e7681" : rag ? `hsl(${hue}, ${dim ? 8 : 20}%, 31%)` : `hsl(${hue}, ${dim ? 15 : 55}%, 38%)`;
-    // Down with malaria (a mosquito's bite, in the sweatshop): green about the gills for a few minutes.
+    // Down with malaria (a mosquito's bite, in the jungle ruin): green about the gills for a few minutes.
     const ill = !grey && sickNow(a.session), skinCss = grey ? "#9aa4ae" : ill ? SICK_SKIN : `hsl(${hue}, 45%, 88%)`;
     return { grey, dim, rag, ill, shirt: M(shirt), skin: M(skinCss), skinCss, dark: M(rag ? 0x3a3428 : 0x2b3138) };
   }
@@ -84,7 +84,7 @@ function Figures(o) {
     box(0.09, 0.06, 0.02, hole, 0.18 - R() * 0.36, hemY + 0.2 + R() * 0.3, -0.176, parent);
     if (kneeAt) box(0.21, 0.12, 0.04, patch, kneeAt[0], kneeAt[1], kneeAt[2], kneeAt[3] || parent);
   }
-  // Armed, in the terrorist sweatshop (`militant`), all of it seeded by the session, so an agent's kit is the same at
+  // Armed, in the terrorist camp (`militant`), all of it seeded by the session, so an agent's kit is the same at
   // every redraw and on every walk: over its face a balaclava (its eyes showing) or a bandana, or nothing; on its head a
   // helmet, a boonie hat, a beret or a beanie (not over a subagent's cap); across its chest a bandolier or a chest rig of
   // pouches; on a sling across its back a rifle, a carbine, a shotgun or a rocket launcher (a subagent: a stick or a
