@@ -32,9 +32,9 @@ two hooks, and two pieces everyone drops in unchanged.
 </p>
 
 <p align="center">
-  <img alt="A workroom in a jungle: blocky agents at their desks, what each is doing written above it, a workplace safety sign, a rat-vs-snake tally, and you, walking around" src=".github/assets/jungle-sweatshop.png">
+  <img alt="A workroom in a jungle: blocky agents at their desks, what each is doing written above it, a workplace safety sign, a rat-vs-snake tally, and you, walking around" src=".github/assets/jungle-ruin.png">
   <br>
-  <em>Another: the jungle sweatshop. Time since last accident: 26 seconds (death by exhaustion). Rat vs. snake: 14–14.</em>
+  <em>Another: the jungle ruin. Time since last accident: 26 seconds (death by exhaustion). Rat vs. snake: 14–14.</em>
 </p>
 
 <p align="center">

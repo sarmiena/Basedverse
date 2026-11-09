@@ -142,7 +142,7 @@ mod tests {
         std::env::set_var("XDG_DATA_HOME", "/data");
         std::env::set_var("HOME", "/home/x");
         if cfg!(target_os = "linux") {
-            assert_eq!(default_data_dir("Terrorist Sweatshop").unwrap(), PathBuf::from("/data/basedverse/terrorist-sweatshop"));
+            assert_eq!(default_data_dir("Terrorist Camp").unwrap(), PathBuf::from("/data/basedverse/terrorist-camp"));
             assert_eq!(default_data_dir(" aldo.s room ").unwrap(), PathBuf::from("/data/basedverse/aldo-s-room"));
         }
         assert!(default_data_dir("...").is_err());
