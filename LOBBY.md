@@ -61,7 +61,8 @@ to end: QUIC, and SRTP).
    open) on the lobby's word for who is in the world: join worlds in lobbies you trust. Guests stay as they were,
    proved by the link (SPEC 3, point 9). Later: member lists signed by the world's owner, which a lobby could not
    forge.
-8. **World chat is text.** Voice stays as it is (SPEC 8.7): by who is near in a room, and across a plot's side
+8. **World chat is text, and pictures** (5.3: a world's line may carry pictures, a voice message and links; the
+   lobby holds each picture a few minutes, in memory, to pass on to the world's members, SPEC 6.6). Voice stays as it is (SPEC 8.7): by who is near in a room, and across a plot's side
    where both worlds agree. (4.0, #58: and a world's **huddle**, by the owner's word: one member starts it, it rings for
    the others online, and whoever joins is in the starter's room's voice, carried by the starter's office as any room
    voice is; the lobby only says it started and ended. And **talking**: two people, voice alone, by a knock to talk

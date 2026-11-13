@@ -156,6 +156,7 @@ feature in a workroom's code. If the changelog has something newer than the tabl
 | linking by code confirmed both ways: the room's QR code (or digits) shown back by the browser | 3.2 | vanilla (the panel) | `visit.allowBrowser(` (a Promise of `{ qr, confirm }`: show them), or the panel |
 | widgets: each piece of the room's UI a feature needs (panel, chat window, card, map, teleport, ⏱, stage), one page each | 5.0, 5.1.1 | `visit/widgets/` | `VisitUI.panel(` and the rest in their copy of `visit-ui.js`, or the room's own UI |
 | teleports: a pad of the room's own (its look the room's), who may come by the room's own rule, Visit's beam in both rooms, ✦ Teleport in the panel | 5.1 | step 10 | `teleport:` in `visit.host(` (`pad`, `allow`, `color`, `effect`), `visit.findTeleports(`, `visit.teleport(`, `"teleported"` |
+| pictures, voice messages and links in a world's chat (`/g`: a screenshot pasted reaches every member online; the lobby passes them on) | 5.3 | vanilla (the chat window); the lobby on 5.3 | their copy of `visit-ui.js` sends `{ media, links }` with a world's line (`v.say(t, { group: to.name }, { media, links })`), `visit.lobbyMedia` |
 
 ## List
 

@@ -12,7 +12,7 @@ VISIT_DIR="$ROOT/.visit"
 AUTH_DIR="$ROOT/.auth"
 
 # The visit program: VISIT_PATH in .env (one of your own: a build of a branch, say), else basedverse's release
-# VISIT_VERSION names (v5.2.0 when blank), downloaded once into .visit/bin/ and checked against the release's
+# VISIT_VERSION names (v5.3.0 when blank), downloaded once into .visit/bin/ and checked against the release's
 # SHA256SUMS: no basedverse checkout, no build. A new VISIT_VERSION is an upgrade.
 VISIT_RELEASES="https://github.com/sarmiena/Basedverse/releases/download"
 
@@ -29,7 +29,7 @@ visit_get() {
     [ -x "$bin" ] || { echo "⚠ VISIT_PATH $bin is not a program"; return 1; }
     return 0
   fi
-  version="$(envval VISIT_VERSION)"; version="${version:-v5.2.0}"
+  version="$(envval VISIT_VERSION)"; version="${version:-v5.3.0}"
   if [ -x "$bin" ] && "$bin" --version 2>/dev/null | grep -q "^visit ${version#v} "; then return 0; fi
   case "$(uname -s)-$(uname -m)" in
     Linux-x86_64) target=x86_64-unknown-linux-musl ;;

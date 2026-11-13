@@ -51,6 +51,8 @@ pub enum Ev {
     PageClosed { id: u64 },
     Lobby(Value),
     LobbyDown,
+    /// 5.3: a picture a world's line named, from the lobby (its bytes checked: lobby.rs).
+    LobbyMedia { id: String, mime: String, bytes: Bytes },
     /// Someone signed in on this workroom (a live session of its sign-in), or nobody any more: in the lobby only while
     /// someone is (../../LOBBY.md 2, rule 3).
     SignedIn(bool),
@@ -263,6 +265,10 @@ const HELD_EACH: usize = 20;
 const HELD_EVERY: Duration = Duration::from_millis(2500);
 /// Pictures (8.12) kept in memory too, the last few, while the database takes them.
 const MEDIA_RECENT: usize = 8;
+/// 5.3: what `media_asked` names as where a picture comes from when a world's line named it: the lobby (never a visit's
+/// id); and how many of those are asked of it at once (each comes whole before anything else does).
+const LOBBY: &str = "@lobby";
+const LOBBY_WANTS: usize = 2;
 /// 3.4.3: the most pictures a linked office may ask this one for a minute (as many as it takes from it: link.rs
 /// MEDIA_PER_MINUTE); more, and they are not read nor sent.
 const MEDIA_WANTS: u32 = 30;
@@ -338,6 +344,13 @@ pub struct Core {
     signed_in: bool,
     /// The lobby relays chat (8.9: its welcome said so): this office's page may say a line to everyone there.
     lobby_chat: bool,
+    /// 5.3: it passes pictures on in a world's chat (its welcome said `media`); the lines waiting to go to one until
+    /// their pictures are handed over (what is left to hand over, and the line); and the pictures a world's line
+    /// named that this office asks the lobby for, waiting, and asked.
+    lobby_media: bool,
+    lobby_says: Vec<(HashSet<String>, ToLobby)>,
+    lobby_wants: VecDeque<String>,
+    lobby_wanting: HashSet<String>,
     /// What the lobby's welcome said of itself: its title, its message of the day, whether this office is one of its
     /// operators.
     lobby_info: Value,
@@ -506,6 +519,10 @@ impl Core {
             online: false,
             signed_in: false,
             lobby_chat: false,
+            lobby_media: false,
+            lobby_says: Vec::new(),
+            lobby_wants: VecDeque::new(),
+            lobby_wanting: HashSet::new(),
             lobby_info: Value::Null,
             groups: BTreeMap::new(),
             groups_before: BTreeMap::new(),
@@ -700,6 +717,20 @@ impl Core {
                     self.online = false;
                     self.to_page(json!({ "type": "offline" }));
                 }
+                // 5.3: pictures asked of the lobby are asked again on the next connection (first); a line whose
+                // pictures were going is not said (the page is told).
+                for id in std::mem::take(&mut self.lobby_wanting) {
+                    self.lobby_wants.push_front(id);
+                }
+                if !self.lobby_says.is_empty() {
+                    self.lobby_says.clear();
+                    self.page_error("offline", "the lobby went before the line's pictures did: say it again", Some("say"));
+                }
+            }
+            Ev::LobbyMedia { id, mime, bytes } => {
+                self.lobby_wanting.remove(&id);
+                self.media_in(LOBBY, id, mime, bytes);
+                self.lobby_pump();
             }
             Ev::SignedIn(s) => self.set_signed_in(s),
             Ev::LinkAddr { endpoint, addr } => {
@@ -912,7 +943,7 @@ impl Core {
     fn ready_json(&self, role: PageRole) -> Value {
         let visits: Vec<Value> = self.visits.values().filter(|v| v.up && visit_for(v).map_or(true, |r| r == role || role == PageRole::Both)).map(started).collect();
         let mut m = json!({
-            "type": "ready", "version": VERSION, "office": self.office, "online": self.online, "lobby_chat": self.lobby_chat, "lobby_voice": self.lobby_voice, "huddles": self.huddles.values().cloned().collect::<Vec<_>>(), "away": self.saved.away, "status": self.status,
+            "type": "ready", "version": VERSION, "office": self.office, "online": self.online, "lobby_chat": self.lobby_chat, "lobby_media": self.lobby_media, "lobby_voice": self.lobby_voice, "huddles": self.huddles.values().cloned().collect::<Vec<_>>(), "away": self.saved.away, "status": self.status,
             "signed_in": self.signed_in, "lobby_info": self.lobby_info, "groups": self.groups.values().cloned().collect::<Vec<_>>(),
             "about": self.saved.about,
             "max_visitors": self.max_visitors, "visits": visits, "key": self.key, "door": self.door(), "picks": self.saved.picks_json(), "ignored": self.saved.ignored_json(),
@@ -1483,8 +1514,11 @@ impl Core {
                     let name = to.and_then(|t| t.get("name")).and_then(Value::as_str).map(state::clip_name).map(|n| n.trim().to_string()).unwrap_or_default();
                     return self.hold(k, name, text, shares);
                 }
-                if (lobby || group.is_some()) && shares {
-                    return self.page_error("not_supported", "the lobby carries text only: pictures and links go to rooms, and to those you are linked with", Some("say"));
+                if lobby && shares {
+                    return self.page_error("not_supported", "the lobby's own chat carries text only: pictures and links go to rooms, to worlds, and to those you are linked with", Some("say"));
+                }
+                if group.is_some() && shares && self.online && !self.lobby_media {
+                    return self.page_error("not_supported", "this lobby carries text only in a world's chat (an older lobby): pictures and links go to rooms, and to those you are linked with", Some("say"));
                 }
                 // A whisper with pictures or links goes over a link with them, not through the lobby (8.12).
                 let direct = whisper.as_deref().filter(|_| shares).map(|id| self.office_key(id).filter(|k| self.visits.values().any(|v| v.up && v.peer.get("key").and_then(Value::as_str) == Some(k.as_str()))));
@@ -1535,7 +1569,18 @@ impl Core {
                 } else if lobby {
                     return self.to_lobby(ToLobby::Chat { text: Some(text) });
                 } else if let Some(g) = group {
-                    return self.to_lobby(ToLobby::GroupSay { group: Some(g), text: Some(text) });   // kept as it comes back
+                    let (media, links) = (line["media"].as_array().cloned().unwrap_or_default(), line["links"].as_array().cloned().unwrap_or_default());
+                    let ids = lobby_proto::media::ids(&media, &links);
+                    let say = ToLobby::GroupSay { group: Some(g), text: Some(text), media, links };
+                    if ids.is_empty() {
+                        return self.to_lobby(say);   // kept as it comes back
+                    }
+                    // 5.3: its pictures handed to the lobby first, each as the database has it; then the line.
+                    self.lobby_says.push((ids.iter().map(|(id, _)| id.clone()).collect(), say));
+                    for (id, _) in ids {
+                        let _ = self.db.send(DbCmd::GetMedia { id, to: MediaTo::Lobby });
+                    }
+                    return;
                 } else if room {
                     mine["scope"] = json!("sim");
                     mine["to"] = json!({ "key": self.key, "name": self.office.get("name") });
@@ -2245,9 +2290,52 @@ impl Core {
             }
         } else if let Some(a) = self.media_asked.get_mut(&id) {
             *a = (Instant::now(), visit.to_string(), true);
-            if let Some(v) = self.visits.get(visit).filter(|v| v.up) {
+            if visit == LOBBY {
+                self.lobby_wants.push_back(id);
+                self.lobby_pump();
+            } else if let Some(v) = self.visits.get(visit).filter(|v| v.up) {
                 let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "media_want": id })));
             }
+        }
+    }
+
+    /// 5.3: the pictures a world's line named, asked of the lobby, `LOBBY_WANTS` at a time (each comes whole, in
+    /// pieces, before anything else the lobby says): its minute to come counts from when it is asked.
+    fn lobby_pump(&mut self) {
+        while self.online && self.lobby_wanting.len() < LOBBY_WANTS {
+            let Some(id) = self.lobby_wants.pop_front() else { break };
+            let Some(a) = self.media_asked.get_mut(&id).filter(|a| a.1 == LOBBY) else { continue };   // had meanwhile, or given up
+            a.0 = Instant::now();
+            self.lobby_wanting.insert(id.clone());
+            let _ = self.lobby.send(LobbyOut::Msg(ToLobby::MediaWant { id: Some(id) }));
+        }
+    }
+
+    /// 5.3: a picture handed to the lobby (or not to be had here): the lines waiting on it go once nothing else is
+    /// left to hand over; a line whose picture this office does not have is not said (the page is told).
+    fn lobby_put(&mut self, id: &str, had: bool) {
+        let mut go = Vec::new();
+        let mut i = 0;
+        while i < self.lobby_says.len() {
+            if !self.lobby_says[i].0.contains(id) {
+                i += 1;
+                continue;
+            }
+            let (mut left, say) = self.lobby_says.remove(i);
+            if !had {
+                self.page_error("bad_media", "a picture that line names is not kept here: share it again", Some("say"));
+                continue;
+            }
+            left.remove(id);
+            if left.is_empty() {
+                go.push(say);
+            } else {
+                self.lobby_says.insert(i, (left, say));
+                i += 1;
+            }
+        }
+        for say in go {
+            self.to_lobby(say);
         }
     }
 
@@ -2294,6 +2382,12 @@ impl Core {
                     let _ = v.cmd.try_send(LinkCmd::Media { id: id.to_string(), mime: mime.to_string(), bytes: bytes.clone() });
                 }
             }
+            MediaTo::Lobby => {
+                if self.online {
+                    let _ = self.lobby.send(LobbyOut::Media { id: id.to_string(), mime: mime.to_string(), bytes: bytes.clone() });
+                }
+                self.lobby_put(id, true);
+            }
         }
     }
 
@@ -2305,6 +2399,7 @@ impl Core {
                     let _ = v.cmd.try_send(LinkCmd::Ctl(json!({ "media_none": id })));
                 }
             }
+            MediaTo::Lobby => self.lobby_put(id, false),
         }
     }
 
@@ -2314,6 +2409,9 @@ impl Core {
         self.media_asked.remove(id);
         for to in self.media_waiting.remove(id).unwrap_or_default() {
             self.media_none_to(&to, id);
+        }
+        if self.lobby_wanting.remove(id) {   // (5.3: its place among those asked of the lobby, to the next)
+            self.lobby_pump();
         }
     }
 
@@ -3266,6 +3364,7 @@ impl Core {
                 self.office = json!({ "id": m.get("id"), "name": m.get("name") });
                 self.online = true;
                 self.lobby_chat = m.get("chat") == Some(&json!(true));
+                self.lobby_media = m.get("media") == Some(&json!(true));
                 self.lobby_voice = m.get("voice") == Some(&json!(true));
                 self.lobby_teleport = m.get("teleport") == Some(&json!(true));
                 for (_, (key, _)) in std::mem::take(&mut self.tp_waiting) {   // (what the last connection waited on gets no answer)
@@ -3298,7 +3397,8 @@ impl Core {
                 info!(office = %self.office, resumed, "in the lobby");
                 self.publish_link();
                 let (office, knocking) = (self.office.clone(), m.get("knocking").cloned().unwrap_or(json!([])));
-                self.to_page(json!({ "type": "online", "office": office, "knocking": knocking, "lobby_chat": self.lobby_chat, "lobby_voice": self.lobby_voice, "lobby_info": self.lobby_info }));
+                self.to_page(json!({ "type": "online", "office": office, "knocking": knocking, "lobby_chat": self.lobby_chat, "lobby_media": self.lobby_media, "lobby_voice": self.lobby_voice, "lobby_info": self.lobby_info }));
+                self.lobby_pump();
             }
             // A world group of this office's, whole (../../LOBBY.md): its members may watch each other's plots.
             "group" => {
@@ -3322,12 +3422,29 @@ impl Core {
             "group_chat" => {
                 let from = m.get("from").cloned().unwrap_or(Value::Null);
                 let s = |x: &Value, n: usize| x.as_str().map(|s| s.chars().filter(|c| !c.is_control()).take(n).collect::<String>());
-                if let (Some(text), Some(id), Some(group)) = (m.get("text").and_then(Value::as_str).and_then(said), s(&from["id"], 40), s(&m["group"], 24)) {
+                // 5.3: its pictures and links, as a room's line has them; a picture this office lacks, asked of the lobby.
+                let (media, links) = media::attachments(&m);
+                let text = said_text(m.get("text").and_then(Value::as_str).unwrap_or(""));
+                if let (false, Some(id), Some(group)) = (text.is_empty() && media.is_empty() && links.is_empty(), s(&from["id"], 40), s(&m["group"], 24)) {
                     let key = s(&from["key"], 100).filter(|k| state::key_ok(k));
                     let user = key.as_deref().and_then(|k| self.visits.values().find(|v| v.peer.get("key").and_then(Value::as_str) == Some(k) && v.peer_user.is_some())).map(person);
                     let name = user.unwrap_or_else(|| json!(s(&from["name"], 24).unwrap_or_default()));
                     let mine = key.as_deref() == Some(self.key.as_str());
-                    self.to_page(json!({ "type": "chat", "scope": "group", "group": group, "id": id, "key": key, "name": name, "text": text, "mine": mine }));
+                    let mut line = json!({ "type": "chat", "scope": "group", "group": group, "id": id, "key": key, "name": name, "text": text, "mine": mine });
+                    attach(&mut line, media, links);
+                    if !mine && !self.saved.ignores(&line) {
+                        self.want_media(&line, LOBBY);
+                    }
+                    self.to_page(line);
+                }
+            }
+            // 5.3: a picture asked of the lobby that it does not hold (its time up, or not said where this office is).
+            "media_none" => {
+                if let Some(id) = m.get("id").and_then(Value::as_str).filter(|i| self.lobby_wanting.remove(*i)).map(str::to_string) {
+                    if self.media_asked.get(&id).is_some_and(|a| a.1 == LOBBY) {
+                        self.media_gone(&id);
+                    }
+                    self.lobby_pump();
                 }
             }
             "lobby" => {

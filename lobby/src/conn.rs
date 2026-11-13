@@ -22,6 +22,29 @@ const RATE: f64 = 20.0;
 const BURST: f64 = 60.0;
 /// How long a message may take to go out before its connection is taken for dead (a client that stopped reading).
 const SEND_WAIT: Duration = Duration::from_secs(15);
+/// 5.3: bytes of pictures a connection may hand over (`media_put`), apart from its messages: this many a second, in
+/// bursts of up to a line's worth (4 screenshots). Past it, the picture is refused, the connection kept.
+const UP_RATE: f64 = (32 << 20) as f64 / 60.0;
+const UP_BURST: f64 = (32 << 20) as f64;
+
+/// 5.3: a picture being handed over: what its `media_put` said it is, and its bytes so far (how many came, and, unless it
+/// was refused on the way, the bytes: a refused one's rest is read and dropped, never taken for messages).
+struct Upload {
+    id: String,
+    mime: String,
+    size: usize,
+    got: usize,
+    refused: bool,
+    bytes: Vec<u8>,
+}
+
+/// A `media_put`, checked: a picture's id, a kind a line carries, a size within that kind's.
+fn upload_of(m: &Value) -> Option<Upload> {
+    let id = m.get("id").and_then(Value::as_str).filter(|i| proto::media::id_ok(i))?;
+    let mime = m.get("mime").and_then(Value::as_str)?;
+    let size = m.get("size").and_then(Value::as_u64).filter(|n| *n > 0 && proto::media::max_of(mime).is_some_and(|max| *n as usize <= max))?;
+    Some(Upload { id: id.into(), mime: mime.into(), size: size as usize, got: 0, refused: false, bytes: Vec::with_capacity(size as usize) })
+}
 
 /// The names a version-4 hello may have signed: the lobby's own (`--hosts`). Without them, only a name of this very
 /// machine (`127.0.0.1:<port>`, `localhost`, `[::1]`), as the connection gave it: a Host anyone can send otherwise,
@@ -94,11 +117,14 @@ pub async fn run(server: Arc<Server>, socket: WebSocket, ip: IpAddr, host: Strin
     let mut ping = tokio::time::interval_at(Instant::now() + ping_every, ping_every);
     let mut unanswered: Option<Instant> = None;
     let mut close: Option<(u16, &'static str)> = None;
+    let (mut upload, mut v4) = (None::<Upload>, false);
+    let (mut up_tokens, mut up_filled) = (UP_BURST, Instant::now());
     loop {
         let wait = deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(3600));
         tokio::select! {
             out = rx.recv() => match out {
                 Some(Out::Text(t)) => if !matches!(tokio::time::timeout(SEND_WAIT, sink.send(Message::Text(t))).await, Ok(Ok(()))) { break },
+                Some(Out::Binary(b)) => if !matches!(tokio::time::timeout(SEND_WAIT, sink.send(Message::Binary(b))).await, Ok(Ok(()))) { break },
                 Some(Out::Close(code, why)) => { close = Some((code, why)); break }
                 None => break,
             },
@@ -109,6 +135,33 @@ pub async fn run(server: Arc<Server>, socket: WebSocket, ip: IpAddr, host: Strin
             m = stream.next() => {
                 let raw = match m {
                     Some(Ok(Message::Text(t))) => t.to_string(),
+                    Some(Ok(Message::Binary(b))) if upload.is_some() => {   // 5.3: a piece of the picture being handed over
+                        let u = upload.as_mut().expect("some");
+                        u.got += b.len();
+                        if !u.refused {
+                            up_tokens = (up_tokens + up_filled.elapsed().as_secs_f64() * UP_RATE).min(UP_BURST);
+                            up_filled = Instant::now();
+                            if up_tokens < b.len() as f64 {
+                                (u.refused, u.bytes) = (true, Vec::new());
+                                conn.send(&FromLobby::error("rate_limited", format!("picture {}: at most 32 MiB of pictures a minute; this one is not held", u.id), Some("media_put")));
+                            } else {
+                                up_tokens -= b.len() as f64;
+                                u.bytes.extend_from_slice(&b);
+                            }
+                        }
+                        if u.got < u.size {
+                            continue;
+                        }
+                        let u = upload.take().expect("some");
+                        match &phase {
+                            _ if u.refused => {}
+                            Phase::In(oid) if u.got == u.size && proto::media::is(&u.id, &u.mime, &u.bytes) => {
+                                let _ = core.0.send(Ev::MediaPut { conn: conn.id, office: oid.clone(), id: u.id, mime: u.mime, bytes: u.bytes.into() });
+                            }
+                            _ => conn.send(&FromLobby::error("bad_media", format!("picture {}: its bytes are not that picture (its kind, its size, its id the blake3 hash of them)", u.id), Some("media_put"))),
+                        }
+                        continue;
+                    }
                     Some(Ok(Message::Binary(b))) => String::from_utf8_lossy(&b).into_owned(),
                     Some(Ok(Message::Pong(_))) => { unanswered = None; continue }
                     Some(Ok(Message::Ping(_))) => continue,   // answered as it was read
@@ -132,6 +185,14 @@ pub async fn run(server: Arc<Server>, socket: WebSocket, ip: IpAddr, host: Strin
                 };
                 let kind = m["type"].as_str().unwrap_or("").to_string();
                 phase = match std::mem::replace(&mut phase, Phase::Hello { tries: 0 }) {
+                    Phase::In(oid) if kind == "media_put" && v4 => {   // 5.3: its bytes follow, as binary messages
+                        upload = upload_of(&m);
+                        if upload.is_none() {
+                            conn.send(&FromLobby::error("bad_media", format!("media_put is {{ id (64 hex), mime (one of {:?} or {:?}), size (at most 8 MiB; a voice message 2 MiB) }}",
+                                proto::media::PICTURE_KINDS, proto::media::VOICE_KINDS), Some("media_put")));
+                        }
+                        Phase::In(oid)
+                    }
                     Phase::In(oid) => {
                         let _ = core.0.send(Ev::Msg { conn: conn.id, office: oid.clone(), m });
                         Phase::In(oid)
@@ -225,7 +286,7 @@ pub async fn run(server: Arc<Server>, socket: WebSocket, ip: IpAddr, host: Strin
                             break;
                         }
                         match ask_hello(&core, &conn, Proto::V4, hello, Some(key)).await {
-                            Some(oid) => { deadline = None; Phase::In(oid) }
+                            Some(oid) => { deadline = None; v4 = true; Phase::In(oid) }
                             None => Phase::Hello { tries: tries + 1 },
                         }
                     }
@@ -259,6 +320,7 @@ pub async fn run(server: Arc<Server>, socket: WebSocket, ip: IpAddr, host: Strin
         while let Ok(o) = rx.try_recv() {
             match o {
                 Out::Text(t) => if sink.send(Message::Text(t)).await.is_err() { return },
+                Out::Binary(b) => if sink.send(Message::Binary(b)).await.is_err() { return },
                 Out::Close(code, why) => { close = close.or(Some((code, why))); break }   // the core's own: said too
             }
         }

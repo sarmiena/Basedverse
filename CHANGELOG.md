@@ -10,6 +10,43 @@ A release that changes a protocol's name (`basedverse-lobby/2`, `basedverse-visi
 `basedverse-visit/1`) says so at its top: then every workroom upgrades, and the lobby with them. Additions
 keep the names, so offices on different versions still meet and visit each other.
 
+## v5.3.0 — 2026-11-13 — Screenshots in a world's chat: the lobby passes a world's pictures on, keeping none
+
+Nothing changes a protocol's name: new messages, and fields an older side leaves be. **The lobby needs this release**
+for the new part to work (its welcome says `media: true`); against an older lobby, a world's line stays text only, as
+before.
+
+- **Pictures, voice messages and links in a world's chat** (`/g <world>`; visit/SPEC.md 6.6, 8.9, 8.12; #91). Paste a
+  screenshot, drop a picture or record a voice message with the box on a world, and everyone in it who is online sees
+  it, whether or not they are linked with you. Until now the reference UI refused it ("not through the lobby"),
+  since pictures went only over links and a world's members are mostly not linked. Now:
+  - your visit-client hands each picture to the lobby first (`media_put`, then its bytes in pieces), then says the
+    line, its pictures named (`group_say`'s `media`, `links`);
+  - the lobby checks it (the blake3 hash of its bytes is its id; its kind one a line carries) and holds it in
+    memory only: 10 minutes, or 5 after the last line naming it. Never written anywhere; gone on a restart;
+  - each member's visit-client asks the lobby for a picture it lacks (`media_want`, two at a time at most) and keeps
+    it in its own database, as it keeps every picture. The lobby gives it to members of a world it was said in, twice
+    each at most;
+  - limits: 32 MiB of pictures a minute from one connection, 64 MiB held of one office's, 512 MiB in all.
+- **`v.lobbyMedia`** (`lobby_media` in `ready` and `online`): the lobby passes a world's pictures on. **`v.say(text,
+  { group }, { media, links })`** sends them while it does; it returns false through an older lobby.
+- **A link's preview in a world's chat** goes with the line too. Before, a line whose link had a preview card was
+  refused there until the card was taken off.
+- **The lobby's own chat (`/1`), and a whisper to someone you are not linked with, stay text only.**
+- **The lobby's page** (in a linked browser) shows a world's line with a picture as what it is ("🖼 a picture"); your
+  room shows the picture.
+- **The lobby, for its host**: up to 512 MiB of memory for a world's pictures in passing, and the bandwidth to pass
+  each one on to the members of the world it was said in (lobby/README.md).
+
+**What an integration does:**
+
+1. **Upgrade visit and its visit.js together** (5.3.0). The lobby: `bin/deploy-lobby` (it takes the latest release).
+2. **Widgets: chat** ([widgets/chat.md](visit/widgets/chat.md)). Your copy of the reference UI: bring over this
+   release's diff of `visit/examples/ui/visit-ui.js` (`send`, a world's line: `v.say(t, { group }, { media, links })`,
+   and its note for an older lobby; the 🖼 panel's title for a world). Your own chat window: send what is pasted,
+   dropped or recorded with a world's line while `v.lobbyMedia`, and draw a world's line's `media` and `links` as you
+   draw a room's.
+
 ## v5.2.0 — 2026-11-06 — Visit plays no teleport animation: each person brings theirs, each room plays it if it likes; teleport to the room you are in
 
 Nothing changes a protocol's name, and the lobby needs nothing: a possession's new class and a new message on the

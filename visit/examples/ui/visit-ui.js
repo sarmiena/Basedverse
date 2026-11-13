@@ -1154,7 +1154,7 @@
     let sharedKind = "media";
     const conversation = () => to.scope === "sim" ? "room:" + to.key : to.scope === "whisper" ? "person:" + (to.key || "id:" + to.id) : to.scope === "lobby" ? "lobby" : to.scope === "group" ? "group:" + to.key : v.roomHere.conversation;
     const sharedDraw = async more => {
-      const c = conversation(), title = c === "lobby" ? "the lobby" : c.startsWith("person:") ? `you and ${to.name || "them"}`
+      const c = conversation(), title = c === "lobby" ? "the lobby" : c.startsWith("group:") ? to.name || c.slice(6) : c.startsWith("person:") ? `you and ${to.name || "them"}`
         : c === "room:" + v.key ? "your room" : `${v.nameOf(c.slice(5)) || "their"}'s room`;
       if (!more) shared.innerHTML = `<div class="tabs"><b>Shared in ${esc(title)}</b><button data-k="media" class="${sharedKind === "media" ? "on" : ""}">Pictures</button><button data-k="voice" class="${sharedKind === "voice" ? "on" : ""}">Voice</button><button data-k="links" class="${sharedKind === "links" ? "on" : ""}">Links</button><button data-k="close" title="close">✕</button></div><div class="items"></div>`;
       const items = shared.querySelector(".items");
@@ -1367,10 +1367,10 @@
         const f = mentionedFigure(t);
         if (f) { if (v.say(t, { target: { kind: "figure", id: f.id } }, { media, links })) return true; note(`Too fast: at most ${CHATS} lines every ${CHAT_WINDOW / 1000} s`); return false; }
       }
-      if (to.scope === "group") {
-        if (media.length || links.length) { note("Pictures, voice messages and links go to rooms, and to those you are linked with: not through the lobby"); return false; }
+      if (to.scope === "group") {   // (5.3: with pictures, voice messages and links, through a lobby that passes them on)
+        if ((media.length || links.length) && v.state === "online" && !v.lobbyMedia) { note("This lobby carries text only in a world's chat (an older lobby): pictures, voice messages and links go to rooms, and to those you are linked with"); return false; }
         if (!v.groups.some(g => g.name.toLowerCase() === to.key)) { note(`You are no longer in ${to.name}`); to = { scope: "say" }; fill(); return false; }
-        if (v.say(t, { group: to.name })) return true;
+        if (v.say(t, { group: to.name }, { media, links })) return true;
         note(v.state !== "online" ? "Not in the lobby now" : `Too fast: at most ${CHATS} lines every ${CHAT_WINDOW / 1000} s`);
         return false;
       }
@@ -1383,7 +1383,7 @@
       }
       if (away) note(media.length || links.length ? `${to.name} is away: a whisper kept for them is text only (pictures and voice messages go to those you are linked with)`
         : `Too fast: at most ${CHATS} lines every ${CHAT_WINDOW / 1000} s`);
-      else if ((media.length || links.length) && (to.scope === "lobby" || (to.scope === "whisper" && p && !v.chatTargets.some(o => o.key === p.key)))) note("Pictures, voice messages and links go to rooms, and to those you are linked with: not through the lobby");
+      else if ((media.length || links.length) && (to.scope === "lobby" || (to.scope === "whisper" && p && !v.chatTargets.some(o => o.key === p.key)))) note(to.scope === "lobby" ? "The lobby's own chat is text only: pictures, voice messages and links go to rooms, to worlds (/g), and to those you are linked with" : "Pictures, voice messages and links go to rooms, to worlds (/g), and to those you are linked with: not in a whisper through the lobby");
       else if (to.scope === "whisper" && !p) { note(`${to.name} is not in the lobby now`); to = { scope: "say" }; fill(); }
       else if (to.scope === "sim" && to.key !== v.key && !v.chatTargets.some(o => o.key === to.key)) { note(`${to.name}'s room: you are not linked with them now`); to = { scope: "say" }; fill(); }
       else if ((to.scope === "lobby" || to.scope === "whisper") && !v.lobbyChat) { note("No lobby chat: this lobby does not carry it, or you are not in it"); to = { scope: "say" }; fill(); }

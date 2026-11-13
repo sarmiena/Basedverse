@@ -441,7 +441,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `perform` | `channel`, `act` {`clip`, `loop`?, `secs`?} \| null, `hold` (bool) | 4.0 (#59, the room's page): what this room has the visitor on that channel do (`clip`: one of `sit`, `lie`, `drink`, `eat`, `throw`, `swat`, `wave`; `secs` at most 600) and whether it holds something of the room's, told to their visit-client (8.6). At most 10 a second a visitor (`rate_limited`); `no_such_visit` for nobody in this room |
 | `huddle` | `group`, `on` (bool) | 4.0: a huddle in one of this office's worlds (8.7), started (its user into their own room's voice, which carries it) or over (every voice visit that joined it ends; its user out of that voice). Refused `not_supported` when the lobby carries no voice |
 | `user` | `name` (1–24 characters) \| null | the name this office's user goes by (8.9; null: this office's): told to every office linked with it, now and as each links |
-| `say` | `text` (1 to 200 characters; may be empty with pictures or links), `to`? (none or `"here"`; `{"whisper"}`; `{"key"}`; `"room"`; `"lobby"`; `{"group"}`), `media`? (pictures shared, at most 4: [{`id`, `mime`, `size`}]; among them at most one voice message, with `secs`), `links`? (at most 2: [{`url`, `title`, `description`, `site`, `image`}]) | a line this office's user says (8.9). No `to`: to everyone who can see them (the room they are in, and those who see it from outside). `{"whisper": "<office id>"}`: to that office's user alone, through the lobby (its errors, `ref: "whisper"`: `not_found`, `not_supported`). `{"whisper": "<key>", "name"?}` (0.22.0): to whoever has that office in the lobby, if it takes whispers; else kept for them (`held`), text only (`no_link` with pictures or links; `too_many` past 20 for one person or 100 in all), and passed on once they and this office are both in the lobby. `{"key"}`: into the room of an office linked with this one, either way (`no_link` if none). `"lobby"`: to everyone in the lobby (`not_supported` if the lobby does not carry chat). `{"group": "<name>"}` (3.0.0): to everyone in one of this office's worlds (6.6), text only (`not_found`: in no world of that name). Control characters become spaces; trimmed; at most 5 every 10 s, whatever their `to` (`rate_limited`) |
+| `say` | `text` (1 to 200 characters; may be empty with pictures or links), `to`? (none or `"here"`; `{"whisper"}`; `{"key"}`; `"room"`; `"lobby"`; `{"group"}`), `media`? (pictures shared, at most 4: [{`id`, `mime`, `size`}]; among them at most one voice message, with `secs`), `links`? (at most 2: [{`url`, `title`, `description`, `site`, `image`}]) | a line this office's user says (8.9). No `to`: to everyone who can see them (the room they are in, and those who see it from outside). `{"whisper": "<office id>"}`: to that office's user alone, through the lobby (its errors, `ref: "whisper"`: `not_found`, `not_supported`). `{"whisper": "<key>", "name"?}` (0.22.0): to whoever has that office in the lobby, if it takes whispers; else kept for them (`held`), text only (`no_link` with pictures or links; `too_many` past 20 for one person or 100 in all), and passed on once they and this office are both in the lobby. `{"key"}`: into the room of an office linked with this one, either way (`no_link` if none). `"lobby"`: to everyone in the lobby (`not_supported` if the lobby does not carry chat). `{"group": "<name>"}` (3.0.0): to everyone in one of this office's worlds (6.6) (`not_found`: in no world of that name); 5.3: with pictures and links too, through a lobby whose welcome said `media` (`not_supported` through an older one), said once its pictures are handed to the lobby (`bad_media`: one this office does not have). Control characters become spaces; trimmed; at most 5 every 10 s, whatever their `to` (`rate_limited`) |
 | `say_as` | `id` (1 to 40 letters, digits, `_` `.` `-`), `name` (what it goes by, 1 to 24 characters), `text` (1 to 200 characters) | a line one of this office's room's own figures says (8.9: a receptionist, a guide; never a person): in this office's room, to those in it within 45 m of the figure (`at`? (4.0.1): where it is, [x, y, z] in metres as `voice_where` has everyone; none: everyone in the room), and in its chat (`far` when its user is not near), as `said` with `npc`; never to a world member watching the plot from outside it. Never as this office's user: control characters become spaces; trimmed; at most 5 every 10 s from each figure, apart from the user's own (`rate_limited`); a bad `id` or empty `name` or `text`: `bad_message`. `to`? (3.3, #48): to one person alone, a whisper from the figure (no bubble, nobody else): `"owner"` (this office's user) or the id of a visit in its room (`not_found` otherwise) |
 | `act` | `figure`, `action` | 3.3 (#48), the user's: one of the actions of a figure in the room its user is in (from their target's card): to that room's page (`act`), which runs it as a point at the figure would be, by that type's own rules (8.9, "Targets") |
 | `speaker` | `channel`, `on` (bool) | a call on this office's phone's speaker (8.8), or back to the ear (`no_call` if none is on there) |
@@ -500,7 +500,7 @@ followed by a `lobby` snapshot and any pending `knock`s.
 | `possession` | `channel`, `id`, `possession` {`unit`, `json`} | one of a visitor's possessions' models, which this page asked for (host side, 8.11): checked as an avatar is |
 | `phone` | `channel`, `on` | the other office's room has a phone now (8.8), or no longer (also `phone` in `visit_started`) |
 | `call` | `channel`, `act` | a call on that visit (8.8): they ring, answer, or hang up |
-| `chat` | `channel`, `key`, `name`, `text`, and `id` (a visitor's, by its visit there), `npc` (one of the room's own figures, by its id) or `owner` (true: the room's owner); `target`? (3.3: { `kind`, `id` }, what a line said aloud is meant for); or `scope` | a line said (8.9): in this office's room by a visitor (that visit's channel, its `id`), or by one of its own figures (`npc`, no `channel`: `say_as`), or in a room its user is in or sees from outside (that visit's channel: its owner, one of its figures, or another visitor). `scope: "sim"`: said in a room's chat (`key`, `name`: its sayer): into this office's room from a linked office (`home: true`; `channel`, the link it came by), or in the chat of a room linked with this one (its owner's or said into it: `channel`, the link with that room's office). 3.4.2: `far` (said in this office's room out of its user's hearing: the room's, for its logic; shown nowhere) or `seam` (said by a friend at home, near its user across their plots' side; `owner`, `key` theirs). `scope: "whisper"`: whispered to this office's user (`id`, the sayer's office id; `key`, its key or null; or, 3.3, `npc`: one of a room's figures, `key` that room's, with `say_as`'s `to`). `scope: "lobby"`: said in the lobby (`id`, `key`, as a whisper's); this office's own too, in the lobby's order. `scope: "group"` (3.0.0): said in one of its worlds (`group`, its name; `id`, `key`, as a lobby line's; `mine` on this office's own, which comes back as the lobby's are). Never this office's own otherwise. `ready` and `online` say whether the lobby carries chat (`lobby_chat`) |
+| `chat` | `channel`, `key`, `name`, `text`, and `id` (a visitor's, by its visit there), `npc` (one of the room's own figures, by its id) or `owner` (true: the room's owner); `target`? (3.3: { `kind`, `id` }, what a line said aloud is meant for); or `scope` | a line said (8.9): in this office's room by a visitor (that visit's channel, its `id`), or by one of its own figures (`npc`, no `channel`: `say_as`), or in a room its user is in or sees from outside (that visit's channel: its owner, one of its figures, or another visitor). `scope: "sim"`: said in a room's chat (`key`, `name`: its sayer): into this office's room from a linked office (`home: true`; `channel`, the link it came by), or in the chat of a room linked with this one (its owner's or said into it: `channel`, the link with that room's office). 3.4.2: `far` (said in this office's room out of its user's hearing: the room's, for its logic; shown nowhere) or `seam` (said by a friend at home, near its user across their plots' side; `owner`, `key` theirs). `scope: "whisper"`: whispered to this office's user (`id`, the sayer's office id; `key`, its key or null; or, 3.3, `npc`: one of a room's figures, `key` that room's, with `say_as`'s `to`). `scope: "lobby"`: said in the lobby (`id`, `key`, as a whisper's); this office's own too, in the lobby's order. `scope: "group"` (3.0.0): said in one of its worlds (`group`, its name; `id`, `key`, as a lobby line's; `mine` on this office's own, which comes back as the lobby's are). Never this office's own otherwise. 5.3: a world's line with its `media` and `links`. `ready` and `online` say whether the lobby carries chat (`lobby_chat`), and (5.3) whether it passes pictures on in a world's chat (`lobby_media`) |
 | `chat_log` | `lines` | the chat this office's user has had (8.9), for a page that connects (a reload): after `ready` and the lobby, if there is any. Each line as `chat` gave it, with `at` (ms since 1970) and `conversation`; this office's own too (`mine: true`, `scope` "say", "sim" or "whisper", `to` as the page's `chat` event has it). The last 100 (all of it is in its database, 8.12: `history`) |
 | `sound` | `channel`, `id`, `at`, `volume`, `ref`, `far` | 3.4: a sound of the room on that channel (8.13), once, from that point in it (its units) |
 | `media_ready` | `slot`, `id`, `mime`, `size` | a picture or a voice message the page shared, or (3.4) a room's sound (5.4, bit 7, on that slot), kept (8.12): its id. Neither: `error` (`bad_media`, `ref: "media_put"`, `slot`) |
@@ -576,8 +576,9 @@ it is and each edit unpacked, as `scene` (5.3).
 The lobby is a program of its own, `lobby` (../lobby/, ../LOBBY.md), which anyone may run (../lobby/README.md); a
 workroom joins the one its `VISIT_LOBBY` names, and only while someone is signed in on it (section 3, point 13). One
 JSON object per WebSocket text frame, `wss://` (TLS by the proxy in front of it), on any path; the lobby pings
-every 20 s and drops a connection that leaves a ping unanswered as long; a frame is at most 64 KiB. Clients talking
-it are visit-clients, and (3.1) browsers their offices linked (6.11); its public page only reads (6.9).
+every 20 s and drops a connection that leaves a ping unanswered as long; a frame is at most 64 KiB. Binary frames
+carry one thing only (5.3): a world's picture, in pieces, after the `media_put` or `media` that says what it is (6.6).
+Clients talking it are visit-clients, and (3.1) browsers their offices linked (6.11); its public page only reads (6.9).
 
 Version 3 (Visit 0.5 to 2.x) is this section without the key's proof, worlds, `about`, `door`, linked browsers and `admin`;
 its `hello` says what the office takes (`world`, `links`, `chat`, `whisper`: version 4 takes them all). A lobby run
@@ -659,7 +660,9 @@ nobody has taken it meanwhile. Who someone is, is their key.
 | `group_set` | `group`, `about`?, `password`? or `open: true` | its owner changes it: its line; a new password (its members stay); or public (its password gone) |
 | `group_owner` | `group`, `key` | its owner hands it to another member |
 | `group_delete` | `group` | its owner ends it |
-| `group_say` | `group`, `text` | a line for everyone in one of this office's worlds, online, the sayer too (`not_found`: in no world of that name). Checked and counted as `chat` is. Nothing is kept |
+| `group_say` | `group`, `text`, `media`? (5.3: pictures, at most 4, among them at most one voice message, as 8.12's `say` names them), `links`? (5.3: at most 2, as `say`'s) | a line for everyone in one of this office's worlds, online, the sayer too (`not_found`: in no world of that name). Checked and counted as `chat` is; with pictures or links, `text` may be empty. Each picture it names (a link's too) handed over by this office first (`media_put`), as the line names it (its kind, its size), and still held (`not_found` otherwise). Nothing is kept |
+| `media_put` | `id` (64 hex: the blake3 hash of its bytes), `mime` (a picture's kind, or a voice message's: 8.12), `size` (bytes: a picture at most 8 MiB, a voice message 2 MiB) | 5.3: a picture (or a voice message) for a world's line, its bytes after it as binary frames, in order, `size` in all. Checked when whole: its bytes hash to its id and are of that kind (`bad_media`, `ref: "media_put"`); then held (6.6). At most 32 MiB of pictures a minute from one connection, apart from its messages: past it, that picture is refused (`rate_limited`), its rest read and dropped |
+| `media_want` | `id` | 5.3: a picture a world's line named: `media` back with its bytes, or `media_none` (6.6). A visit-client's own, never a browser's |
 | `group_huddle` | `group`, `on` | 4.0: a huddle in one of this office's worlds, started or over (6.4). One a world at a time (`huddle_on`, by its starter's name); only its starter ends it (`not_yours`); `not_supported` from an office whose hello did not say `voice` |
 | `groups` | — | the lobby's worlds, please (`groups` back) |
 | `browser_code` | `code` (8 letters and digits, any case, a dash or not) | 3.1, the office's own: the browser waiting with this code (`browser_pending` back; `not_found`) |
@@ -680,7 +683,7 @@ nobody has taken it meanwhile. Who someone is, is their key.
 | `browser_code` | `code` (8), `pictures` (3 emoji), `expires_in` (s) | to a browser not linked: the code its office types in its room (6.11) |
 | `browser_confirming` | `office` (its name), `expires_in` (s) | 3.2, to a waiting browser: that office would link it, once it shows its room's confirmation |
 | `browser_confirmed` | `office`, `agent`, `pictures` | 3.2.2, to a device that scanned a room's QR code for another browser: that browser is linked now; this one is not (closed 1000) |
-| `welcome` | `proto`, `id`, `name`, `key`, `relays`: [url], `resume` (32 hex), `resumed` (bool), `visits`: [id], `knocking`: [{`id`, `to`}], `limits` (6.10), `chat`: true, `admin`? (true: this key is one of the lobby's operators), `title`?, `motd`?, `voice`? (4.0, true: this lobby carries knocks to talk and huddles; an older one would pass a knock to talk on as a knock to visit, so a visit-client sends none to it), `ice`? (4.2, #71: its STUN and TURN server, for voice over WebRTC, 8.7: {`host`? (none: the lobby's own, as the visit-client reached it), `port` (UDP), `username`?, `credential`?: this office's own TURN login, good while it is in the lobby and ten minutes after; none: STUN only}) | after a good `hello` and `prove` |
+| `welcome` | `proto`, `id`, `name`, `key`, `relays`: [url], `resume` (32 hex), `resumed` (bool), `visits`: [id], `knocking`: [{`id`, `to`}], `limits` (6.10), `chat`: true, `admin`? (true: this key is one of the lobby's operators), `title`?, `motd`?, `voice`? (4.0, true: this lobby carries knocks to talk and huddles; an older one would pass a knock to talk on as a knock to visit, so a visit-client sends none to it), `ice`? (4.2, #71: its STUN and TURN server, for voice over WebRTC, 8.7: {`host`? (none: the lobby's own, as the visit-client reached it), `port` (UDP), `username`?, `credential`?: this office's own TURN login, good while it is in the lobby and ten minutes after; none: STUN only}), `teleport`? (5.1, true: it carries asks and knocks to teleport), `media`? (5.3, true: it passes pictures on in a world's chat, 6.6; an older one carries text) | after a good `hello` and `prove` |
 | `lobby` | `offices`: [{`id`, `name`, `status`, `sim`, `max_visitors`, `visitors` (count), `visiting` (version 4: always `null`, nobody's whereabouts being everyone's; version 3: the host's office id, or `null`), `ready`, `key`, `watchers` (count), `world`, `links`, `whisper` (true), `voice`? (4.0: its hello said `voice`), `teleport`? (5.1: its hello said `teleport`), `about` ({`text`, `tags`} or null)}], you included | on any change (3.4.3: at most every 250 ms, what changed meanwhile together; a `status`, `max_visitors` or `about` that changes nothing, to the office that sent it alone) |
 | `knock` | `id`, `from` {`id`, `name`, `sim`, `key`}, `message`, `expires_in`, `watch`?, `link`?, `voice`?, `huddle`?, `teleport`? | someone knocked (to watch, with `watch`; to link, with `link`; to talk, with `voice`, and to join your huddle in a world, with `huddle`) |
 | `knock_sent` | `id`, `to`, `watch`?, `link`?, `voice`?, `teleport`? | your knock reached the door (a knock to link with a door that does not take links is an ordinary knock: no `link`) |
@@ -692,7 +695,9 @@ nobody has taken it meanwhile. Who someone is, is their key.
 | `whisper` | `from` {`id`, `name`, `key`}, `text` | a line whispered to this office's user (8.9) |
 | `group` | `name`, `about`, `open` (public), `locked` (a password), `owner`, `ops` (always `[]`: 3.0's), `members` [{`key`, `name`, `since`}], `bans`? [keys] | one of this office's worlds, whole (6.6): after its welcome, and whenever it changes (its bans to its owner alone) |
 | `group_left` | `group`, `reason` (`"left"`, `"removed"`, `"banned"`, `"deleted"`) | no longer in a world |
-| `group_chat` | `group`, `from` {`id`, `name`, `key`}, `text` | a line said in one of this office's worlds |
+| `group_chat` | `group`, `from` {`id`, `name`, `key`}, `text`, `media`?, `links`? (5.3: as its sayer said them, checked) | a line said in one of this office's worlds |
+| `media` | `id`, `mime`, `size` | 5.3, after `media_want`: that picture, its bytes after it as binary frames of at most 256 KiB, in order, `size` in all, before anything else |
+| `media_none` | `id` | 5.3, after `media_want`: a picture the lobby does not hold for this office (never handed over, its time up, said in no world of this office's, or fetched twice by it already) |
 | `teleport_ask` | `id`, `from` {`id`, `name`, `sim`, `key`} | 5.1 (8.15): someone asks whether they may teleport into this office's room: `teleport_answer` within 5 s |
 | `teleport_answered` | `to` (the door's office id), `key`?, `ok`, `reason`? | 5.1: what `to`'s room said to this office's `teleport_ask` (with the door's key); `reason` when the lobby said no for it |
 | `huddle` | `group`, `from` {`id`, `name`, `key`}, `on`, `since` (seconds) | 4.0: a huddle in one of this office's worlds started (`on`) or over (its starter ended it, left the world, or left the lobby), to its members online whose hello said `voice`; one going on is told again after the worlds, on `welcome` (`since`: how long ago it started) |
@@ -785,6 +790,16 @@ groups).
   anyone outside one's worlds, and a knock walks anyone into a room whose user lets them in.
 - **Its chat.** Each world has one (`group_say`, `group_chat`): to its members in the lobby, the sayer too, in one
   order. Nothing of it is kept by the lobby.
+- **Its pictures** (5.3). A world's line may carry pictures, a voice message and links, as a room's does (8.12), though
+  its members are mostly not linked with each other: the lobby passes them on. The sayer's visit-client hands each
+  picture to the lobby first (`media_put` and its bytes, in pieces of at most 60 KiB); the lobby checks it (its blake3
+  hash is its id, its kind one a line carries) and holds it, in memory only, for the line to name. The line goes as
+  any world's line, its pictures named. A member's visit-client that lacks one asks the lobby for it (`media_want`,
+  two at a time at most) and keeps it in its own database, as it keeps every picture it has had. Who may have it: a
+  member of a world a line named it in (at the time it asks), or an office that handed it over; twice each at most
+  (a restart asks again). Held 10 minutes from its hand-over, or 5 after the last line that named it, whichever is
+  later; at most 64 MiB of one office's at once and 512 MiB in all (past it, what would go soonest goes now). Never
+  written anywhere: a restart forgets them all. The lobby's own chat (`chat`) and its whispers stay text only.
 - **The list of who is here.** Every office in the lobby is in its `lobby` snapshot; one may add a line and a few
   tags (`about`), shown there and, for those that have one, on the lobby's public page (6.9).
 - **Kept.** The lobby keeps its worlds (its `--data-dir`: `groups.json`) and its linked browsers (`browsers.json`,
@@ -885,7 +900,8 @@ own to come back by.
 (the highest an office may set), `max_watchers` 8, `max_watching` 8, `watch_knocks_per_minute` 30, `link_addr`
 2048 (bytes of `addr` as JSON), `connections_per_ip` 8, `resume` 30, `chat` 200 (characters in a line),
 `chats_per_10s` 5, `groups` 20, `group_members` 50 (`--world-size`), `password` [4, 64], `browsers` 10, `about` 200, `tags` 5,
-`tag` 20.
+`tag` 20. Not in `limits` (5.3, 6.6): a world's pictures, 32 MiB a minute handed over from one connection, held 10
+minutes (5 after the last line naming one), 64 MiB of one office's and 512 MiB in all, each fetched twice by one office.
 
 ## 7. The link: visit-client ↔ visit-client
 
@@ -1413,7 +1429,9 @@ when their office is linked with this one, else by their office's (the lobby kno
   nothing. A lobby that carries it says so in `welcome` (`chat: true`; the page: `v.lobbyChat`).
 - **A world's** (3.0.0, `v.say(text, { group })`): everyone in one of the user's worlds (6.6), in the lobby,
   in their chat; the lobby relays it (`group_say`, `group_chat`), the sayer's too, in one order, and keeps nothing.
-  Text only. Its conversation is `group:<its name in lower case>`.
+  5.3: with pictures, a voice message and links too, as a room's line (8.12), through a lobby that passes them on
+  (its `welcome` says `media`; the page: `v.lobbyMedia`); an older lobby, text only. Its conversation is
+  `group:<its name in lower case>`.
 - **Checked everywhere.** Every visit-client (and the lobby) checks a line again: plain text (control characters
   become spaces), at most 200 characters, at most 5 lines every 10 s from each, whatever their scope.
 - **Showing.** A line said shows over its speaker a few seconds (4 s, and longer the longer it is: at most 12 s),
@@ -1583,11 +1601,15 @@ is moved in once, by `visit import` (4.5).
 **Pictures** (and voice messages, which go as they do). A page shares one (`v.share(blob)`: pasted, dropped, recorded) as a binary message (5.4, bit 7); its
 visit-client checks it, keeps it, and says its id (`media_ready`). A line names its pictures (`say`'s `media`:
 `{ id, mime, size }`, at most 4) and goes as any line does, its pictures named with it: in a room, into a room's chat,
-or, for a whisper with pictures, over a link with that person (`whisper`, not the lobby). The lobby carries text
-only: a line to it with pictures or links is refused (`not_supported`), and so is a whisper with them to someone
-not linked (`no_link`). A visit-client that gets a line naming a picture it does not have asks the link the line
-came by for it (`media_want`), once; that side has it (it said it, or passed it on and is getting it) and sends it
-(stream 5). Meanwhile a page asking for it (`media_get`) waits. One not had in a minute is said none (`media_none`).
+or, for a whisper with pictures, over a link with that person (`whisper`, not the lobby), or (5.3) into a world's
+chat, through the lobby, which passes a world's pictures on (6.6): its visit-client hands each to the lobby first,
+and says the line once they are all handed over (one it does not have: `bad_media`, and the line is not said). The
+lobby's own chat carries text only: a line to it with pictures or links is refused (`not_supported`), and so is a
+whisper with them to someone not linked (`no_link`), and a world's line with them through an older lobby
+(`not_supported`). A visit-client that gets a line naming a picture it does not have asks the link the line came by
+for it (`media_want`), once, or, a world's line, the lobby; that side has it (it said it, or passed it on and is
+getting it) and sends it (stream 5; the lobby's `media`). Meanwhile a page asking for it (`media_get`) waits. One not
+had in a minute is said none (`media_none`).
 
 **Links.** As a link is typed, the page asks its own visit-client for a preview (`preview`): it fetches the page
 (http or https; 6 s at most, 4 redirects, its first 512 KiB) and reads what it says of itself (its Open Graph
@@ -1807,7 +1829,8 @@ v.say(text, to, { media, links })   // with pictures (v.share's) or links (v.pre
 v.say(text, to)             // a line (8.9): true if said. No to: everyone who can see your user (over their head);
                             //   { whisper: id or key }: that person alone; "room": your room's chat (everyone in it,
                             //   and linked with it); { key } (or a key): that linked office's room's chat; "lobby":
-                            //   everyone in the lobby
+                            //   everyone in the lobby; { group }: everyone in one of your worlds (with pictures and
+                            //   links too while v.lobbyMedia, 5.3)
 v.whisperTargets            // whom say(text, { whisper }) can reach: those in the lobby who take whispers: [{ id, key, name }]
 v.awayTargets               // whom say(text, { whisper: key, name }) leaves a whisper for (8.9, 0.22.0): not in the lobby now,
                             //   those you whispered with and your guests (your worlds' members): [{ key, name }]; text only
@@ -1817,6 +1840,7 @@ v.unseen; v.read(conversation)   // the mailbox (8.9): { count, conversations: [
                             //   event); its lines of a conversation read (none: all of them)
 v.attention(on)             // someone is looking at this page's chat (its chat window says so): what comes is seen
 v.chatTargets; v.lobbyChat  // whom say(text, { key }) can reach: [{ key, name }]; the lobby carries chat
+v.lobbyMedia                // 5.3: the lobby passes pictures on in a world's chat: say(text, { group }, { media, links })
 v.chats                     // the lines over heads still showing where you are and in your room: [{ key, name, text, mine,
                             //   owner, id, channel }]
 v.chatLog                   // the last 100 lines of every scope: [{ at, scope ("say", "whisper", "sim", "lobby"), key, name,
@@ -2044,7 +2068,7 @@ slowly while its tab is hidden.
 | teleports (5.1, 8.15) | 5.2: a teleport waits its user's own animation's `out` clip before it goes, at most 5 s; a room's page answers an ask in 3 s (its `allow` in 2.5 s), else no; the lobby keeps an ask 5 s, 120 asks an office a minute; a page's round of asks one every 1.5 s, at most 48 rooms, over in 7 s; stepping in by teleport answered within 8 s, and a teleport not there in 20 s given up; a room come to by teleport let go 2 s after its user leaves it (20 s if never stepped into); the beam 1.6 s |
 | layout, seen | 256 each |
 | chat | a line at most 200 characters; 5 lines every 10 s, from a page and from each visitor, whatever the scope (the lobby counts its own, lobby lines and whispers, too); shown over a head 4 to 12 s, by its length; the chat window keeps 100 lines, and fades 20 s after the last |
-| pictures, voice messages | a picture at most 8 MiB, 4 a line; a voice message at most 2 MiB and 60 s, one a line |
+| pictures, voice messages | a picture at most 8 MiB, 4 a line; a voice message at most 2 MiB and 60 s, one a line; 5.3, a world's: through the lobby, 32 MiB a minute handed over, held there 10 minutes (5 after the last line naming one), 2 asked of it at once (6.6, 6.10) |
 | mailbox | the newest 100 unread lines shown (all counted); looking: the page shown and focused, used in the last 2 minutes |
 | whispers left for someone away | 20 for one person, 100 in all, kept 30 days at most; passed on one every 2.5 s at most, counted with the user's own lines |
 | landscapes | at most 16 MiB gzipped each; kept on disk at most 256 MiB in all (one per office, the oldest go first); 64 plots kept while their offices are away; sent a second after what is static last changed; a visitor's whole room waits at most 400 ms to hear whether it reads them |

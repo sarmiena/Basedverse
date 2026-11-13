@@ -1,6 +1,6 @@
 [package]
 name = "lobby-proto"
-version = "5.2.0"
+version = "5.3.0"
 edition = "2021"
 license = "MIT"
 description = "What the lobby and visit-client agree on (../../visit/SPEC.md 6): the messages, the limits, the name rule, what a hello signs"
@@ -9,3 +9,4 @@ publish = false
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+blake3 = "1.8.7"

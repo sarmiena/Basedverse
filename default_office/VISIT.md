@@ -4,7 +4,7 @@ How this workroom (the Agent Room, `forge/board/room.html`) uses basedverse's Vi
 Visit's vanilla experience (basedverse's `visit/INTEGRATING.md`, "The vanilla experience"). An upgrade reads this
 first and keeps what it says. basedverse's `/basedverse:visit` skill keeps it.
 
-**Integrated at:** basedverse v5.2.0 (released 2026-11-06; 5.1.1: PR #85; 5.2.0: PR #86; basedverse #42, #57, #58, #59, #60; 4.0.1: PR #66; 4.1.0: #67, PR #68; 4.2.0: #71, PR #75; 4.3.0: PR #77; 4.3.1: PR #78; 4.3.2: PRs #80, #81; 5.0.0: #82, PR #83; 5.1.0: PR #84): the lobby is `wss://basedverse.app/`. **No Docker, no basedverse checkout**:
+**Integrated at:** basedverse v5.3.0 (released 2026-11-13; 5.3.0: #91; 5.1.1: PR #85; 5.2.0: PR #86; basedverse #42, #57, #58, #59, #60; 4.0.1: PR #66; 4.1.0: #67, PR #68; 4.2.0: #71, PR #75; 4.3.0: PR #77; 4.3.1: PR #78; 4.3.2: PRs #80, #81; 5.0.0: #82, PR #83; 5.1.0: PR #84): the lobby is `wss://basedverse.app/`. **No Docker, no basedverse checkout**:
 `bin/start` runs everything on this machine as programs of their own. `visit` is the release `VISIT_VERSION` names
 (`.env`), downloaded once into `.visit/bin/visit` and checked against the release's SHA256SUMS (`VISIT_PATH` overrides
 it with one of your own); it holds the board's sign-in, the room's engine (the headless Chrome inside it) and their
@@ -64,7 +64,7 @@ State is one of:
 ## Widgets
 
 Each piece of this room's UI on Visit's API (basedverse's `visit/widgets/`): the reference UI's, this room's copy
-(`forge/board/visit-ui.js`, served at `/visit-ui.js`, your page's alone, as it came from v5.2.0), but teleport's.
+(`forge/board/visit-ui.js`, served at `/visit-ui.js`, your page's alone, as it came from v5.3.0), but teleport's.
 
 | widget | whose | where, and what differs |
 |---|---|---|
@@ -146,6 +146,10 @@ own back, it is a deviation: write it here first. (The phone has since gone alto
 
 ## History
 
+- 2026-11-13: screenshots in a world's chat (basedverse 5.3.0, #91; `VISIT_VERSION=v5.3.0`, bin/lib/visit.sh's default
+  too). The user: "i want to be able to send screenshots in the world chat". The reference UI's diff brought over into
+  `forge/board/visit-ui.js` as it is (a world's line sends what is pasted, dropped or recorded; the 🖼 panel's title
+  for a world): nothing of this room's own changes.
 - 2026-11-06: teleports the user's way (basedverse 5.2.0, PR #86, released; `VISIT_VERSION=v5.2.0`, bin/lib/visit.sh's
   default too, and `bin/start`: visit and the engine report 5.2.0, the room hosting). Their asks: a popup to
   pick where to go ("an easier UI to navigate since it gives more space"), with a tab for who may teleport into their

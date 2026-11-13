@@ -688,7 +688,11 @@ footer button { font: inherit; color: var(--blue); background: none; border: 0; 
       case "lobby": S.offices = m.offices || []; $("count").textContent = String(S.offices.length); drawSide(); break;
       case "lobby_chat": add({ kind: "lobby", name: m.from.name, key: m.from.key, text: m.text, mine: S.me && m.from.id === S.me.id }); break;
       case "whisper": S.lastWhisper = { id: m.from.id, name: m.from.name, key: m.from.key }; add({ kind: "whisper", name: m.from.name, key: m.from.key, text: m.text }); drawTabs(); break;
-      case "group_chat": add({ kind: "group", group: m.group, name: m.from.name, key: m.from.key, text: m.text, mine: S.me && m.from.id === S.me.id }); break;
+      case "group_chat": {   // (5.3: with pictures or links, said here as what they are: your room shows them)
+        const pics = (m.media || []).filter(p => !String(p.mime || "").startsWith("audio/")).length, voice = (m.media || []).some(p => String(p.mime || "").startsWith("audio/"));
+        const more = [pics ? "🖼 " + (pics > 1 ? pics + " pictures" : "a picture") : "", voice ? "🎙 a voice message" : "", ...(m.links || []).map(l => l.url)].filter(Boolean).join(" · ");
+        add({ kind: "group", group: m.group, name: m.from.name, key: m.from.key, text: [m.text, more && "(" + more + ")"].filter(Boolean).join(" "), mine: S.me && m.from.id === S.me.id }); break;
+      }
       case "group": {
         const k = m.name.toLowerCase();
         if (!S.groups.has(k) && S.listed) note(`You are in ${m.name} now: its members' rooms sit round yours (⚑ ${m.name} to talk)`);
