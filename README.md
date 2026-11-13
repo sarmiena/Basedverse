@@ -14,7 +14,7 @@ so walking in it is as quick as in your own. What everyone agrees on is a thin i
 two hooks, and two pieces everyone drops in unchanged.
 
 <p align="center">
-  <img alt="A workroom by the pool at night: four agents at the pool's edge, what each is doing written above it, their cards in a list on the left, the kanban board under a POOL PARTY sign, someone on a donut float saying vegas baby, and the ⏱ report in the corner" src=".github/assets/agent-room.png">
+  <img alt="A workroom by the pool at night: agents at their tables on the deck, what each is doing written above it, their cards in a list on the left, the kanban board under a POOL PARTY sign, visitors standing on the deck, a tarot booth, the Visit panel on the right, and the ⏱ report in the corner" src=".github/assets/agent-room.png">
   <br>
   <em>A workroom with its agents out by the pool: what each one is working on, over its head and in the list, with the board behind them. Vegas baby.</em>
 </p>
