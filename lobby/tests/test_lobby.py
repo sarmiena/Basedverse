@@ -14,6 +14,7 @@ import sys
 import tempfile
 import urllib.request
 
+from blake3 import blake3
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from websockets.asyncio.client import connect
@@ -1306,6 +1307,96 @@ async def t_v4_groups(L):
         await x.send(type="bye")
 
 
+def picture(n, kind=b"\x89PNG\r\n\x1a\n"):
+    """A picture of n bytes (random after its kind's start), and its id (blake3, hex)."""
+    b = kind + os.urandom(n - len(kind))
+    return b, blake3(b).hexdigest()
+
+
+async def hand_over(c, b, id_, mime="image/png", size=None):
+    """A picture handed to the lobby (5.3): media_put, then its bytes, 60 KiB at a time."""
+    await c.send(type="media_put", id=id_, mime=mime, size=len(b) if size is None else size)
+    for at in range(0, len(b), 60 << 10):
+        await c.ws.send(b[at:at + (60 << 10)])
+
+
+async def fetched(c, id_, timeout=3.0):
+    """What the lobby sends for media_want: ("media", its bytes) or ("media_none", None); lobby views and groups skipped."""
+    await c.send(type="media_want", id=id_)
+    while True:
+        raw = await asyncio.wait_for(c.ws.recv(), timeout)
+        m = json.loads(raw)
+        if m["type"] in ("lobby", "group"):
+            continue
+        if m["type"] == "media_none":
+            return ("media_none", m["id"])
+        assert m["type"] == "media" and m["id"] == id_, m
+        got = b""
+        while len(got) < m["size"]:
+            piece = await asyncio.wait_for(c.ws.recv(), timeout)
+            assert isinstance(piece, bytes), piece
+            got += piece
+        return ("media", got)
+
+
+async def t_v4_world_pictures(L):
+    """5.3: a world's line with pictures. Its sayer hands each to the lobby first (checked: its id the blake3 hash of
+    its bytes, a kind a line carries); the lobby passes the line on with them named, and each to the world's members who
+    ask (twice each at most), never to anyone else."""
+    a, b, c = await join(L, "P A", proto=P4), await join(L, "P B", proto=P4), await join(L, "P C", proto=P4)
+    check("the welcome says the lobby passes pictures on", a.welcome.get("media"), True)
+    await a.send(type="group_create", group="Atelier", open=True)
+    await group_of(a, "Atelier")
+    await b.send(type="group_join", group="Atelier")
+    await group_of(b, "Atelier")
+    await a.quiet()
+    png, pid = picture(300_000)
+    named = [{"id": pid, "mime": "image/png", "size": len(png)}]
+    await a.send(type="group_say", group="Atelier", text="look", media=named)
+    e = await a.expect("error", skip=("lobby", "group"))
+    check("a picture not handed over first: the line is refused", (e["code"], e["ref"]), ("not_found", "group_say"))
+    other, _ = picture(1000)
+    await hand_over(a, other, pid)
+    check("bytes that are not the id's: refused", (await a.expect("error", skip=("lobby", "group")))["code"], "bad_media")
+    await hand_over(a, png, pid, mime="image/jpeg")
+    check("bytes not of the kind said: refused", (await a.expect("error", skip=("lobby", "group")))["code"], "bad_media")
+    await a.send(type="media_put", id=pid, mime="text/html", size=10)
+    check("a kind no line carries: refused", (await a.expect("error", skip=("lobby", "group")))["code"], "bad_media")
+    await hand_over(a, png, pid)
+    await a.send(type="group_say", group="Atelier", text="", media=[dict(named[0], size=len(png) + 1)])
+    check("named with another size than it has: refused", (await a.expect("error", skip=("lobby", "group")))["code"], "not_found")
+    await a.send(type="group_say", group="Atelier", text="", media=named)
+    la, lb = await a.expect("group_chat", skip=("lobby", "group")), await b.expect("group_chat", skip=("lobby", "group"))
+    check("the line, a picture alone, to the world's members, the sayer too", (la["text"], la["media"], lb["media"], lb["from"]["key"]), ("", named, named, a.key))
+    check("nobody else hears it", [m["type"] for m in await c.quiet() if m["type"] != "lobby"], [])
+    check("a member asks for it: its bytes, whole", await fetched(b, pid), ("media", png))
+    check("someone in no world it was said in: none", await fetched(c, pid), ("media_none", pid))
+    check("a member asks again (a restart): given", (await fetched(b, pid))[0], "media")
+    check("and a third time: none (twice each)", await fetched(b, pid), ("media_none", pid))
+    await b.send(type="group_say", group="Atelier", text="mine now", media=named)
+    check("a member names a picture it did not hand over: refused", (await b.expect("error", skip=("lobby", "group")))["code"], "not_found")
+    await b.send(type="media_want", id="nope")
+    check("media_want of no id: bad_message", (await b.expect("error", skip=("lobby", "group")))["code"], "bad_message")
+    ogg = b"OggS" + os.urandom(5000)
+    oid = blake3(ogg).hexdigest()
+    await hand_over(b, ogg, oid, mime="audio/ogg")
+    voice = {"id": oid, "mime": "audio/ogg", "size": len(ogg), "secs": 3.5}
+    await b.send(type="group_say", group="Atelier", text="hear this", media=[voice], links=[{"url": "https://example.com/", "title": "Ex", "image": None}])
+    la = await a.expect("group_chat", skip=("lobby", "group"))
+    check("a voice message, and a link (its preview as said, checked)", (la["text"], la["media"], [(l["url"], l["title"]) for l in la["links"]]),
+          ("hear this", [voice], [("https://example.com/", "Ex")]))
+    check("the voice message, to another member", await fetched(a, oid), ("media", ogg))
+    await b.quiet()
+    # Past a minute's share (32 MiB, apart from messages), a picture is refused; the connection stays.
+    big = [picture(7 << 20) for _ in range(5)]
+    for bb, bid in big:
+        await hand_over(a, bb, bid)
+    errs = [m for m in await a.quiet(1.0) if m["type"] == "error"]
+    check("five 7 MiB pictures at once: the fifth refused, rate_limited", [(m["code"], m["ref"]) for m in errs], [("rate_limited", "media_put")])
+    await a.send(type="group_say", group="Atelier", text="still here")
+    check("and the connection kept", (await a.expect("group_chat", skip=("lobby", "group")))["text"], "still here")
+
+
 async def t_world_size(S):
     """A world takes the members its lobby says (--world-size), at most."""
     a, b, c = await join(S, "Z A", proto=P4), await join(S, "Z B", proto=P4), await join(S, "Z C", proto=P4)
@@ -1423,7 +1514,7 @@ async def main():
     T = await Lobby("--v3", "--knock-ttl", "1").start()
     tests = [(t, L) for t in (t_hello, t_hello_rules, t_knock_refusals, t_visit, t_end_and_full, t_announce, t_resume, t_resume_replays_visits, t_rename,
                                t_link_withdrawn, t_keys, t_watch, t_link, t_chat, t_whisper, t_v4_hello, t_v4_takeover_and_resume, t_browsers, t_browsers_guarded, t_browsers_confirmed, t_flood, t_v4_directory,
-                               t_v4_groups, t_voice, t_huddle, t_v4_no_knocks, t_teleport)]
+                               t_v4_groups, t_v4_world_pictures, t_voice, t_huddle, t_v4_no_knocks, t_teleport)]
     tests += [(t_resume_window_and_bye, S), (t_world_size, S), (t_knock_timeout_and_health, T)]
     try:
         for t, lob in tests:

@@ -122,4 +122,8 @@ second a voice.
   knocks and the door stay in the room. The browser's key never leaves it; the workroom unlinks it from its panel, and the browser can unlink itself, its room in the lobby or not.
 - **The lobby keeps no words.** Its chat, whispers and world lines pass through and are gone. It keeps its worlds
   (who is in which, by key), its linked browsers (their keys, their workrooms') and its bans.
+- **A world's pictures pass through its memory** (5.3, visit/SPEC.md 6.6): handed over by the sayer's visit-client,
+  checked, held a few minutes for the world's members to fetch (each twice at most), never written anywhere, gone on a
+  restart. What it costs a host: at most 512 MiB of memory for them (64 MiB of one office's), 32 MiB a minute in from
+  each connection, and out, each picture once or twice to each member of the world it was said in.
 - **Its page shows** its worlds, and who is here with a line (by name: never a key, nor where anyone is).

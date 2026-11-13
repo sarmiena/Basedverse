@@ -8,8 +8,9 @@
 //!
 //! It is in the lobby only while the workroom has someone signed in (../../LOBBY.md 2, rule 3: a live session of its
 //! sign-in) and its page has not taken it out (away). Either one gone, it says bye and stays out until both hold.
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use iroh::SecretKey;
 use lobby_proto::{self as proto, About, ToLobby};
@@ -28,6 +29,8 @@ const SILENCE: Duration = Duration::from_secs(60);
 pub enum LobbyOut {
     /// A message for the lobby.
     Msg(ToLobby),
+    /// 5.3: a picture for a world's line, handed to the lobby (`media_put`, then its bytes in pieces) before the line.
+    Media { id: String, mime: String, bytes: Bytes },
     /// Leave the lobby and stay out (away), until `Join`.
     Leave,
     /// Come back after `Leave`: a new session.
@@ -74,6 +77,22 @@ fn text(m: &ToLobby) -> Message {
     Message::Text(m.to_json().to_string().into())
 }
 
+/// 5.3: a picture as the lobby takes it: `media_put`, then its bytes, `PIECE_UP` at a time.
+fn pieces(out: &mut VecDeque<Message>, id: String, mime: String, bytes: &Bytes) {
+    out.push_back(text(&ToLobby::MediaPut { id: Some(id), mime: Some(mime), size: Some(bytes.len() as u64) }));
+    for at in (0..bytes.len()).step_by(proto::media::PIECE_UP) {
+        out.push_back(Message::Binary(bytes.slice(at..(at + proto::media::PIECE_UP).min(bytes.len()))));
+    }
+}
+
+/// 5.3: a picture the lobby is sending (its `media`), and its bytes so far.
+struct Incoming {
+    id: String,
+    mime: String,
+    size: usize,
+    bytes: Vec<u8>,
+}
+
 /// Until `Bye`. `away`: start out of the lobby (as the page last left it), until `Join`. Out of it too until someone
 /// is signed in (`SignedIn(true)`).
 pub async fn run(url: String, key: SecretKey, mut hello: Hello, mut rx: mpsc::UnboundedReceiver<LobbyOut>, core: mpsc::UnboundedSender<Ev>, mut away: bool) {
@@ -91,6 +110,7 @@ pub async fn run(url: String, key: SecretKey, mut hello: Hello, mut rx: mpsc::Un
                     Some(LobbyOut::SignedIn(s)) => signed_in = s,
                     Some(LobbyOut::Bye) | None => return,
                     Some(LobbyOut::Msg(m)) => remember(&mut hello, &m),   // nothing to send while out
+                    Some(LobbyOut::Media { .. }) => {}
                 }
             }
             (resume, backoff) = (None, 1);
@@ -106,6 +126,7 @@ pub async fn run(url: String, key: SecretKey, mut hello: Hello, mut rx: mpsc::Un
                     Some(LobbyOut::SignedIn(s)) => { signed_in = s; if !s { break None } }
                     Some(LobbyOut::Join) => {}
                     Some(LobbyOut::Msg(m)) => remember(&mut hello, &m),
+                    Some(LobbyOut::Media { .. }) => {}
                     Some(LobbyOut::Bye) | None => return,
                 },
             }
@@ -122,14 +143,29 @@ pub async fn run(url: String, key: SecretKey, mut hello: Hello, mut rx: mpsc::Un
                 let mut left = false;
                 if tx.send(text(&first)).await.is_ok() {
                     let (mut welcomed, mut heard) = (false, Instant::now());
+                    // What goes out, in order, one message between reads (a picture's pieces among them: the lobby's
+                    // pings are still answered while a big one goes); and a picture coming in.
+                    let mut out: VecDeque<Message> = VecDeque::new();
+                    let mut incoming: Option<Incoming> = None;
                     loop {
+                        if let Some(m) = out.pop_front() {
+                            if tx.send(m).await.is_err() { break }
+                        }
                         tokio::select! {
+                            _ = std::future::ready(()), if !out.is_empty() => {}
                             m = rx_ws.next() => {
                                 heard = Instant::now();   // pings count: tungstenite answers them as it reads
                                 match m {
                                     Some(Ok(Message::Text(t))) => {
                                         let Ok(v) = serde_json::from_str::<Value>(t.as_str()) else { continue };
                                         let kind = v.get("type").and_then(Value::as_str).unwrap_or("").to_string();
+                                        if kind == "media" {   // 5.3: a picture asked for; its bytes follow
+                                            let (id, mime) = (v["id"].as_str().unwrap_or("").to_string(), v["mime"].as_str().unwrap_or("").to_string());
+                                            let size = v["size"].as_u64().unwrap_or(0) as usize;
+                                            incoming = (proto::media::id_ok(&id) && size > 0 && proto::media::max_of(&mime).is_some_and(|max| size <= max))
+                                                .then(|| Incoming { id, mime, size, bytes: Vec::with_capacity(size) });
+                                            continue;
+                                        }
                                         if kind == "challenge" {   // the key proved: the lobby's nonce, signed
                                             let nonce = v.get("nonce").and_then(Value::as_str).unwrap_or("");
                                             let signature = key.sign(proto::proof_message(&host, nonce, &public).as_bytes());
@@ -164,6 +200,18 @@ pub async fn run(url: String, key: SecretKey, mut hello: Hello, mut rx: mpsc::Un
                                             break;   // name_taken: its old session may still be held; try again later
                                         }
                                     }
+                                    Some(Ok(Message::Binary(b))) => {   // 5.3: a piece of the picture coming in
+                                        let Some(i) = incoming.as_mut() else { continue };
+                                        i.bytes.extend_from_slice(&b);
+                                        if i.bytes.len() < i.size { continue }
+                                        let i = incoming.take().expect("some");
+                                        let _ = core.send(if i.bytes.len() == i.size && proto::media::is(&i.id, &i.mime, &i.bytes) {
+                                            Ev::LobbyMedia { id: i.id, mime: i.mime, bytes: i.bytes.into() }
+                                        } else {
+                                            warn!(id = i.id, "a picture from the lobby that is not what it said: dropped");
+                                            Ev::Lobby(serde_json::json!({ "type": "media_none", "id": i.id }))
+                                        });
+                                    }
                                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                                     Some(Ok(_)) => {}
                                 }
@@ -176,8 +224,9 @@ pub async fn run(url: String, key: SecretKey, mut hello: Hello, mut rx: mpsc::Un
                                 Some(LobbyOut::Msg(m)) => {
                                     remember(&mut hello, &m);
                                     // Before its welcome, nothing but the hello and its proof: what changed goes with it.
-                                    if welcomed && tx.send(text(&m)).await.is_err() { break }
+                                    if welcomed { out.push_back(text(&m)) }
                                 }
+                                Some(LobbyOut::Media { id, mime, bytes }) => if welcomed { pieces(&mut out, id, mime, &bytes) },
                                 Some(o @ (LobbyOut::Leave | LobbyOut::SignedIn(false))) => {   // the session ends at once: nothing to resume
                                     if matches!(o, LobbyOut::Leave) { away = true } else { signed_in = false }
                                     let _ = tx.send(text(&ToLobby::Bye)).await;
@@ -215,7 +264,7 @@ pub async fn run(url: String, key: SecretKey, mut hello: Hello, mut rx: mpsc::Un
                     Some(LobbyOut::SignedIn(s)) => { signed_in = s; if !s { break } }
                     Some(LobbyOut::Bye) | None => return,
                     Some(LobbyOut::Msg(m)) => remember(&mut hello, &m),
-                    Some(LobbyOut::Join) => {}
+                    Some(LobbyOut::Join | LobbyOut::Media { .. }) => {}
                 },
             }
         }

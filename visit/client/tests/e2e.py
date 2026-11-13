@@ -1777,6 +1777,28 @@ async def main():
         check("a picture into the lobby: refused (it carries text only)", (await a.until(lambda m: m["type"] == "error"))["code"], "not_supported")
         await a.send(type="say", text="psst", to={"whisper": await L.id_of("c")}, media=[pic])
         check("a whisper with a picture to C, not linked with A: refused", (await a.until(lambda m: m["type"] == "error"))["code"], "no_link")
+        # 5.3: into a world's chat, through the lobby: A's visit-client hands it over, C's asks the lobby for it.
+        await c.send(type="group_create", group="Gallery", open=True)
+        await c.until(lambda m: m["type"] == "group" and m["name"] == "Gallery")
+        await a.send(type="group_join", group="Gallery")
+        await a.until(lambda m: m["type"] == "group" and m["name"] == "Gallery")
+        shot = b"\x89PNG\r\n\x1a\n" + os.urandom(300_000)   # (a screenshot's size: pieces both ways)
+        await a.ws.send(struct.pack(">HBQ", 8, 128, 0) + shot)
+        mr = await a.until(lambda m: m["type"] in ("media_ready", "error"))
+        shot_pic = {"id": mr["id"], "mime": "image/png", "size": len(shot)}
+        await a.send(type="say", text="", to={"group": "gallery"}, media=[shot_pic])
+        x = await c.until(lambda m: m["type"] == "chat" and m.get("scope") == "group")
+        y = await a.until(lambda m: m["type"] == "chat" and m.get("scope") == "group")
+        check("A says a picture alone into a world it shares with C, not linked with it (5.3): C's page has the line, and A's its own",
+              (pick(x, "group", "text", "media", "conversation"), y.get("mine"), y.get("media")), ({"group": "Gallery", "text": "", "media": [shot_pic], "conversation": "group:gallery"}, True, [shot_pic]))
+        await c.send(type="media_get", id=shot_pic["id"])
+        check("and C's page asks for it: C's visit-client has it from the lobby, and gives it", await next_media(c), (shot_pic["id"], "image/png", shot))
+        await c.send(type="shared", conversation="group:gallery", kind="media", req=3)
+        sh = await c.until(lambda m: m["type"] == "shared")
+        check("C's database keeps it in the world's conversation (🖼)", [(i["id"], i["key"]) for i in sh["items"]], [(shot_pic["id"], ka)])
+        await c.send(type="group_delete", group="Gallery")
+        await c.until(lambda m: m["type"] == "group_left")
+        await a.until(lambda m: m["type"] == "group_left")
         hits = []
         class Site(http.server.BaseHTTPRequestHandler):   # a site with a page to preview, and its picture
             def do_GET(self):
@@ -1814,8 +1836,9 @@ async def main():
         await a.send(type="history", limit=2, req=10)
         h = await a.until(lambda m: m["type"] == "history")
         check("A's history: its last lines, newest last, and more before", ([l["text"] for l in h["lines"]], h["more"]), (["just for you", "see " + page_url], True))
-        await a.send(type="history", before=h["lines"][0]["at"], limit=1, req=11)
-        check("and the one before them", [l["text"] for l in (await a.until(lambda m: m["type"] == "history"))["lines"]], ["look"])
+        await a.send(type="history", before=h["lines"][0]["at"], limit=2, req=11)
+        check("and the two before them (5.3: the picture alone, said into a world)", [(l["text"], l.get("scope"), len(l.get("media") or [])) for l in (await a.until(lambda m: m["type"] == "history"))["lines"]],
+              [("look", "sim", 1), ("", "group", 1)])
         site.shutdown()
 
         print("\nvoice messages (0.22.0): kept, and passed on, as a picture is")

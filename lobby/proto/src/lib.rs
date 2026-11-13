@@ -5,6 +5,8 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
+pub mod media;
+
 /// Visit 0.5 to 2.x: a lobby of its own, behind the lobby's `--v3`.
 pub const PROTO3: &str = "basedverse-lobby/3";
 /// Visit 3.0 on: the key proved at hello, worlds (the protocol's groups), the directory; 3.1: linked browsers.
@@ -213,6 +215,14 @@ fn id_or_none<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Erro
     })
 }
 
+/// A list, else none (anything else is no list: refused for what it lacks, never for its shape).
+fn list<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Value>, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::Array(a) => a,
+        _ => Vec::new(),
+    })
+}
+
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -369,7 +379,22 @@ pub enum ToLobby {
     /// Its owner's: handed to another member.
     GroupOwner { group: Option<String>, key: Option<String> },
     GroupDelete { group: Option<String> },
-    GroupSay { group: Option<String>, text: Option<String> },
+    /// 5.3: with pictures (`media`) and links (`links`), as a room's line has them (`media::attachments`): each picture
+    /// handed to the lobby first (`media_put`).
+    GroupSay {
+        group: Option<String>,
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "list")]
+        media: Vec<Value>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "list")]
+        links: Vec<Value>,
+    },
+    /// 5.3: a picture (or a voice message) for a line to one of this office's worlds, handed to the lobby: its bytes
+    /// follow, as binary messages of at most `media::PIECE_UP` bytes each, in order, `size` in all. The lobby holds it a
+    /// few minutes, in memory, to pass on to the world's members (`media_want`).
+    MediaPut { id: Option<String>, mime: Option<String>, size: Option<u64> },
+    /// 5.3: a picture a world's line named, please (`media` and its bytes back, or `media_none`).
+    MediaWant { id: Option<String> },
     /// 4.0: a huddle in one of this office's worlds, started (`on`) or over: every member online who takes voice hears.
     GroupHuddle {
         group: Option<String>,
@@ -588,6 +613,9 @@ pub enum FromLobby {
         /// does not know, and pass a knock's `teleport` on as a plain watch).
         #[serde(skip_serializing_if = "is_false", default)]
         teleport: bool,
+        /// 5.3: this lobby passes pictures on in a world's chat (`media_put`, `media_want`); an older one carries text.
+        #[serde(skip_serializing_if = "is_false", default)]
+        media: bool,
     },
     Lobby { offices: Vec<Office> },
     Knock {
@@ -700,7 +728,22 @@ pub enum FromLobby {
     },
     /// Version 4: no longer in a world (`left`, `removed`, `banned`, `deleted`).
     GroupLeft { group: String, reason: String },
-    GroupChat { group: String, from: Sayer, text: String },
+    GroupChat {
+        group: String,
+        from: Sayer,
+        text: String,
+        /// 5.3: its pictures and links, as its sayer said them (`media_want` for a picture this office lacks).
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        media: Vec<Value>,
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        links: Vec<Value>,
+    },
+    /// 5.3: a picture asked for (`media_want`): its bytes follow, as binary messages of at most `media::PIECE_DOWN`
+    /// bytes each, in order, `size` in all, before anything else this office is sent.
+    Media { id: String, mime: String, size: u64 },
+    /// 5.3: a picture asked for that the lobby does not hold for this office (never handed over, its time up, or said
+    /// in no world of this office's).
+    MediaNone { id: String },
     /// 4.0: a huddle in one of this office's worlds: started by `from` (`on`), or over. `since`: seconds since it
     /// started (on welcome, those going on are told again).
     Huddle { group: String, from: Sayer, on: bool, #[serde(default)] since: u64 },

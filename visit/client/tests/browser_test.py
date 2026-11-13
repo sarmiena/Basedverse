@@ -1138,6 +1138,28 @@ async def run(a, b, url):
         await b.key("Escape", "Escape", 27, True)
         await b.key("Escape", "Escape", 27, False)
 
+        print("\n5.3: a screenshot into a world's chat (Yard), through the lobby, which passes it on")
+        check("the lobby says it passes pictures on in a world's chat", (await a.js("v.lobbyMedia"), await b.js("v.lobbyMedia")), (True, True))
+        await enter(a)
+        await a.call("Input.insertText", text="/g Yard ")
+        await a.js("""(async () => {
+            const c = document.createElement('canvas'); c.width = 80; c.height = 40;
+            const g = c.getContext('2d'); g.fillStyle = '#33e'; g.fillRect(0, 0, 80, 40); g.fillStyle = '#ee3'; g.fillRect(20, 10, 40, 20);
+            const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+            const dt = new DataTransfer(); dt.items.add(new File([blob], 'yard.png', { type: 'image/png' }));
+            document.querySelector('.visit-chat input').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+        })()""")
+        check("A's box on Yard, a picture pasted: it waits over the box", await a.until(
+            f"(c => c.dataset.scope === 'group' && c.querySelectorAll('.attach .chip').length === 1 && !c.querySelector('.attach .chip.busy'))({cw})"), True)
+        await a.call("Input.insertText", text="our yard")
+        await enter(a)
+        check("Enter: said in Yard with it; B's window shows the line and the picture (B's visit-client had it from the lobby)", await b.until(
+            f"(l => !!l && l.textContent.includes('[Yard]') && l.textContent.includes('our yard') && (i => !!i && i.complete && i.naturalWidth === 80)(l.querySelector('img.pic')))({cw}.querySelector('.log').lastChild)", 15), True)
+        check("and A's own line, with it", await a.until(f"(l => l.textContent.includes('[Yard]') && (i => !!i && i.naturalWidth === 80)(l.querySelector('img.pic')))({cw}.querySelector('.log').lastChild)"), True)
+        await a.js("ui.chat.aim({ scope: 'say' })")
+        await a.key("Escape", "Escape", 27, True)
+        await a.key("Escape", "Escape", 27, False)
+
         print("\nthe mailbox (0.22.0): what came for B while nobody looked at its chat")
         await b.js("document.hasFocus = () => false; dispatchEvent(new Event('blur'))")
         check("B's page loses the focus: nobody looking at its chat, its visit-client told", await b.until("!v._attention"), True)

@@ -191,11 +191,13 @@ pub enum DbCmd {
     Shared { req: Value, conversation: String, kind: &'static str, before: i64, limit: i64 },
 }
 
-/// Who asked for a picture: the page, or the other side of a visit (its id).
+/// Who asked for a picture: the page, the other side of a visit (its id), or (5.3) the lobby, to hand it over for a
+/// world's line.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MediaTo {
     Page,
     Link(String),
+    Lobby,
 }
 
 /// The database's task: each command in turn (in the order asked: a picture put is there for the next get). A

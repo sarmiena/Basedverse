@@ -3,55 +3,18 @@
 use std::{io::Read, time::Duration};
 
 use bytes::Bytes;
-use serde_json::{json, Value};
 
 use crate::VERSION;
 
-/// The largest picture shared (a screenshot fits); and a link preview's picture, and the most of its page read.
-pub const MAX_MEDIA: usize = 8 << 20;
+// What a picture or a voice message may be, and what a line may carry: lobby_proto's, since the lobby checks them too
+// (5.3: it passes a world's pictures on).
+pub use lobby_proto::media::{attachments, clip, id_ok, sniff, sniff_voice, url_ok, MAX_MEDIA, MAX_VOICE};
+
+/// A link preview's picture, at most, and the most of its page read.
 const MAX_PREVIEW_IMAGE: usize = 2 << 20;
 const MAX_PAGE: u64 = 512 << 10;
-/// The largest voice message (Visit 0.22.0): a minute, recorded as a browser does (Opus, else AAC), fits.
-pub const MAX_VOICE: usize = 2 << 20;
 /// A room's own sound (3.4, #36: a clip its page plays from somewhere in it, for everyone in it), at most.
 pub const MAX_SOUND: usize = 4 << 20;
-/// Its longest, in seconds, as its sender says.
-pub const VOICE_SECS: f64 = 60.0;
-/// At most this many pictures (a voice message among them, at most one), and links, in a line.
-pub const MEDIA_PER_LINE: usize = 4;
-pub const LINKS_PER_LINE: usize = 2;
-
-/// A picture's type, by what its bytes start with (whatever it was said to be): PNG, JPEG, WebP or GIF; else none.
-pub fn sniff(b: &[u8]) -> Option<&'static str> {
-    if b.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some("image/png")
-    } else if b.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        Some("image/jpeg")
-    } else if b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a") {
-        Some("image/gif")
-    } else if b.len() >= 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WEBP" {
-        Some("image/webp")
-    } else {
-        None
-    }
-}
-
-/// A voice message's type, by what its bytes start with: WebM (Chrome's and Firefox's recordings), Ogg, or MP4
-/// (Safari's); else none.
-pub fn sniff_voice(b: &[u8]) -> Option<&'static str> {
-    if b.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) && b[..b.len().min(64)].windows(4).any(|w| w == b"webm") {
-        Some("audio/webm")
-    } else if b.starts_with(b"OggS") {
-        Some("audio/ogg")
-    } else if b.len() >= 12 && &b[4..8] == b"ftyp" {
-        Some("audio/mp4")
-    } else {
-        None
-    }
-}
-
-/// The kinds a voice message may be.
-pub const VOICE_KINDS: [&str; 3] = ["audio/webm", "audio/ogg", "audio/mp4"];
 
 /// A room's sound (3.4, #36), by what its bytes start with: a voice message's kinds, or WAV, or MP3; else none.
 pub fn sniff_sound(b: &[u8]) -> Option<&'static str> {
@@ -82,50 +45,6 @@ pub fn shared(b: &[u8]) -> Option<(String, &'static str)> {
         (None, Some(mime)) => (b.len() <= MAX_SOUND).then(|| (id(), mime)),   // 3.4: a room's WAV or MP3 sound
         (None, None) => picture(b, MAX_MEDIA),
     }
-}
-
-/// A picture's id: 64 lowercase hex characters.
-pub fn id_ok(id: &str) -> bool {
-    id.len() == 64 && id.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-}
-
-/// The pictures and links a line carries, as a page or a link gives them, checked (at most MEDIA_PER_LINE and
-/// LINKS_PER_LINE): each picture { id, mime, size }, or one voice message { id, mime, size, secs }; each link { url
-/// (http or https), title, description, site, image (a picture) }.
-pub fn attachments(m: &Value) -> (Vec<Value>, Vec<Value>) {
-    let pic = |p: &Value| -> Option<Value> {
-        let id = p.get("id").and_then(Value::as_str).filter(|id| id_ok(id))?;
-        let mime = p.get("mime").and_then(Value::as_str).filter(|m| ["image/png", "image/jpeg", "image/webp", "image/gif"].contains(m))?;
-        let size = p.get("size").and_then(Value::as_u64).filter(|s| *s > 0 && *s as usize <= MAX_MEDIA)?;
-        Some(json!({ "id": id, "mime": mime, "size": size }))
-    };
-    let voice = |p: &Value| -> Option<Value> {
-        let id = p.get("id").and_then(Value::as_str).filter(|id| id_ok(id))?;
-        let mime = p.get("mime").and_then(Value::as_str).filter(|m| VOICE_KINDS.contains(m))?;
-        let size = p.get("size").and_then(Value::as_u64).filter(|s| *s > 0 && *s as usize <= MAX_VOICE)?;
-        let secs = p.get("secs").and_then(Value::as_f64).filter(|s| s.is_finite()).map_or(0.0, |s| (s.clamp(0.0, VOICE_SECS) * 10.0).round() / 10.0);
-        Some(json!({ "id": id, "mime": mime, "size": size, "secs": secs }))
-    };
-    let mut voices = 0;
-    let media = m.get("media").and_then(Value::as_array).into_iter().flatten().take(MEDIA_PER_LINE)
-        .filter_map(|p| pic(p).or_else(|| voice(p).filter(|_| { voices += 1; voices == 1 }))).collect();
-    let links = m.get("links").and_then(Value::as_array).into_iter().flatten().take(LINKS_PER_LINE).filter_map(|l| {
-        let url = l.get("url").and_then(Value::as_str).filter(|u| url_ok(u))?;
-        let s = |k: &str, n: usize| clip(l.get(k).and_then(Value::as_str).unwrap_or(""), n);
-        Some(json!({ "url": url, "title": s("title", 200), "description": s("description", 500), "site": s("site", 100),
-                     "image": l.get("image").and_then(pic).unwrap_or(Value::Null) }))
-    }).collect();
-    (media, links)
-}
-
-/// A link that may be shared: http or https, at most 2 000 characters, no spaces or control characters.
-pub fn url_ok(u: &str) -> bool {
-    (u.starts_with("http://") || u.starts_with("https://")) && u.len() <= 2000 && u.len() > 8 && !u.chars().any(|c| c.is_whitespace() || c.is_control())
-}
-
-/// At most `n` characters, without control characters, trimmed.
-pub fn clip(s: &str, n: usize) -> String {
-    s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(n).collect()
 }
 
 /// A link's preview: where it led (after redirects), the page's title, description and site, and its picture.
@@ -334,6 +253,7 @@ pub fn host(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn pictures_by_their_bytes() {

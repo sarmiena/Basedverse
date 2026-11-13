@@ -17,7 +17,7 @@
 // visitor's page walks at once and the host corrects it), and a host renders and encodes nothing for anyone.
 "use strict";
 (function () {
-  const VERSION = "5.2.0", PROTO = "basedverse-visit-local/2";
+  const VERSION = "5.3.0", PROTO = "basedverse-visit-local/2";
   const MOVE_MS = 1000 / 60, INPUT_MS = 1000 / 30, INPUT_MIN_MS = 8, STALE_MS = 300, LOOK = 0.0025;
   const POINT_MS = 200, AIM_MS = 125;   // a visitor's points, at most one this often; what it aims at, looked for this often
   // A point's wheel (SPEC 8.3): whole notches, at most MAX_WHEEL either way. A notch is an event of WHEEL_NOTCH pixels or
@@ -1009,6 +1009,7 @@
       this.chatLog = [];       // the last CHAT_LOG lines of chat, of every scope (8.9), as "chat" gave them, with `at` (ms);
                                //   `old`, from before this page (kept by the visit-client: a reload keeps the chat)
       this.lobbyChat = false;  // the lobby relays chat (8.9): say(text, "lobby") goes to everyone in it
+      this.lobbyMedia = false; // 5.3: the lobby passes pictures on in a world's chat: say(text, { group }, { media, links })
       this.signedIn = false;   // someone is signed in on this workroom: only then is it in the lobby (LOBBY.md 2, rule 3)
       this.lobbyInfo = { title: null, motd: null, admin: false };   // the lobby's name, its message of the day, you one of its operators
       this.groups = [];        // your worlds (LOBBY.md): [{ name, about, open, locked, owner, members: [{ key, name, since }], bans }]
@@ -1135,6 +1136,7 @@
       this.status = m.status; this.maxVisitors = m.max_visitors;
       this.key = typeof m.key === "string" ? m.key : null;
       this.lobbyChat = m.lobby_chat === true;
+      this.lobbyMedia = m.lobby_media === true;
       this.lobbyVoice = m.lobby_voice === true;
       this.huddles = (Array.isArray(m.huddles) ? m.huddles : []).map(h => this._huddleFrom(h)).filter(Boolean);
       this._talks.clear();
@@ -1188,7 +1190,7 @@
     _message(m) {
       switch (m.type) {
         case "online":   // (again, after a drop): its own knocks still waiting are these
-          this.state = "online"; this.office = m.office; this.lobbyChat = m.lobby_chat === true; this.lobbyVoice = m.lobby_voice === true;
+          this.state = "online"; this.office = m.office; this.lobbyChat = m.lobby_chat === true; this.lobbyMedia = m.lobby_media === true; this.lobbyVoice = m.lobby_voice === true;
           if (m.lobby_info) this.lobbyInfo = lobbyInfoFrom(m.lobby_info);
           this._emit("online", this.lobbyInfo);
           break;
@@ -2708,6 +2710,8 @@
     //   { key } (or a key): a linked room's chat, the room of an office you are linked with, either way
     //     (v.chatTargets): everyone in it, and linked with it, has it in their chat, wherever you are.
     //   "lobby": everyone in the lobby has it in their chat (v.lobbyChat: a lobby that relays it, and you in it).
+    //   { group }: everyone in one of your worlds who is in the lobby (v.groups). 5.3: with pictures, voice messages
+    //     and links too, while v.lobbyMedia (a lobby that passes them on: it holds each a few minutes, in memory).
     // Plain text, at most 200 characters, 5 lines every 10 s wherever they go (false: not said). "chat" says each line
     // that comes: { scope ("say", "whisper", "sim" or "lobby"), key, name, text, mine, owner, id, channel, to } (`to`,
     // yours: whom you whispered, { id, key, name }; a "sim" line's: the room whose chat it was said in, { key, name },
@@ -2741,12 +2745,13 @@
         return true;
       }
       const scope = to == null || to === "here" ? "say" : to === "lobby" ? "lobby" : isObj(to) && to.whisper != null ? "whisper" : isObj(to) && to.group != null ? "group" : "sim";
-      if (scope === "group") {   // one of your world groups: everyone in it (text only, through the lobby; it comes back, in order)
+      if (scope === "group") {   // one of your world groups: everyone in it, through the lobby (it comes back, in order)
         const g = this.groups.find(x => x.name.toLowerCase() === String(to.group).toLowerCase());
+        const pics = picturesFrom(media), cards = linksFrom(links), shares = pics.length + cards.length > 0;   // (5.3: a lobby that passes them on)
         this._said = this._said.filter(at => now - at < CHAT_WINDOW);
-        if (!g || !t || media.length || links.length || this._said.length >= CHATS || this.state !== "online" || !this._ws || this._ws.readyState !== 1) return false;
+        if (!g || (!t && !shares) || (shares && !this.lobbyMedia) || this._said.length >= CHATS || this.state !== "online" || !this._ws || this._ws.readyState !== 1) return false;
         this._said.push(now);
-        this._send({ type: "say", text: t, to: { group: g.name } });
+        this._send({ type: "say", text: t, to: { group: g.name }, ...(pics.length ? { media: pics } : {}), ...(cards.length ? { links: cards } : {}) });
         return true;
       }
       const target = to === "room" ? { key: this.key || "", name: this.office ? this.office.name : "" }

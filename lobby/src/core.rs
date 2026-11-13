@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use axum::extract::ws::Utf8Bytes;
+use axum::{body::Bytes, extract::ws::Utf8Bytes};
 use lobby_proto::{self as proto, About, Ban, FromLobby, Knocker, Knocking, Limits, LinkTo, Office, Peer, Sayer, Sim, ToLobby};
 
 use serde_json::{json, Value};
@@ -35,9 +35,22 @@ const CODES_A_MINUTE: usize = 5;
 const HASHING_AT_ONCE: usize = 4;
 const WRONG_PER_WORLD_HOUR: usize = 30;
 
+/// 5.3: a world's pictures, held in memory to be passed on (never written anywhere): one not named by a line is let go
+/// this long after it was handed over; one named, this long after the last line that named it.
+const MEDIA_UNSAID: Duration = Duration::from_secs(600);
+const MEDIA_SAID: Duration = Duration::from_secs(300);
+/// The most the lobby holds, of everyone's together, and of one office's (by the key that first handed each over):
+/// past it, what would go soonest goes now.
+const MEDIA_HELD: usize = 512 << 20;
+const MEDIA_EACH: usize = 64 << 20;
+/// Times one office may fetch one picture (its visit-client asks once; again after a restart).
+const MEDIA_FETCHES: u8 = 2;
+
 /// What a connection is told to do.
 pub enum Out {
     Text(Utf8Bytes),
+    /// 5.3: a piece of a picture, after the `media` that says what it is.
+    Binary(Bytes),
     Close(u16, &'static str),
 }
 
@@ -64,6 +77,13 @@ impl Conn {
     }
     fn send_text(&self, t: &Utf8Bytes) {
         self.put(Out::Text(t.clone()));
+    }
+    /// 5.3: a picture, as `media` and then its bytes in pieces, together (nothing goes between them).
+    fn send_media(&self, id: &str, h: &Held) {
+        self.send(&FromLobby::Media { id: id.into(), mime: h.mime.clone(), size: h.bytes.len() as u64 });
+        for at in (0..h.bytes.len()).step_by(proto::media::PIECE_DOWN) {
+            self.put(Out::Binary(h.bytes.slice(at..(at + proto::media::PIECE_DOWN).min(h.bytes.len()))));
+        }
     }
     pub fn close(&self, code: u16, why: &'static str) {
         self.put(Out::Close(code, why));
@@ -124,6 +144,10 @@ pub enum Ev {
     DebugLie(Option<String>),
     /// 3.4.3: the lobby as it is now, to everyone, held back since the last went out (ANNOUNCE_EVERY).
     Announce,
+    /// 5.3: a picture handed over on `conn` for a world's line (`media_put`), its bytes checked (conn.rs): to hold.
+    MediaPut { conn: u64, office: String, id: String, mime: String, bytes: Bytes },
+    /// 5.3: the held pictures whose time is up, let go.
+    MediaSweep,
 }
 
 /// What a run is given.
@@ -310,6 +334,18 @@ struct Visit {
 }
 
 /// 4.0: a world's huddle going on: who started it (an office), and when.
+/// 5.3: a picture held for a world's chat: its kind and bytes, the keys that handed it over (the first counts it against
+/// its share), the worlds it was said in (lower case), how often each key fetched it, and until when it is held.
+struct Held {
+    mime: String,
+    bytes: Bytes,
+    owner: String,
+    by: HashSet<String>,
+    groups: HashSet<String>,
+    fetched: HashMap<String, u8>,
+    until: Instant,
+}
+
 struct Huddle {
     by: String,
     since: Instant,
@@ -355,6 +391,9 @@ pub struct Core {
     /// 3.4.3: when the lobby last went out to everyone, and whether one is held back to go when ANNOUNCE_EVERY is up.
     announced: Option<Instant>,
     announce_held: bool,
+    /// 5.3: the pictures held for worlds' chat, by id, and their bytes together.
+    media: HashMap<String, Held>,
+    media_bytes: usize,
 }
 
 /// 3.4.3: the lobby goes out to everyone at most this often (each time it is the whole list, to every office and
@@ -411,7 +450,7 @@ impl Core {
             cfg, limits3, limits4, me, offices: HashMap::new(), by_name: HashMap::new(), by_key: HashMap::new(), resumes: HashMap::new(),
             knocks: HashMap::new(), asks: HashMap::new(), huddles: HashMap::new(), knock_order: Vec::new(), visits: HashMap::new(), visit_order: Vec::new(), bans, groups, lie: None, replying: None,
             passes: HashMap::new(), links, browsers: HashMap::new(), pending: HashMap::new(), pending_from: HashMap::new(), awaiting: HashMap::new(), scan_misses: HashMap::new(), hashing: 0,
-            wrong: HashMap::new(), announced: None, announce_held: false,
+            wrong: HashMap::new(), announced: None, announce_held: false, media: HashMap::new(), media_bytes: 0,
         }
     }
 
@@ -504,6 +543,8 @@ impl Core {
                     self.announce_held = false;
                     self.announce_now();
                 }
+                Ev::MediaPut { conn, office, id, mime, bytes } => self.media_put(conn, &office, id, mime, bytes),
+                Ev::MediaSweep => self.media_sweep(),
             }
         }
     }
@@ -746,7 +787,7 @@ impl Core {
             proto: o.proto.name().into(), id: o.id.clone(), name: o.name.clone(), key: if v4 { o.key.clone() } else { None },
             relays: self.cfg.relays.clone(), resume: fresh, resumed, visits, knocking, limits: self.limits(o.proto).clone(), chat: true,
             admin: o.admin, title: if v4 { self.cfg.title.clone() } else { None }, motd: if v4 { self.cfg.motd.clone() } else { None }, voice: true, ice,
-            teleport: v4,
+            teleport: v4, media: v4,
         };
         self.tell(oid, &w);
     }
@@ -1328,6 +1369,9 @@ impl Core {
             m @ (ToLobby::BrowserCode { .. } | ToLobby::BrowserAllow { .. } | ToLobby::Browsers | ToLobby::BrowserRevoke { .. }) => self.on_browser(oid, m),
             ToLobby::BrowserForget => self.error(oid, "bad_message", "browser_forget is a linked browser's", Some("browser_forget")),
             ToLobby::BrowserVerify { .. } => self.error(oid, "bad_message", "browser_verify is a waiting browser's", Some("browser_verify")),
+            ToLobby::MediaWant { id } => self.media_want(oid, id),
+            // (conn.rs takes a version-4 office's own, with the bytes that follow it)
+            ToLobby::MediaPut { .. } => self.error(oid, "not_supported", "pictures are handed over by a workroom's visit-client, on its own connection", Some("media_put")),
             g => self.on_group(oid, g, None),
         }
     }
@@ -1808,13 +1852,18 @@ impl Core {
     /// A line's text, as chat, groups and whispers take it: plain, trimmed, at most `chat` characters; and
     /// `chats_per_10s` of them in 10 s at most, of every kind together. None (said why) if not.
     fn chat_text(&mut self, oid: &str, text: Option<String>, r: &str) -> Option<String> {
+        self.line_text(oid, text, r, false)
+    }
+
+    /// `chat_text`, but empty (or none) is a line too when it has pictures or links (`shares`, 5.3: a world's).
+    fn line_text(&mut self, oid: &str, text: Option<String>, r: &str, shares: bool) -> Option<String> {
         let (most, per) = (self.limits3.chat, self.limits3.chats_per_10s);
-        let Some(text) = text else {
+        let Some(text) = text.or_else(|| shares.then(String::new)) else {
             self.error(oid, "bad_message", "text is a string", Some(r));
             return None;
         };
         let text = proto::plain(&text, most);
-        if text.is_empty() {
+        if text.is_empty() && !shares {
             self.error(oid, "bad_message", format!("text is 1 to {most} characters"), Some(r));
             return None;
         }
@@ -1918,6 +1967,79 @@ impl Core {
     }
 
     /// Every member of `group` online hears it as it is now (its ops with its requests).
+    // ---------- a world's pictures (5.3: SPEC 6.6) ----------
+    /// A picture handed over, its bytes checked: held for a world's line to name, `MEDIA_UNSAID` at most until one does.
+    /// One already held is held for this office too. Past the lobby's share (or this office's), what would go soonest
+    /// goes now.
+    fn media_put(&mut self, conn: u64, oid: &str, id: String, mime: String, bytes: Bytes) {
+        let Some(key) = self.offices.get(oid).filter(|o| o.conn.as_ref().is_some_and(|c| c.id == conn)).and_then(|o| o.key.clone()) else { return };
+        self.media_sweep();
+        let until = Instant::now() + MEDIA_UNSAID;
+        if let Some(h) = self.media.get_mut(&id) {
+            h.by.insert(key);
+            h.until = h.until.max(until);
+            return;
+        }
+        let size = bytes.len();
+        let mut mine: usize = self.media.values().filter(|h| h.owner == key).map(|h| h.bytes.len()).sum();
+        while mine + size > MEDIA_EACH {
+            let Some(old) = self.media.iter().filter(|(_, h)| h.owner == key).min_by_key(|(_, h)| h.until).map(|(i, _)| i.clone()) else { break };
+            mine -= self.media_drop(&old);
+        }
+        while self.media_bytes + size > MEDIA_HELD {
+            let Some(old) = self.media.iter().min_by_key(|(_, h)| h.until).map(|(i, _)| i.clone()) else { break };
+            self.media_drop(&old);
+        }
+        self.media_bytes += size;
+        self.media.insert(id, Held { mime, bytes, owner: key.clone(), by: HashSet::from([key]), groups: HashSet::new(), fetched: HashMap::new(), until });
+        self.sweep_after(MEDIA_UNSAID);
+    }
+
+    /// A held picture let go: its size.
+    fn media_drop(&mut self, id: &str) -> usize {
+        let n = self.media.remove(id).map_or(0, |h| h.bytes.len());
+        self.media_bytes -= n;
+        n
+    }
+
+    fn media_sweep(&mut self) {
+        let now = Instant::now();
+        let over: Vec<String> = self.media.iter().filter(|(_, h)| h.until <= now).map(|(i, _)| i.clone()).collect();
+        for id in over {
+            self.media_drop(&id);
+        }
+    }
+
+    fn sweep_after(&self, d: Duration) {
+        let me = self.me.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(d + Duration::from_secs(1)).await;
+            let _ = me.send(Ev::MediaSweep);
+        });
+    }
+
+    /// A picture a world's line named, for an office's own visit-client (never a browser): to a member of a world it
+    /// was said in (or one that handed it over), `MEDIA_FETCHES` times at most; else `media_none`.
+    fn media_want(&mut self, oid: &str, id: Option<String>) {
+        if self.replying.is_some() {
+            return self.error(oid, "not_from_web", "media_want is your workroom's to do", Some("media_want"));
+        }
+        let Some(id) = id.filter(|i| proto::media::id_ok(i)) else {
+            return self.error(oid, "bad_message", "id is a picture's id (64 hex characters)", Some("media_want"));
+        };
+        let (Some(key), Some(conn)) = (self.offices[oid].key.clone(), self.offices[oid].conn.clone()) else { return };
+        self.media_sweep();
+        let groups = &self.groups;
+        let ok = self.media.get(&id).is_some_and(|h| (h.by.contains(&key) || h.groups.iter().any(|g| groups.is_member(g, &key)))
+            && h.fetched.get(&key).copied().unwrap_or(0) < MEDIA_FETCHES);
+        if !ok {
+            return conn.send(&FromLobby::MediaNone { id });
+        }
+        let h = self.media.get_mut(&id).expect("held");
+        *h.fetched.entry(key).or_default() += 1;
+        conn.send_media(&id, h);
+    }
+
     fn group_changed(&self, group: &str) {
         for m in self.groups.member_keys(group) {
             if let Some(id) = self.online(&m) {
@@ -1951,12 +2073,29 @@ impl Core {
                 let list = self.groups.listed(|k| self.online(k).is_some());
                 return self.answer(oid, &FromLobby::Groups { groups: list });
             }
-            ToLobby::GroupSay { group, text } => {
+            ToLobby::GroupSay { group, text, media, links } => {
                 let Some(g) = group.and_then(|g| self.groups.find(&g)).filter(|g| self.groups.is_member(g, &me)) else {
                     return self.error(oid, "not_found", "you are in no world of that name", Some(r));
                 };
-                let Some(text) = self.chat_text(oid, text, r) else { return };
-                let line: Utf8Bytes = FromLobby::GroupChat { group: g.clone(), from: self.sayer(oid), text }.text().into();
+                // 5.3: its pictures (and its links' pictures), each handed over by this office first (media_put), as said.
+                let (media, links) = proto::media::attachments(&json!({ "media": media, "links": links }));
+                let ids = proto::media::ids(&media, &links);
+                self.media_sweep();
+                let sizes: HashMap<&str, u64> = media.iter().chain(links.iter().map(|l| &l["image"])).filter_map(|p| Some((p["id"].as_str()?, p["size"].as_u64()?))).collect();
+                if let Some((id, _)) = ids.iter().find(|(id, mime)| !self.media.get(id).is_some_and(|h| h.by.contains(&me) && h.mime == *mime && sizes.get(id.as_str()) == Some(&(h.bytes.len() as u64)))) {
+                    return self.error(oid, "not_found", format!("picture {id}: hand it to the lobby first (media_put), as the line says it (its kind, its size); a picture is held 10 minutes"), Some(r));
+                }
+                let Some(text) = self.line_text(oid, text, r, !ids.is_empty() || !links.is_empty()) else { return };
+                let (k, until) = (g.to_ascii_lowercase(), Instant::now() + MEDIA_SAID);
+                for (id, _) in &ids {
+                    let h = self.media.get_mut(id).expect("checked");
+                    h.groups.insert(k.clone());
+                    h.until = h.until.max(until);
+                }
+                if !ids.is_empty() {
+                    self.sweep_after(MEDIA_SAID);
+                }
+                let line: Utf8Bytes = FromLobby::GroupChat { group: g.clone(), from: self.sayer(oid), text, media, links }.text().into();
                 for k in self.groups.member_keys(&g) {
                     if let Some(o) = self.online(&k).map(|id| &self.offices[id]) {
                         for c in self.hearers(o) {
@@ -2098,9 +2237,10 @@ fn for_web(m: &FromLobby) -> bool {
 }
 
 fn is_type(t: &str) -> bool {
-    const TYPES: [&str; 35] = ["teleport_ask", "teleport_answer", "hello", "prove", "link", "status", "max_visitors", "knock", "answer", "end", "rename", "chat", "whisper", "bye",
+    const TYPES: [&str; 37] = ["teleport_ask", "teleport_answer", "hello", "prove", "link", "status", "max_visitors", "knock", "answer", "end", "rename", "chat", "whisper", "bye",
         "about", "door", "group_create", "group_join", "group_leave", "group_remove", "group_unban", "group_set", "group_owner", "group_delete",
-        "group_say", "groups", "admin", "browser_code", "browser_allow", "browsers", "browser_revoke", "browser_forget", "browser_verify", "group_huddle", "knock_cancel"];
+        "group_say", "groups", "admin", "browser_code", "browser_allow", "browsers", "browser_revoke", "browser_forget", "browser_verify", "group_huddle", "knock_cancel",
+        "media_put", "media_want"];
     TYPES.contains(&t)
 }
 
